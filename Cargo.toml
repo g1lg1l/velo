@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.9.0-beta"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/g1lg1l/velo"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Realtime code must not glitch in debug builds: dependencies are optimized there too
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

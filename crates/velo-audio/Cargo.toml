@@ -1,0 +1,19 @@
+[package]
+name = "velo-audio"
+description = "Velo's ears: audio input (devices and computer audio) and realtime analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+cpal = "0.18.2"
+rtrb = "0.4.0"
+
+# one app's audio (apps.rs): a Core Audio process tap; the same crates cpal uses
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.191"
+objc2 = "0.6.5"
+objc2-core-audio = { version = "0.3.2", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-foundation"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFDictionary"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSObject", "NSString", "NSUUID", "NSValue"] }

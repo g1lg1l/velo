@@ -1,0 +1,164 @@
+/* Velo's look: near-black, warm white light, the signal's green, an orange accent. */
+
+:root {
+  --velo-bg: #0b0a09;
+  --velo-bg-2: #110f0e;
+  --velo-card: #151312;
+  --velo-line: rgba(255, 236, 214, 0.09);
+  --velo-line-2: rgba(255, 236, 214, 0.16);
+  --velo-light: #fff1df;
+  --velo-text: #ece5da;
+  --velo-muted: #a39b90;
+  --velo-dim: #6f685f;
+  --velo-green: #9be15d;
+  --velo-orange: #f47860;
+  --velo-amber: #ffc58a;
+  --velo-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.dark {
+  --vp-c-bg: var(--velo-bg);
+  --vp-c-bg-alt: #0e0d0c;
+  --vp-c-bg-elv: #161413;
+  --vp-c-bg-soft: #171514;
+  --vp-c-border: rgba(255, 236, 214, 0.14);
+  --vp-c-divider: rgba(255, 236, 214, 0.08);
+  --vp-c-gutter: #050505;
+  --vp-c-text-1: var(--velo-text);
+  --vp-c-text-2: var(--velo-muted);
+  --vp-c-text-3: var(--velo-dim);
+
+  --vp-c-brand-1: #ffad8f;
+  --vp-c-brand-2: #f9927a;
+  --vp-c-brand-3: var(--velo-orange);
+  --vp-c-brand-soft: rgba(244, 120, 96, 0.16);
+
+  --vp-c-tip-1: var(--velo-green);
+  --vp-c-tip-2: #86c94b;
+  --vp-c-tip-3: #6fae38;
+  --vp-c-tip-soft: rgba(155, 225, 93, 0.1);
+
+  --vp-button-brand-bg: var(--velo-orange);
+  --vp-button-brand-text: #1a0d08;
+  --vp-button-brand-hover-bg: #ff8c74;
+  --vp-button-brand-hover-text: #1a0d08;
+  --vp-button-brand-active-bg: #e0624b;
+  --vp-button-brand-active-text: #1a0d08;
+
+  --vp-nav-bg-color: rgba(11, 10, 9, 0.72);
+  --vp-sidebar-bg-color: #0d0c0b;
+  --vp-code-block-bg: #121110;
+  --vp-local-search-bg: #121110;
+  --vp-local-search-result-bg: #191716;
+}
+
+/* the nav: glass over whatever scrolls under it */
+.VPNavBar:not(.home.top) .content-body,
+.VPNavBar:not(.home) {
+  backdrop-filter: saturate(140%) blur(14px);
+  -webkit-backdrop-filter: saturate(140%) blur(14px);
+}
+
+.VPNavBar .title {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.VPNavBar .logo {
+  border-radius: 7px;
+}
+
+/* headings: tight and warm */
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  letter-spacing: -0.02em;
+}
+
+.vp-doc h1 {
+  font-weight: 700;
+  background: linear-gradient(180deg, #fffaf2 30%, #d9cbb8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.vp-doc h2 {
+  border-top-color: var(--velo-line);
+}
+
+.vp-doc img {
+  border-radius: 10px;
+  border: 1px solid var(--velo-line);
+}
+
+.vp-doc figure {
+  margin: 24px 0;
+}
+
+.vp-doc figcaption {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--velo-muted);
+}
+
+/* keys drawn as keycaps, like the deck's pads */
+kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 1px 6px;
+  border: 1px solid var(--velo-line-2);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #221f1d, #181615);
+  color: var(--velo-light);
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.8em;
+  line-height: 1.6;
+  text-align: center;
+  white-space: nowrap;
+  vertical-align: 0.08em;
+}
+
+/* the signal's green for a source's name in the guide: <span class="sig">Kick</span> */
+.sig {
+  color: var(--velo-green);
+  font-family: var(--vp-font-family-mono);
+  font-size: 0.86em;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.vp-doc table {
+  display: table;
+  width: 100%;
+}
+
+.vp-doc tr:nth-child(2n) {
+  background-color: rgba(255, 236, 214, 0.025);
+}
+
+/* light that sweeps across words */
+.shiny {
+  background: linear-gradient(110deg, #e8dfd2 30%, #fffaf3 45%, #ffd9b0 50%, #fffaf3 55%, #e8dfd2 70%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: velo-shine 6s linear infinite;
+}
+
+@keyframes velo-shine {
+  from { background-position: 125% 0; }
+  to { background-position: -125% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shiny { animation: none; background-position: 50% 0; }
+}
+
+::selection {
+  background: rgba(244, 120, 96, 0.35);
+  color: #fff;
+}

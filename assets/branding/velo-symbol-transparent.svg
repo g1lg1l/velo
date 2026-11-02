@@ -1,0 +1,63 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024"
+xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="beamL" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+    <stop offset="0.20" stop-color="#fffdf5" stop-opacity=".68"/>
+    <stop offset="0.68" stop-color="#fffdf7" stop-opacity=".78"/>
+    <stop offset="1" stop-color="#ffffff" stop-opacity=".98"/>
+  </linearGradient>
+  <linearGradient id="beamR" x1="1" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+    <stop offset="0.20" stop-color="#fffdf5" stop-opacity=".68"/>
+    <stop offset="0.68" stop-color="#fffdf7" stop-opacity=".78"/>
+    <stop offset="1" stop-color="#ffffff" stop-opacity=".98"/>
+  </linearGradient>
+  <linearGradient id="floorGlow" x1="0" y1="0" x2="1" y2="0">
+    <stop offset="0" stop-color="#fff" stop-opacity="0"/>
+    <stop offset=".5" stop-color="#fffdf5" stop-opacity=".95"/>
+    <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+  </linearGradient>
+  <filter id="softGlow" x="-50%" y="-50%" width="200%" height="200%">
+    <feGaussianBlur stdDeviation="34"/>
+  </filter>
+  <filter id="beamSoft" x="-30%" y="-30%" width="160%" height="160%">
+    <feGaussianBlur stdDeviation="9"/>
+  </filter>
+  <filter id="smoke" x="-40%" y="-40%" width="180%" height="180%">
+    <feTurbulence type="fractalNoise" baseFrequency=".012 .02" numOctaves="3" seed="8" result="noise"/>
+    <feGaussianBlur in="noise" stdDeviation="5" result="blurredNoise"/>
+    <feColorMatrix in="blurredNoise" type="matrix"
+      values="1 0 0 0 0
+              0 1 0 0 0
+              0 0 1 0 0
+              0 0 0 .45 0" result="smokeNoise"/>
+    <feBlend in="SourceGraphic" in2="smokeNoise" mode="screen"/>
+  </filter>
+  <mask id="topFade">
+    <rect width="1024" height="1024" fill="white"/>
+    <rect x="0" y="0" width="1024" height="290" fill="url(#fadeTop)"/>
+  </mask>
+  <linearGradient id="fadeTop" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="black"/>
+    <stop offset=".44" stop-color="black"/>
+    <stop offset="1" stop-color="white"/>
+  </linearGradient>
+</defs>
+
+<!-- diffuse haze behind the beams -->
+<g opacity=".65" filter="url(#softGlow)">
+  <path d="M238 220 L514 806" stroke="#fff9eb" stroke-opacity=".46" stroke-width="138" stroke-linecap="butt"/>
+  <path d="M786 220 L510 806" stroke="#fff9eb" stroke-opacity=".46" stroke-width="138" stroke-linecap="butt"/>
+</g>
+
+<!-- equal-width beams; square ends; top ends fade before reaching the outer edges -->
+<g mask="url(#topFade)" filter="url(#smoke)">
+  <path d="M238 220 L514 806" stroke="url(#beamL)" stroke-width="112" stroke-linecap="butt"/>
+  <path d="M786 220 L510 806" stroke="url(#beamR)" stroke-width="112" stroke-linecap="butt"/>
+</g>
+
+<!-- soft bloom at convergence -->
+<ellipse cx="512" cy="812" rx="110" ry="42" fill="#fff9e8" opacity=".55" filter="url(#softGlow)"/>
+<rect x="274" y="806" width="476" height="8" fill="url(#floorGlow)" opacity=".72" filter="url(#beamSoft)"/>
+</svg>

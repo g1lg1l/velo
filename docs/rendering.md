@@ -1,0 +1,103 @@
+# Velo: Rendering
+
+How the picture is made and where it goes. The code is in `crates/velo-engine` (`runtime.rs`, `gpu.rs`, `compile.rs`, `media.rs`, `share.rs`) and the output window in `crates/velo/src/host.rs`.
+
+## 1. Decisions
+
+| Question | Decision | Why |
+|---|---|---|
+| GPU API | **wgpu** (Metal, Vulkan, DX12) | One API, three native backends, WGSL validated by naga, compute |
+| Who renders | **A render thread** owns the frame loop and the output surfaces | The UI thread can block (a file dialog, a heavy layout); the output must not |
+| One GPU device or two | **Two**: the engine's own on the render thread, eframe's for the UI | With one shared device wgpu 30 fails a surface reconfigure whenever the other thread submits, and eframe reconfigures on every resize. Two devices also keep a UI fault away from the output (ARCHITECTURE.md D16) |
+| Working format | **`Rgba16Float`** textures | Feedback trails and glow without banding |
+| Color | **Display-referred values**, no implicit conversion; the output surface takes a non-sRGB format so values go out untouched | What VJ, Shadertoy and ISF shaders assume |
+| Pacing | **The output's vsync** (`Fifo`, `desired_maximum_frame_latency = 1`); a 60 Hz tick when no output takes frames | Lowest latency without tearing; `Fifo` works everywhere |
+| Shader language | **WGSL**; ISF's GLSL translated by naga | wgpu-native and validated |
+
+## 2. Threads
+
+```
+main thread (winit, egui)        render thread                     compile thread
+┌───────────────────────┐ Command ┌───────────────────────────┐    ┌──────────────────────┐
+│ UI window             │ ──────► │ frame loop (§3)           │    │ shaders, pipelines,  │
+│ creates the output    │         │ graphs, output surface,   │    │ textures: built with │
+│ window and surface    │ ◄────── │ preview, shares           │    │ the engine's device  │
+│ shows the preview     │ Status  └───────────────────────────┘    └──────────────────────┘
+└───────────────────────┘
+```
+
+- Windows **and their surfaces** are created on the main thread; the render thread configures and presents them. The output window's resize and occlusion come to the engine as commands.
+- **The main thread never waits on the render thread.** On macOS, winit window calls hop to the main thread synchronously, so a main thread blocked on the render thread would deadlock. Everything from main to render is a fire-and-forget message.
+- Built graphs come back to the UI on a channel and go to the render thread with `Command::Install`.
+
+## 3. Frame loop
+
+```
+loop {
+    drain commands: graphs installed, values, launches, the output attached or resized
+    pace: the output's next frame, else sleep to a 60 Hz tick
+    step launches on the beat clock; read the audio features; advance the clock
+    signal nodes, then macros and mappings → each node's parameter values
+    one render pass per node of the live graph (and of a fading or edited one)
+    blit the program to the output (fit, blackout, freeze, test pattern), the shares and the preview
+    submit and present; at most two frames on the GPU
+    publish status: frame time, late frames, stalls, each node's GPU cost
+}
+```
+
+**No compiling, no pipeline creation, no pixel allocation in the loop.** That happens on the compile thread (§7). The loop binds, draws and writes small buffers: the globals `g` once a frame and each node's parameters.
+
+**Preview:** the program is drawn at 640×360 into a preview texture, copied into one of three `MAP_READ` buffers and mapped with `map_async`. The render thread polls without blocking and the UI thread copies the newest into an egui texture, so the render thread never waits and never copies pixels.
+
+## 4. Media
+
+Pictures from files feed Image, Video, Media List, Text and Particles nodes. Each file loads once on the media thread; a graph built while a file loads shows black there and is built again once it's in.
+
+| Media | How |
+|---|---|
+| Stills, animated GIFs, image sequences | Decoded into RGBA frames in memory (2 GB at most). GIFs play at their own delays (under 20 ms plays at 100 ms, as browsers do); a folder of numbered images is a sequence at 30 fps. The render thread uploads a frame when it's due (`media.rs`) |
+| HAP movies in `.mov` (Hap, Hap Alpha, Hap Q, Hap R) | Velo's own MOV reader and HAP unpacker (stored, Snappy, chunked). A reader thread per movie reads the frame due next; it goes to the GPU as a BC texture, with no CPU decoding. Hap Q's YCoCg turns to RGB in the Image shader (`hap.rs`) |
+| Other movies: H.264, HEVC, ProRes on macOS | The system decodes them to BGRA on the movie's reader thread: AVFoundation on macOS (`video.rs`), Media Foundation on Windows (`video_windows.rs`). A `.mov` is tried as HAP first |
+| Text | Every glyph the words need, in Inter, JetBrains Mono or the node's own font file, as a signed distance field in an atlas made on the media thread; the shader lays out and draws the words (`text.rs`) |
+
+Not yet: system video on Linux (HAP only there), camera and capture inputs.
+
+## 5. Canvas and outputs
+
+- The project's **canvas** (width, height, frame rate; 1920×1080 at 60 by default) is the size every node renders at.
+- **One output**: a plain window, for trying things on one screen, or a **stage window** on a display picked by name (borderless, covering the display, above other windows unless it's the main display). Not the OS fullscreen, which on macOS is a Space with an animation. Esc in the output window closes it.
+- The picture **keeps its shape**: bars on two sides when the display's shape differs, never stretched.
+- The **Output node** grades what goes out: exposure, contrast, saturation, hue, colorize, invert, vignette, fade to black.
+- **Blackout**, **Freeze** and the **test pattern** are styles of the output blit, free while off. Freeze copies the program once and shows it on the outputs, the shares and the preview until it's let go; the graphs keep running underneath.
+- An output whose **display is unplugged** closes, and the UI says which display.
+
+### Spout and NDI
+The program is blitted full size into a BGRA texture, read back like the preview (three staging buffers) and handed to the share thread, so the frame loop never waits on it (`share.rs`).
+- **Spout** (Windows): a D3D11 device of its own, a texture shared by handle, and Spout 2's shared memory (sender names, the sender's info, the active sender) written from its protocol, with no SDK linked. About one frame of latency.
+- **NDI**: the NDI runtime the user installs, loaded when sharing starts and kept loaded; each frame goes out as BGRA.
+
+Not yet: Syphon on macOS, several outputs, crop and rotation.
+
+## 6. Node rendering
+
+- Most nodes are **one fullscreen-triangle pass** with a generated pipeline ([plugins.md](plugins.md) §2), into a texture of their own. An input with nothing wired reads black.
+- **Feedback** keeps two textures and reads the one it wrote last frame.
+- **Particles** keep 65,536 particles in a buffer of their own: a compute pass emits, one thread moves each particle, then a sprite each is added up over a clear picture. `count` caps them without a rebuild.
+- **GPU cost**: where the GPU has timestamp queries, each pass of the edited graph is timed and shown on its node.
+- A **Probe** reads a node's picture back as a color, a signal like any other.
+
+## 7. Shader compilation
+
+All of it on the compile thread, with the engine's device:
+1. Parse the JSON header: name, category, parameters, inputs.
+2. Wrap the body: the globals, a variable per parameter, the texture bindings, the entry points ([plugins.md](plugins.md) §2).
+3. Validate with **naga**. Errors come back at the author's line numbers; **the node keeps its last good program**, else passes its input through.
+4. Build the pipeline. Built-in shaders compile once and are reused by every later graph.
+
+When edits come faster than builds, only the newest build of each scene is made. In a bundle, shader files are checked twice a second, and an outside editor's save becomes an undoable `node.set_code` ([project-format.md](project-format.md) §2).
+
+## 8. Device loss and failure
+
+- GPU errors (out of memory, validation) are caught with error scopes when a graph is built, never per frame.
+- **The runtime is disposable.** When the device is lost (a driver reset, a shader past the system's time limit) or the render thread stops drawing for 2 s, the event loop starts a new engine from the project, reopens the output where it was and puts the scene that was out back out.
+- The adapter asked for is the high-performance GPU (laptops with two GPUs).

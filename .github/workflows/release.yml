@@ -1,0 +1,83 @@
+# From Ravune (03cb268), trimmed for Velo.
+name: Release builds
+
+# Builds Velo for Windows, macOS and Linux and attaches it to a GitHub release, under the names
+# Velo's update check looks for (crates/velo/src/update.rs):
+#   Windows: an installer (Inno Setup) and a zip
+#   macOS:   Velo.app in a .dmg, and in a .tar.gz for self-updates (ad-hoc signed, not notarized)
+#   Linux:   a tar.gz
+# Run it by hand with the release's tag (create the tag and a draft release first, check the
+# files, then publish the draft).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and attach to (it must exist)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+          - os: macos-latest
+            name: macos-arm64
+          - os: ubuntu-latest
+            name: linux-x64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux audio headers (cpal's ALSA backend)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # VELO_RELEASE: this build may update itself from the release's files
+      - run: cargo build --release -p velo -p velo-mcp
+        env:
+          VELO_RELEASE: "1"
+      - name: Version
+        run: echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Windows installer and zip
+        if: runner.os == 'Windows'
+        run: |
+          choco install innosetup --no-progress -y
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "//DVersion=$VERSION" installer/velo.iss
+          dir="velo-$VERSION-${{ matrix.name }}"
+          mkdir "$dir"
+          cp target/release/velo.exe target/release/velo-mcp.exe README.md LICENSE-GPL LICENSE-MIT LICENSE-APACHE "$dir/"
+          7z a "dist/$dir.zip" "$dir" > /dev/null
+
+      - name: macOS app and disk image
+        if: runner.os == 'macOS'
+        run: scripts/package-macos.sh "$VERSION" ${{ matrix.name }}
+
+      - name: Linux tarball
+        if: runner.os == 'Linux'
+        run: |
+          dir="velo-$VERSION-${{ matrix.name }}"
+          mkdir -p "$dir" dist
+          cp target/release/velo target/release/velo-mcp README.md LICENSE-GPL LICENSE-MIT LICENSE-APACHE "$dir/"
+          cp assets/icons/png/velo-256.png "$dir/velo.png"
+          tar -czf "dist/$dir.tar.gz" "$dir"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber

@@ -1,0 +1,54 @@
+[package]
+name = "velo"
+version.workspace = true
+edition.workspace = true
+# the app ships with Ableton Link (GPL-2.0-or-later): it's GPL; the libraries stay MIT OR Apache-2.0
+license = "GPL-3.0-or-later"
+repository.workspace = true
+
+[dependencies]
+# no egui fallback fonts or system-font scan: we ship three small fonts
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "links", "persistence", "wgpu", "wayland", "x11"] }
+velo-core = { version = "0.9.0-beta", path = "../velo-core" }
+velo-engine = { version = "0.9.0-beta", path = "../velo-engine" }
+velo-mcp = { version = "0.9.0-beta", path = "../velo-mcp" }
+# API keys for the AI panel live in the OS keychain (Keychain, Credential Manager, Secret Service)
+keyring = "4.2.0"
+velo-audio = { version = "0.9.0-beta", path = "../velo-audio" }
+# the same winit eframe runs on: we drive its event loop and own the output window (spike S1)
+winit = "0.30.13"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+rfd = "0.17.2"
+ron = "0.12.2"
+# screenshots (VELO_CAPTURE_TO): already in the tree through eframe
+png = "0.18.1"
+# pictures attached to AI messages (read, shrunk, kept as JPEG): already in the tree through velo-engine
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# updates (as in Ravune): GitHub's release feed over plain blocking HTTPS on a worker thread
+# (rustls + ring), the feed is Atom XML, Windows updates come as a zip
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
+roxmltree = "0.21.2"
+zip = { version = "9.1.2", default-features = false, features = ["deflate-flate2"] }
+# MIDI controllers (as in Ravune): CoreMIDI, WinMM, ALSA
+midir = "0.11.1"
+# Ableton Link (tempo and phase with Live, DJ apps and phones on the network): Ableton's own
+# SDK, GPL-2.0-or-later (ARCHITECTURE.md D11). Building it needs cmake and a C++ compiler.
+rusty_link = { version = "0.4.9", optional = true }
+
+[features]
+default = ["link"]
+# without it (no cmake at hand): `cargo run -p velo --no-default-features`
+link = ["dep:rusty_link"]
+
+# the app's own CPU time, memory and GPU load for the status bar (usage.rs): already in the tree
+# for Media Foundation and wgpu; where the pointer is while files are dragged in (chat.rs)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_Performance", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_UI_WindowsAndMessaging"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2.191"
+
+# the .exe's icon (build.rs): MIT, Windows only
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.34"

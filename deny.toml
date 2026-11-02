@@ -1,0 +1,41 @@
+# From Ravune (bd10814), trimmed for Velo.
+# Velo's libraries are MIT OR Apache-2.0: only permissive dependency licenses are allowed
+# (CONTRIBUTING.md, ARCHITECTURE.md D11). GPL/LGPL appear in the tree only as "OR" alternatives,
+# which cargo-deny resolves to the permissive side, and in the two exceptions below.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "0BSD",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # webpki-roots: Mozilla's root certificates as data (the update check over HTTPS)
+    "CDLA-Permissive-2.0",
+]
+
+# the app is GPL because it ships Ableton Link, whose SDK is GPL (D11)
+exceptions = [
+    { allow = ["GPL-3.0-or-later"], crate = "velo" },
+    { allow = ["GPL-2.0-or-later"], crate = "rusty_link" },
+]
+
+[licenses.private]
+ignore = true
+
+[advisories]
+# "Unmaintained" notices on transitive crates with no maintained replacement yet. None is a
+# vulnerability; drop each line once the crate that pulls it in moves on.
+ignore = [
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: winit's Wayland window decorations (sctk-adwaita)" },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant: zbus, via accesskit on Linux" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names: zbus, via accesskit on Linux" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive: zbus, via accesskit on Linux" },
+]

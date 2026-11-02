@@ -1,0 +1,3 @@
+[alias]
+# `cargo dev`: Velo from the sources, like `npm run dev` (`cargo dev -- show.velo` opens a project)
+dev = "run -p velo"

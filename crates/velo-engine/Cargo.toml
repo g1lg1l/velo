@@ -1,0 +1,37 @@
+[package]
+name = "velo-engine"
+description = "Velo's engine: shader nodes, the render thread and outputs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+velo-core = { version = "0.9.0-beta", path = "../velo-core" }
+# the WGSL front end and validator wgpu 30 uses itself
+naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "wgsl-out"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+wgpu = "30.0.1"
+pollster = "0.4.0"
+# Image nodes: stills, animated GIFs, image sequences (already in the tree through eframe)
+# a Text node's words (text.rs): already in the build through egui's epaint
+ab_glyph = "0.2.32"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tga"] }
+# HAP movies: frames are Snappy-compressed (BSD-3-Clause)
+snap = "1.1.1"
+# NDI's runtime, loaded when sharing starts (already in the tree through wgpu)
+libloading = "0.8.9"
+
+# general video (H.264, HEVC, ProRes) through AVFoundation, decoded by the system
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media"] }
+objc2-core-media = { version = "0.3.2", features = ["objc2-core-video"] }
+objc2-core-video = "0.3.2"
+
+# the same through Media Foundation (`windows` is in the tree already through wgpu, cpal and
+# midir: only more of its modules)
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Media_MediaFoundation", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Memory", "Win32_System_Threading", "Win32_Security"] }

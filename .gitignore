@@ -1,0 +1,11 @@
+/target
+.DS_Store
+dist/
+
+# the site's dependencies and builds
+site/node_modules/
+site/.vitepress/dist/
+site/.vitepress/cache/
+
+# agents' working copies
+.claude/worktrees/
