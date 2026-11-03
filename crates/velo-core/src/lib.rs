@@ -585,7 +585,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(BLEND, "Blend", Category::Composite, &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"], OUT),
     kind("velo.mask", "Mask", Category::Composite, &["in", "mask"], OUT),
     kind("velo.merge", "Merge", Category::Composite, &["r", "g", "b", "a"], OUT),
-    kind(SWITCH, "Switch", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8"], OUT),
+    kind(SWITCH, "Switch", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"], OUT),
     kind(GRID, "Grid", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8"], OUT),
     kind("velo.layers", "Layer Stack", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8"], OUT),
     kind("velo.output", "Output", Category::Output, IN, &[]),
@@ -611,14 +611,16 @@ pub const NODE_KINDS: &[NodeKind] = &[
 /// Up to sixteen pictures merged in one, as many inputs shown as its `inputs` parameter says.
 pub const BLEND: &str = "velo.blend";
 
-/// How many inputs a node's card shows: a Blend as many as its `inputs` parameter asks (2 to
-/// 16), never fewer than are wired; any other kind all it has.
+/// How many inputs a node's card shows: a Blend as many as its `inputs` parameter asks, a
+/// Switch its `count` (2 to 16), never fewer than are wired; any other kind all it has.
 pub fn inputs_shown(scene: &Scene, n: &Node) -> usize {
     let Some(k) = node_kind(&n.kind) else { return 0 };
-    if n.kind != BLEND {
-        return k.inputs.len();
-    }
-    let asked = n.params.get("inputs").map_or(2, |v| v[0].round().max(0.0) as usize);
+    let param = match n.kind.as_str() {
+        BLEND => "inputs",
+        SWITCH => "count",
+        _ => return k.inputs.len(),
+    };
+    let asked = n.params.get(param).map_or(2, |v| v[0].round().max(0.0) as usize);
     let wired = scene.edges.iter().filter(|e| e.to.0 == n.id).map(|e| usize::from(e.to.1) + 1).max().unwrap_or(0);
     asked.max(wired).clamp(2, k.inputs.len())
 }

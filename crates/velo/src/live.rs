@@ -534,6 +534,13 @@ impl Live {
         status.costs.0.get(n).map(|v| f32::from_bits(v.load(Relaxed)))
     }
 
+    /// Whether a node of the edited scene sleeps: nothing it feeds shows now (a Switch's other
+    /// inputs, a Blend's at no opacity), so it keeps its last picture.
+    pub fn asleep(&self, node: &str) -> bool {
+        let Some(slot) = self.slots.iter().find(|s| s.key == self.edit && s.built) else { return false };
+        slot.installed.iter().position(|(id, _)| id == node).is_some_and(|n| n < 64 && self.engine.status.asleep.load(Relaxed) >> n & 1 == 1)
+    }
+
     /// A node of the edited scene, with its values as the engine modulated them last frame (x
     /// and y per parameter, in header order), while it's mapped; asking makes the engine
     /// publish them.
@@ -1219,13 +1226,15 @@ mod tests {
             compiler.build(k as u64, scene.clone(), size);
             let Ok((_, Ok(mut built))) = compiler.built.recv() else { continue };
             let g = &mut built.graph;
+            // what renders as the engine runs it: what a Switch or a clear Blend doesn't show sleeps
+            let awake = g.output.map(|out| g.runner.needed([out], |n, i| g.lazy.iter().find(|l| l.0 == n).is_none_or(|(_, l)| l.reads(|p| g.mods[n].value(p), i))));
             // each node's best of 30 frames, after 30 to warm up
             let mut best = vec![f32::MAX; g.runner.len().min(velo_engine::gpu::MAX_TIMED)];
             for f in 0..60 {
                 let timed = f >= 30;
                 let mut encoder = device.create_command_encoder(&Default::default());
                 let globals = [f as f32 / 60.0, 1.0 / 60.0, f as f32, size[0] as f32 / size[1] as f32, 120.0, 0.0, 0.0];
-                g.runner.render_timed(queue, &mut encoder, &g.programs, &globals, timed.then_some(&set));
+                g.runner.render_timed(queue, &mut encoder, &g.programs, &globals, timed.then_some(&set), awake.as_deref());
                 if timed {
                     encoder.resolve_query_set(&set, 0..n as u32, &resolve, 0);
                     encoder.copy_buffer_to_buffer(&resolve, 0, &back, 0, n * 8);
@@ -1237,7 +1246,8 @@ mod tests {
                     let ticks: Vec<u64> = back.slice(..).get_mapped_range().unwrap().as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect();
                     back.unmap();
                     for (i, b) in best.iter_mut().enumerate() {
-                        *b = b.min(ticks[2 * i + 1].saturating_sub(ticks[2 * i]) as f32 * queue.get_timestamp_period() / 1e6);
+                        let asleep = awake.as_ref().is_some_and(|a| !a[i]);
+                        *b = if asleep { 0.0 } else { b.min(ticks[2 * i + 1].saturating_sub(ticks[2 * i]) as f32 * queue.get_timestamp_period() / 1e6) };
                     }
                 }
             }
@@ -1256,7 +1266,8 @@ mod tests {
             let mut top: Vec<usize> = (0..best.len()).collect();
             top.sort_by(|a, b| best[*b].total_cmp(&best[*a]));
             let top: Vec<String> = top.iter().take(3).map(|&i| format!("{} {:.2}", name(i), best[i])).collect();
-            println!("{sum:5.2} ms  {:2} nodes, {unused:.2} ms in {} unused  {}: {}", used.len(), used.iter().filter(|u| !**u).count(), scene.name, top.join(", "));
+            let asleep = awake.as_ref().map_or(0, |a| a.iter().filter(|a| !**a).count());
+            println!("{sum:5.2} ms  {:2} nodes ({asleep} asleep), {unused:.2} ms in {} unused  {}: {}", used.len(), used.iter().filter(|u| !**u).count(), scene.name, top.join(", "));
         }
         println!("{total:.2} ms for all {} scenes at {}×{}", project.scenes.len(), size[0], size[1]);
     }

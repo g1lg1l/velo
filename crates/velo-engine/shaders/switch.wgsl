@@ -2,10 +2,10 @@
   "name": "Switch",
   "category": "composite",
   "description": "One of its inputs, as value picks: 0 the first, 1 the last of count, the nearest in between. Fade turns the cut into a transition, its style a crossfade, a dissolve, a wipe or a circle. Map a Counter, an LFO or Time onto value to swap views",
-  "inputs": [{ "id": "i1", "type": "texture" }, { "id": "i2", "type": "texture" }, { "id": "i3", "type": "texture" }, { "id": "i4", "type": "texture" }, { "id": "i5", "type": "texture" }, { "id": "i6", "type": "texture" }, { "id": "i7", "type": "texture" }, { "id": "i8", "type": "texture" }],
+  "inputs": [{ "id": "i1", "type": "texture" }, { "id": "i2", "type": "texture" }, { "id": "i3", "type": "texture" }, { "id": "i4", "type": "texture" }, { "id": "i5", "type": "texture" }, { "id": "i6", "type": "texture" }, { "id": "i7", "type": "texture" }, { "id": "i8", "type": "texture" }, { "id": "i9", "type": "texture" }, { "id": "i10", "type": "texture" }, { "id": "i11", "type": "texture" }, { "id": "i12", "type": "texture" }, { "id": "i13", "type": "texture" }, { "id": "i14", "type": "texture" }, { "id": "i15", "type": "texture" }, { "id": "i16", "type": "texture" }],
   "params": [
     { "id": "value", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
-    { "id": "count", "type": "int", "default": 2, "min": 2, "max": 8 },
+    { "id": "count", "type": "int", "default": 2, "min": 2, "max": 16 },
     { "id": "fade", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
     { "id": "style", "type": "int", "default": 0, "names": ["Crossfade", "Dissolve", "Wipe", "Circle"] }
   ]
@@ -33,6 +33,22 @@ fn pick(n: i32, uv: vec2f) -> vec4f {
         c = textureSampleLevel(i7, smp, uv, 0.0);
     } else if n == 7 {
         c = textureSampleLevel(i8, smp, uv, 0.0);
+    } else if n == 8 {
+        c = textureSampleLevel(i9, smp, uv, 0.0);
+    } else if n == 9 {
+        c = textureSampleLevel(i10, smp, uv, 0.0);
+    } else if n == 10 {
+        c = textureSampleLevel(i11, smp, uv, 0.0);
+    } else if n == 11 {
+        c = textureSampleLevel(i12, smp, uv, 0.0);
+    } else if n == 12 {
+        c = textureSampleLevel(i13, smp, uv, 0.0);
+    } else if n == 13 {
+        c = textureSampleLevel(i14, smp, uv, 0.0);
+    } else if n == 14 {
+        c = textureSampleLevel(i15, smp, uv, 0.0);
+    } else if n == 15 {
+        c = textureSampleLevel(i16, smp, uv, 0.0);
     }
     return c;
 }

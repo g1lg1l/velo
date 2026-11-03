@@ -118,6 +118,50 @@ fn textures(node: &ShaderNode) -> usize {
     node.inputs.len() + usize::from(node.feedback) + usize::from(node.audio)
 }
 
+/// A node that reads only some of its inputs, as its values say (by parameter index): what lets
+/// a frame skip a picture nobody sees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lazy {
+    /// A Switch reads the inputs it shows.
+    Switch { value: usize, count: usize, fade: usize },
+    /// A Blend at no opacity reads its first input only.
+    Blend { opacity: usize },
+}
+
+impl Lazy {
+    /// Whether it reads input `i` with these values.
+    pub fn reads(self, value: impl Fn(usize) -> f32, i: usize) -> bool {
+        match self {
+            Lazy::Switch { value: v, count, fade } => switch_shows(value(v), value(count), value(fade)).contains(&Some(i)),
+            Lazy::Blend { opacity } => i == 0 || value(opacity) > 0.0,
+        }
+    }
+}
+
+/// How many inputs a Switch has.
+pub const SWITCH_INPUTS: usize = 16;
+
+/// The inputs a Switch shows (switch.wgsl): the one `value` picks, and the next one while it
+/// fades over. A little either side of each edge counts as both, so the GPU's own rounding
+/// never shows one that didn't render.
+pub fn switch_shows(value: f32, count: f32, fade: f32) -> [Option<usize>; 2] {
+    const EDGE: f32 = 0.01;
+    let count = (count.round() as i32).clamp(2, SWITCH_INPUTS as i32);
+    let x = value.clamp(0.0, 1.0) * (count - 1) as f32;
+    let first = (x.floor() as i32).min(count - 2);
+    let t = x - first as f32;
+    // how far over to the next one it is (switch.wgsl's k)
+    let k = |t: f32| {
+        if fade > 0.0 {
+            let s = ((t - 0.5 + fade * 0.5) / fade).clamp(0.0, 1.0);
+            s * s * (3.0 - 2.0 * s)
+        } else {
+            f32::from(u8::from(t >= 0.5))
+        }
+    };
+    [(k(t - EDGE) < 1.0).then_some(first as usize), (k(t + EDGE) > 0.0).then_some(first as usize + 1)]
+}
+
 /// One node of a graph to run: which program, and which node feeds each of its inputs.
 pub struct NodeSpec {
     pub program: usize,
@@ -144,6 +188,8 @@ pub struct Runner {
     size: [u32; 2],
     globals: wgpu::Buffer,
     nodes: Vec<RunNode>,
+    /// Which node feeds each input of each node.
+    inputs: Vec<Vec<Option<usize>>>,
     order: Vec<usize>,
     frame: u64,
 }
@@ -209,7 +255,7 @@ impl Runner {
         for (node, views) in run.iter_mut().zip(targets) {
             node.targets = views;
         }
-        Ok(Self { size, globals, nodes: run, order, frame: 0 })
+        Ok(Self { size, globals, nodes: run, inputs: nodes.iter().map(|n| n.inputs.clone()).collect(), order, frame: 0 })
     }
 
     /// Sets a node's parameter values (one vec4 per parameter, in header order).
@@ -226,12 +272,13 @@ impl Runner {
     /// Records one frame: every node, upstream first. `globals` are the `g` values after
     /// `resolution` (time, delta, frame…, see [`crate::GLOBALS`]); the resolution is filled in here.
     pub fn render(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, programs: &[Program], globals: &[f32]) {
-        self.render_timed(queue, encoder, programs, globals, None);
+        self.render_timed(queue, encoder, programs, globals, None, None);
     }
 
     /// [`Self::render`], each of the first [`MAX_TIMED`] nodes' pass between two timestamps of
-    /// `timing` (node n's at 2n and 2n + 1): what it cost the GPU.
-    pub fn render_timed(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, programs: &[Program], globals: &[f32], timing: Option<&wgpu::QuerySet>) {
+    /// `timing` (node n's at 2n and 2n + 1): what it cost the GPU. With `awake`, only the nodes
+    /// it marks render; the rest keep their last picture.
+    pub fn render_timed(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, programs: &[Program], globals: &[f32], timing: Option<&wgpu::QuerySet>, awake: Option<&[bool]>) {
         let mut g = [0.0f32; GLOBAL_FLOATS];
         g[0] = self.size[0] as f32;
         g[1] = self.size[1] as f32;
@@ -245,6 +292,9 @@ impl Runner {
         queue.write_buffer(&self.globals, 0, &bytes);
         let parity = (self.frame % 2) as usize;
         for &n in &self.order {
+            if awake.is_some_and(|a| !a[n]) {
+                continue;
+            }
             let node = &self.nodes[n];
             let program = &programs[node.program];
             let target = &node.targets[parity % node.targets.len()];
@@ -277,6 +327,20 @@ impl Runner {
             }
         }
         self.frame += 1;
+    }
+
+    /// The nodes a frame needs: those `roots` read through, where `reads(n, i)` says whether
+    /// node n reads its input i this frame.
+    pub fn needed(&self, roots: impl IntoIterator<Item = usize>, reads: impl Fn(usize, usize) -> bool) -> Vec<bool> {
+        let mut needed = vec![false; self.nodes.len()];
+        let mut todo: Vec<usize> = roots.into_iter().collect();
+        while let Some(n) = todo.pop() {
+            if n >= needed.len() || std::mem::replace(&mut needed[n], true) {
+                continue;
+            }
+            todo.extend(self.inputs[n].iter().enumerate().filter(|(i, _)| reads(n, *i)).filter_map(|(_, from)| *from));
+        }
+        needed
     }
 
     /// What `node` drew in the last frame rendered.
@@ -921,6 +985,47 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     }
 
     #[test]
+    fn a_switch_reads_only_what_it_shows_and_a_clear_blend_its_base() {
+        assert_eq!(switch_shows(0.0, 2.0, 0.0), [Some(0), None]);
+        assert_eq!(switch_shows(0.5, 3.0, 0.0), [Some(1), None], "the middle of three");
+        assert_eq!(switch_shows(1.0, 16.0, 0.0), [None, Some(15)], "the last of sixteen");
+        assert_eq!(switch_shows(0.25, 3.0, 0.0), [Some(0), Some(1)], "on an edge: both, whichever way the GPU rounds");
+        assert_eq!(switch_shows(0.5, 2.0, 1.0), [Some(0), Some(1)], "halfway through a fade: both");
+        assert_eq!(switch_shows(0.1, 2.0, 0.5), [Some(0), None], "before the fade starts");
+        let blend = Lazy::Blend { opacity: 2 };
+        assert!(blend.reads(|_| 0.0, 0) && !blend.reads(|_| 0.0, 1), "no opacity: the base alone");
+        assert!(blend.reads(|_| 0.5, 1));
+    }
+
+    #[test]
+    fn what_a_switch_doesnt_show_never_renders() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let flat = |rgb: &str| Program::new(&device, ShaderNode::parse(&format!("/*{{ \"name\": \"Flat\" }}*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f {{ return vec4f({rgb}, 1.0); }}")).unwrap()).unwrap();
+        let programs = [flat("1.0, 0.0, 0.0"), flat("0.0, 1.0, 0.0"), program(&device, "switch")];
+        let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![] }, NodeSpec { program: 2, inputs: vec![Some(0), Some(1)] }];
+        let mut runner = Runner::new(&device, &programs, &nodes, &[], [32, 8], &wave_texture(&device)).unwrap();
+        let lazy = Lazy::Switch { value: 0, count: 1, fade: 2 };
+        let one = 0x3C00;
+        for (value, red, green) in [(0.0, one, 0), (1.0, one, one)] {
+            runner.set_params(&queue, &programs, 2, &[[value, 0.0, 0.0, 0.0], [2.0, 0.0, 0.0, 0.0], [0.0; 4], [0.0; 4]]);
+            let values = [value, 2.0, 0.0];
+            let awake = runner.needed([2], |n, i| n != 2 || lazy.reads(|p| values[p], i));
+            assert_eq!(awake, [value == 0.0, value == 1.0, true]);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runner.render_timed(&queue, &mut encoder, &programs, &[0.0, 1.0 / 60.0, 0.0, 2.0], None, Some(&awake));
+            queue.submit([encoder.finish()]);
+            // the red one rendered the first time and kept its picture; the green one only once shown
+            assert_eq!(read(&device, &queue, &runner, 0)[0], red);
+            assert_eq!(read(&device, &queue, &runner, 1)[1], green);
+            assert_eq!(read(&device, &queue, &runner, 2)[..3], if value == 0.0 { [one, 0, 0] } else { [0, one, 0] });
+        }
+    }
+
+    #[test]
     fn a_media_list_shows_its_files_in_turn() {
         let _gpu = crate::gpu_lock();
         let Some((device, queue)) = gpu() else {
@@ -1364,7 +1469,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
                 let mut best = f32::MAX;
                 for f in 0..12 {
                     let mut encoder = device.create_command_encoder(&Default::default());
-                    runner.render_timed(&queue, &mut encoder, &programs, &globals(f as f32 / 30.0, false), Some(&set));
+                    runner.render_timed(&queue, &mut encoder, &programs, &globals(f as f32 / 30.0, false), Some(&set), None);
                     encoder.resolve_query_set(&set, 0..6, &resolve, 0);
                     encoder.copy_buffer_to_buffer(&resolve, 0, &back, 0, 48);
                     queue.submit([encoder.finish()]);

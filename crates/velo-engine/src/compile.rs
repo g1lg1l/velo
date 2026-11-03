@@ -10,7 +10,7 @@ use std::borrow::Cow;
 
 use velo_core::{Category, Edge, FEEDBACK, IMAGE, MEDIA_LIST, MEDIA_LIST_FILES, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
 
-use crate::gpu::topological;
+use crate::gpu::{Lazy, topological};
 use crate::{BUILTINS, Graph, Macros, Modulator, NodeSpec, Program, Runner, ShaderError, ShaderNode, macro_routes, routes};
 
 /// A new Shader node's code: an audio-reactive tunnel that shows what the format offers.
@@ -351,8 +351,22 @@ fn build(
     let nodes: Vec<(&str, &ShaderNode)> = plan.nodes.iter().zip(&specs).map(|((id, _), spec)| (id.as_str(), &programs[spec.program].node)).collect();
     let macros = Macros::new(scene.macros.each_ref().map(|m| m.value), macro_routes(&nodes, &scene.macros));
     macros.drive(&mut mods);
+    // the nodes that read only some of their inputs, with where their deciding values are
+    let lazy = plan
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(n, (_, code))| {
+            let at = |param| crate::modulate::slot(&programs[specs[n].program].node, param).map(|s| s.0);
+            match code {
+                Code::Builtin("switch") => Some((n, Lazy::Switch { value: at("value")?, count: at("count")?, fade: at("fade")? })),
+                Code::Builtin("blend") => Some((n, Lazy::Blend { opacity: at("opacity")? })),
+                _ => None,
+            }
+        })
+        .collect();
     let shaders = specs.iter().map(|spec| programs[spec.program].node.clone()).collect();
-    Ok(Built { graph: Box::new(Graph { programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing }), plan, signals, shaders, errors, media })
+    Ok(Built { graph: Box::new(Graph { programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lazy }), plan, signals, shaders, errors, media })
 }
 
 #[cfg(test)]

@@ -931,6 +931,8 @@ struct Look<'a> {
     glow: f32,
     /// What it cost the GPU lately, in ms, where the GPU says.
     cost: Option<f32>,
+    /// Nothing it feeds shows now: it sleeps, its picture the last it drew.
+    asleep: bool,
     /// The card with its jacks in its foot: what its fill, its border and its glow go round.
     shell: Rect,
 }
@@ -1229,6 +1231,13 @@ fn viewer_paint(ui: &Ui, painter: &Painter, t: &Theme, viewer: Rect, zoom: f32, 
             egui::Image::new((id, viewer.size())).uv(uv).paint_at(ui, viewer);
         }
         None => wash(painter, viewer, 0.0, widgets::wash(look.hue)),
+    }
+    // asleep: its last picture, dimmed, saying why it doesn't move
+    if look.asleep {
+        painter.rect_filled(viewer, 0, t.bg_base.gamma_multiply(0.6));
+        if zoom >= TEXT_ZOOM {
+            painter.text(viewer.center(), Align2::CENTER_CENTER, tr!("Not shown now"), font(t.text_sm * zoom), t.fg_muted);
+        }
     }
     if look.soon && !look.off && zoom >= TEXT_ZOOM {
         let text = painter.layout_no_wrap(tr!("Coming soon").to_string(), font(t.text_sm * zoom), t.fg_text);
@@ -2243,8 +2252,9 @@ impl App {
                 thumbs.get(i).copied().flatten()
             };
             let cost = self.live.as_ref().and_then(|l| l.cost(&n.id)).filter(|_| !n.off);
+            let asleep = !n.off && self.live.as_ref().is_some_and(|l| l.asleep(&n.id));
             let shell = Rect::from_min_max(r.min, pos2(r.right(), strips[i].bottom()));
-            let look = Look { name: &n.name, kind: kinds[i], selected: selected.contains(n.id.as_str()), off: n.off, hue: hues[i], picture: shows, soon, props, rows: rows[i].is_some(), icon: &n.icon, maps: n.mappings.len(), glow, cost, shell };
+            let look = Look { name: &n.name, kind: kinds[i], selected: selected.contains(n.id.as_str()), off: n.off, hue: hues[i], picture: shows, soon, props, rows: rows[i].is_some(), icon: &n.icon, maps: n.mappings.len(), glow, cost, asleep, shell };
             paint_node(ui, &painter, &t, r, cam.zoom, look);
             if !n.off && n.kind == velo_core::LFO {
                 paint_lfo(&painter, &t, r, cam.zoom, &velo_engine::signal::Lfo::from_params(|p| n.params.get(p).map(|v| v[0])), beats);
@@ -3528,7 +3538,7 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         "velo.mask" => tr!("Shows the picture where the mask is bright."),
         "velo.merge" => tr!("Up to four pictures as one's red, green, blue and alpha."),
         velo_core::GRID => tr!("Up to eight pictures in a grid of cells."),
-        velo_core::SWITCH => tr!("One of eight pictures at a time, picked by a value: cut, crossfaded, dissolved or wiped."),
+        velo_core::SWITCH => tr!("One of up to sixteen pictures at a time, picked by a value: cut, crossfaded, dissolved or wiped. Only the one it shows renders."),
         velo_core::OUTPUT => tr!("Where the scene's picture leaves: the preview, a display."),
         velo_core::AUDIO => tr!("The music as signals: its level, bands, hits and melody."),
         velo_core::CLOCK => tr!("The tempo as signals: a hit on every beat, a ramp through the bar."),

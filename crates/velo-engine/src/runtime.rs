@@ -157,6 +157,8 @@ pub struct Graph {
     pub probes: Vec<crate::gpu::Probe>,
     /// Its Image nodes' files, each frame uploaded as it comes due.
     pub media: Vec<crate::media::Playing>,
+    /// Its nodes that read only some of their inputs (Switches, Blends), by node index.
+    pub lazy: Vec<(usize, crate::gpu::Lazy)>,
 }
 
 /// UI → render thread. Fire and forget. Graphs go by the key the UI installs them with (one
@@ -284,6 +286,9 @@ pub struct Status {
     /// the graph; the graph's key they're for (0: none yet, or no timestamps on this GPU).
     pub costs: Costs,
     pub costed: AtomicU64,
+    /// The edited graph's nodes nothing shows now (a Switch's other inputs…), one bit each for
+    /// the first 64: they keep their last picture.
+    pub asleep: AtomicU64,
     /// Why sharing stopped (no NDI runtime, no DirectX 11), for the UI to say.
     pub share_error: Mutex<Option<String>>,
 }
@@ -922,7 +927,27 @@ impl Thread {
                 // the beats counted so far (a Media List steps on them)
                 globals[19] = clock.beats(t) as f32;
                 let set = timing.as_ref().filter(|x| time_now && *key == edit && x.key == edit).map(|x| &x.set);
-                g.runner.render_timed(&self.queue, &mut encoder, &g.programs, &globals, set);
+                // what nobody sees sleeps: a Switch's other inputs, a Blend's at no opacity, what
+                // doesn't reach the output. The edited graph's sleepers wake a frame in eight, for
+                // their cards, unless it's going out: a heavy one waking must never drop a frame
+                // of the show.
+                let awake = g.output.map(|out| {
+                    let reads = |n: usize, i: usize| g.lazy.iter().find(|l| l.0 == n).is_none_or(|(_, l)| l.reads(|p| g.mods.get(n).map_or(0.0, |m| m.value(p)), i));
+                    let mut awake = g.runner.needed(std::iter::once(out).chain(g.probes.iter().map(|p| p.node)), reads);
+                    if *key == edit {
+                        self.status.asleep.store(awake.iter().take(64).enumerate().filter(|(_, a)| !**a).fold(0, |bits, (n, _)| bits | 1 << n), Relaxed);
+                        if *key != show.live && *key != fading {
+                            for (n, a) in awake.iter_mut().enumerate() {
+                                *a |= (frame + n as u64).is_multiple_of(8);
+                            }
+                        }
+                    }
+                    awake
+                });
+                if *key == edit && awake.is_none() {
+                    self.status.asleep.store(0, Relaxed);
+                }
+                g.runner.render_timed(&self.queue, &mut encoder, &g.programs, &globals, set, awake.as_deref());
                 for p in &g.probes {
                     if let Some(crate::signal::Kind::Probe(s)) = g.signals.get(p.signal).map(|s| s.kind) {
                         p.encode(&self.queue, &mut encoder, &g.runner, s.position, s.size);
@@ -1360,7 +1385,7 @@ mod tests {
         let kaleido = &programs[1].node;
         let kick = velo_core::Mapping { param: "zoom".into(), source: "kick".into(), amount: 0.2, attack_ms: 5.0, release_ms: 150.0, invert: false };
         let mods = vec![Modulator::new(&programs[0].node, &[], Vec::new()), Modulator::new(kaleido, &kaleido.values(|_| None), crate::routes(kaleido, &[kick], &[]))];
-        engine.send(Command::Install { key: 1, graph: Box::new(Graph { programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new() }) });
+        engine.send(Command::Install { key: 1, graph: Box::new(Graph { programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lazy: Vec::new() }) });
         engine.send(Command::Launch { scene: 1, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
         engine.send(Command::Edit(1));
         engine.send(Command::Tempo(140.0));
@@ -1410,7 +1435,7 @@ mod tests {
         let runner = Runner::new(device, std::slice::from_ref(&program), &[NodeSpec { program: 0, inputs: vec![] }], &[], [64, 36], engine.wave_texture()).unwrap();
         runner.set_params(engine.queue(), std::slice::from_ref(&program), 0, &values);
         let mods = vec![Modulator::new(&program.node, &values, Vec::new())];
-        Box::new(Graph { programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new() })
+        Box::new(Graph { programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lazy: Vec::new() })
     }
 
     /// The newest preview's average red and blue (0..255), waiting up to 2 s for one.
