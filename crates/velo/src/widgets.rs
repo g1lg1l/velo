@@ -1170,9 +1170,70 @@ pub fn scene_card(ui: &mut Ui, t: &Theme, index: usize, name: &str, icon: &str, 
     resp
 }
 
+/// The scenes rail while it has none: three ghost scene cards stacked like a hand of cards,
+/// fanning out while `spread` (the pointer is over the rail).
+pub fn scene_deck(ui: &mut Ui, t: &Theme, spread: bool) {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 104.0), Sense::hover());
+    let k = ui.ctx().animate_bool_with_time(resp.id.with("spread"), spread, t.motion * 2.0);
+    // it overshoots a little and settles, both ways
+    let s = if spread { kit::spring(k) } else { 1.0 - kit::spring(1.0 - k) };
+    let scale = (rect.width() / 190.0).min(1.0);
+    let c = rect.center() + vec2(0.0, 16.0 * scale);
+    // the cards turn about a point under the stack
+    let pivot = c + vec2(0.0, 110.0 * scale);
+    // back to front: launch key, name, emoji, hue, how far up the stack, turn at rest and fanned, dim
+    for (key, name, icon, hue, rise, rest, fan, dim) in [(3, "Drop", "🔥", 0.85, 14.0, 0.08, 0.3, 0.5), (2, "Build", "🌊", 0.45, 7.0, -0.06, -0.3, 0.3), (1, "Intro", "🌙", 0.1, 0.0, 0.0, 0.0, 0.0)] {
+        let angle = rest + (fan - rest) * s;
+        let at = pivot + egui::emath::Rot2::from_angle(angle) * (c - vec2(0.0, rise * scale) - pivot);
+        ghost_card(ui.painter(), t, Rect::from_center_size(at, vec2(104.0, 48.0) * scale), angle, key, name, icon, hue, dim * (1.0 - 0.7 * s));
+    }
+}
+
+/// One card of [`scene_deck`]: a scene card's look turned by `angle` about its middle, dimmed
+/// toward the panel by `dim`.
+#[allow(clippy::too_many_arguments)]
+fn ghost_card(painter: &Painter, t: &Theme, rect: Rect, angle: f32, key: usize, name: &str, icon: &str, hue: f32, dim: f32) {
+    let (c, rot) = (rect.center(), egui::emath::Rot2::from_angle(angle));
+    let turn = |p: Pos2| c + rot * (p - c);
+    let radius = CornerRadius::same(t.radius_md);
+    let (a, b) = wash(hue);
+    let mut card = gradient_mesh(rect, radius, |p| {
+        let shade = ((p.y - c.y) / (rect.height() / 2.0)).clamp(0.0, 1.0) * 0.9;
+        Theme::mix(Theme::mix(Theme::mix(a, b, (p.x - rect.left()) / rect.width()), t.bg_base, shade), t.bg_panel, dim)
+    });
+    card.rotate(rot, c);
+    // a shadow under it, so the cards read as a stack
+    let mut shadow = card.clone();
+    shadow.translate(vec2(0.0, 3.0));
+    shadow.vertices.iter_mut().for_each(|v| v.color = egui::Color32::from_black_alpha(70));
+    painter.add(Shape::mesh(shadow));
+    painter.add(Shape::mesh(card));
+    let mut edge = Vec::new();
+    egui::epaint::tessellator::path::rounded_rectangle(&mut edge, egui::epaint::RoundedRect::new(rect, radius));
+    painter.add(Shape::closed_line(edge.into_iter().map(turn).collect(), Stroke::new(1.0, Theme::mix(Theme::mix(t.line, t.fg_text, 0.25), t.bg_panel, dim))));
+    // the launch key at the top, the emoji and the name over the shade
+    let ink = egui::Color32::WHITE.gamma_multiply(1.0 - 0.6 * dim);
+    let text = |at: Pos2, text: &str, font: egui::FontId, color: egui::Color32| {
+        let galley = painter.layout_no_wrap(text.to_string(), font, color);
+        let width = galley.size().x;
+        painter.add(egui::epaint::TextShape::new(turn(at - vec2(0.0, galley.size().y / 2.0)), galley, color).with_angle(angle));
+        width
+    };
+    let inner = rect.shrink(t.gap + 2.0);
+    text(inner.left_top() + vec2(0.0, 5.0), &key.to_string(), Theme::mono(t.text_xs), ink.gamma_multiply(0.6));
+    let y = inner.bottom() - t.body().size * 0.6;
+    let x = inner.left() + text(pos2(inner.left(), y), icon, egui::FontId::proportional(13.0), ink) + 6.0;
+    text(pos2(x, y), name, t.body(), ink);
+}
+
 /// Fills a rounded `rect` with a color that varies over it (`at` each point), as a fan from its
 /// middle: exact for colors that change linearly across each half.
 fn paint_gradient(painter: &Painter, rect: Rect, radius: CornerRadius, at: impl Fn(Pos2) -> egui::Color32) {
+    painter.add(Shape::mesh(gradient_mesh(rect, radius, at)));
+}
+
+/// [`paint_gradient`]'s mesh, to move or turn before painting.
+fn gradient_mesh(rect: Rect, radius: CornerRadius, at: impl Fn(Pos2) -> egui::Color32) -> Mesh {
     let mut outline = Vec::new();
     egui::epaint::tessellator::path::rounded_rectangle(&mut outline, egui::epaint::RoundedRect::new(rect, radius));
     let mut mesh = egui::Mesh::default();
@@ -1184,7 +1245,7 @@ fn paint_gradient(painter: &Painter, rect: Rect, radius: CornerRadius, at: impl 
     for i in 0..n {
         mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
     }
-    painter.add(Shape::mesh(mesh));
+    mesh
 }
 
 /// Emoji to mark a node or a scene with (ones the bundled emoji font draws).

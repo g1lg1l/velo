@@ -850,13 +850,25 @@ impl App {
         });
         let scenes = self.session.project.scenes.clone();
         let active = self.session.active_scene.clone();
-        kit::scroll(ui, &t, "scenes", true, t.bg_panel, |ui| {
-            if scenes.is_empty() {
-                ui.label(RichText::new(tr!("No scenes yet. A scene is one look you can launch: \"Intro\", \"Build\", \"Drop\".")).color(t.fg_muted));
+        // none yet: a hand of ghost cards, what a scene is, and the button to make one
+        if scenes.is_empty() {
+            let area = ui.available_rect_before_wrap().shrink2(egui::vec2(t.pad * 1.5, 0.0));
+            let spread = ui.rect_contains_pointer(ui.max_rect());
+            ui.scope_builder(egui::UiBuilder::new().max_rect(area).layout(egui::Layout::top_down(egui::Align::Center)), |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.add_space((area.height() * 0.4 - 130.0).max(t.pad * 2.0));
+                widgets::scene_deck(ui, &t, spread);
+                ui.add_space(t.pad);
+                ui.label(RichText::new(tr!("No scenes yet")).size(t.text_lg).color(t.fg_text));
+                ui.label(RichText::new(tr!("A scene is one look of your show, launched by its number key.")).font(t.small()).color(t.fg_muted));
+                ui.add_space(t.pad);
                 if kit::button(ui, &t, Some(icons::PLUS), tr!("New scene"), false).clicked() {
                     self.run("scene.add", json!({}));
                 }
-            }
+            });
+            return;
+        }
+        kit::scroll(ui, &t, "scenes", true, t.bg_panel, |ui| {
             ui.spacing_mut().item_spacing.y = t.gap * 1.5;
             for (i, scene) in scenes.iter().enumerate() {
                 self.scene_card(ui, &t, i, scene, active.as_ref() == Some(&scene.id));
