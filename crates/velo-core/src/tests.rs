@@ -884,6 +884,34 @@ fn a_duplicated_scene_is_its_own_copy_right_after_it() {
 }
 
 #[test]
+fn an_imported_scene_joins_with_ids_and_files_of_its_own() {
+    let mut s = session();
+    let noise = add(&mut s, "velo.noise", 0.0);
+    let output = add(&mut s, "velo.output", 200.0);
+    connect(&mut s, &noise, &output, 0).unwrap();
+    let a = add(&mut s, SHADER, 400.0);
+    let b = add(&mut s, SHADER, 600.0);
+    ok(&mut s, "node.rename", json!({ "node": a, "name": "Glow" }));
+    ok(&mut s, "node.rename", json!({ "node": b, "name": "Glow" }));
+    // the same scene, as another project would hand it over: every id clashes
+    let other = s.active().unwrap().clone();
+    ok(&mut s, "scene.import", json!({ "scene": other }));
+    let p = &s.project;
+    assert_eq!(p.scenes.len(), 2);
+    let copy = &p.scenes[1];
+    assert_eq!(s.active_scene.as_deref(), Some(copy.id.as_str()));
+    assert_ne!(copy.name, other.name, "a free name");
+    assert!(copy.nodes.iter().all(|n| other.node(&n.id).is_none()), "every node is new");
+    assert_eq!(copy.edges.len(), 1);
+    assert!(copy.node(&copy.edges[0].from.0).is_some(), "its wire between its own nodes");
+    let files: Vec<_> = p.scenes.iter().flat_map(|c| &c.nodes).filter_map(|n| n.file.clone()).collect();
+    assert_eq!(files.len(), 4);
+    assert!(files.iter().all(|f| files.iter().filter(|g| *g == f).count() == 1), "two nodes named alike never share a file: {files:?}");
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.project.scenes.len(), 1);
+}
+
+#[test]
 fn a_canvas_past_4k_is_brought_down_its_shape_kept() {
     assert_eq!(crate::fit_canvas(3840, 2160), (3840, 2160));
     let (w, h) = crate::fit_canvas(8192, 8192);

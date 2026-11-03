@@ -6,7 +6,7 @@ How a show is saved. The model is `velo-core` (`Project` in `lib.rs`); reading a
 
 | Question | Decision | Why |
 |---|---|---|
-| Container | **A folder bundle** `Show.velo/`; a single `.velo` RON file also opens and saves (older projects, the autosave) | Shaders stay real files for outside editors; folders diff and version well in git |
+| Container | **One file** `Show.velo`, a zip; a folder bundle `Show.velo/` and a plain `.velo` RON file also open and save as they are (older projects, the autosave) | One file to keep, mail or put on a stick; an outside editor still gets real shader files (§2) |
 | Text format | **RON** (`project.ron`) | Maps Rust enums naturally, allows comments and trailing commas, readable by hand |
 | References | **Stable string ids** (`s_qaLQ`, `n_IZKa`), never indices or names | Renaming and reordering never break wires, mappings, macros or bindings |
 | Versioning | `format: N` and a migration for each step | Old shows must open years later |
@@ -15,15 +15,17 @@ How a show is saved. The model is `velo-core` (`Project` in `lib.rs`); reading a
 ## 2. Layout
 
 ```
-Show.velo/
+Show.velo            a zip (a bundle is the same as a folder)
 ├── project.ron      the document: canvas, scenes (nodes, wires, mappings, macros, variations, launch), bindings
-└── shaders/         each Shader node's code: tunnel.wgsl, or name.fs for an ISF shader
+├── shaders/         each Shader node's code: tunnel.wgsl, or name.fs for an ISF shader
+└── media/           exported to share only: the files the nodes show (§5)
 ```
 
-- **Save As** makes a bundle. Saving writes only the shader files that changed, so an outside editor isn't told about the others, then `project.ron` without the code.
+- **Save As** makes one file. A bundle saves as a bundle, writing only the shader files that changed, so an outside editor isn't told about the others, then `project.ron` without the code.
+- "Open in editor" on a one-file project writes the node's file to a folder of the project's own in Velo's data folder (`editing/`) and watches it there; in a bundle it's the bundle's `shaders/`.
 - A shader file name is a plain `.wgsl` or `.fs` name inside `shaders/`; anything else is refused, so a shared project can never read or write outside its folder.
 - In memory each Shader node holds its code (`Node::code`); `Node::file` names its file in the bundle (ARCHITECTURE.md D18). A single-file project keeps the code inline.
-- The shader files are checked twice a second: a save from an outside editor comes in as one undoable `node.set_code`. "Open in editor" in the inspector opens the file in the editor set in Preferences → Code.
+- The shader files (the bundle's, or the editing folder's) are checked twice a second: a save from an outside editor comes in as one undoable `node.set_code`. "Open in editor" in the inspector opens the file in the editor set in Preferences → Code.
 - Open dialogs that can't pick a folder open a bundle through its `project.ron`; the macOS app declares `.velo` a package, so Finder shows a bundle as one file.
 
 Outside the project, in Velo's data folder (the OS app-data folder, or `VELO_DATA` when set): preferences, the autosave and the crash lock, the AI chats and their pictures, the agents' server port and secret.
@@ -82,9 +84,13 @@ Abridged from a real file:
 - **Autosave**: every 60 s, unsaved work is written to `autosave.velo` in Velo's data folder. A `session.lock` there marks a running session; if it's still there at the next start, Velo offers the autosave.
 - A file saved by a newer Velo (a higher `format`) is refused with a message instead of being opened and overwritten.
 
-## 5. Media
+## 5. Media, import and export
 
-Paths are absolute. Not yet: a `media/` folder in the bundle with "Collect media", relative paths, and a zipped `.velo` for sharing.
+Saved, a project keeps its media where they are, by absolute path: saving stays quick with gigabytes of movies.
+
+- **File → Export with Media** (and **Export as a project** on a scene's menu, for that scene alone, without the controller bindings) writes one file with `media/` in it: each file or folder of frames once, stored as it is (pictures and movies are packed already), the nodes' paths made `media/...`. It opens on any computer.
+- Opening such a file writes `media/` out to a folder of its own in Velo's data folder (`media/<name>-<hash>`) and points the nodes there. Only names inside `media/` are read, and nothing is written outside that folder.
+- **File → Import Scenes** adds every scene of another project (one file, bundle or RON) to the open one as one undo step (`scene.import`): new ids, a shader file of its own for each Shader node, a free name.
 
 ## 6. Migrations
 

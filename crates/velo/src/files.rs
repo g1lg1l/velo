@@ -1,10 +1,11 @@
 //! Project files, autosave and crash recovery. From Ravune (bd10814), trimmed for Velo.
-//! A project is a bundle (docs/project-format.md §2): a folder `Show.velo/` with `project.ron`
-//! and each Shader node's code in `shaders/`, so any editor can open it and Velo picks up its
-//! saves. Older projects and the autosave are a single `.velo` RON file with the code inline.
+//! A project is one file (docs/project-format.md §2): `Show.velo`, a zip of `project.ron` and each
+//! Shader node's code in `shaders/`; exported to share, the files its nodes show too, in `media/`.
+//! A bundle, the same as a folder `Show.velo/`, still opens and saves as one, and so does a plain
+//! RON file with the code inline (older projects, the autosave).
 
 use std::collections::HashMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -19,6 +20,8 @@ pub const EXTENSION: &str = "velo";
 /// In a bundle: the document, and the folder of shader files.
 const PROJECT: &str = "project.ron";
 const SHADERS: &str = "shaders";
+/// In a project exported to share: the files its nodes show (pictures, movies, fonts).
+const MEDIA: &str = "media";
 const AUTOSAVE_SECONDS: f64 = 60.0;
 const AUTOSAVE: &str = "autosave.velo";
 /// There while Velo runs: found at start, the last session didn't close cleanly.
@@ -151,9 +154,18 @@ fn store(dir: &Path, node: &Node, code: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// A project: a bundle (its shader files read into the nodes; a missing one is listed, the
-/// node keeps no code) or a single file. Returns it and the shader files that weren't there.
+/// Whether `path` is a one-file project: a zip.
+pub fn is_package(path: &Path) -> bool {
+    let mut magic = [0u8; 4];
+    path.is_file() && std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut magic)).is_ok() && magic == *b"PK\x03\x04"
+}
+
+/// A project: one file, a bundle (their shader files read into the nodes; a missing one is
+/// listed, the node keeps no code) or a RON file. Returns it and the shader files that weren't there.
 pub fn read(path: &Path) -> Result<(Project, Vec<String>), String> {
+    if is_package(path) {
+        return read_package(path, package_dir(MEDIA, path).as_deref());
+    }
     let Some(dir) = bundle(path) else { return Ok((read_ron(path)?, Vec::new())) };
     let mut project = read_ron(&dir.join(PROJECT))?;
     let mut missing = Vec::new();
@@ -168,14 +180,130 @@ pub fn read(path: &Path) -> Result<(Project, Vec<String>), String> {
 }
 
 fn read_ron(path: &Path) -> Result<Project, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let mut project: Project = ron::from_str(&text).map_err(|e| tr!("{} is not a valid project: {}", path.display(), e))?;
+    parse(&std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?, path)
+}
+
+fn parse(text: &str, path: &Path) -> Result<Project, String> {
+    let mut project: Project = ron::from_str(text).map_err(|e| tr!("{} is not a valid project: {}", path.display(), e))?;
     // saving it here would drop whatever the newer version added
     if project.format > FORMAT {
         return Err(tr!("{} was saved by a newer Velo: update to open it", path.display()));
     }
     project.migrate();
     Ok(project)
+}
+
+/// Where a one-file project's own folders go in Velo's data folder (its media, its shaders being
+/// edited outside): named after it and where it is.
+fn package_dir(kind: &str, path: &Path) -> Option<PathBuf> {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).hash(&mut hash);
+    let stem = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    Some(data_dir()?.join(kind).join(format!("{stem}-{:08x}", hash.finish() as u32)))
+}
+
+/// A one-file project: `project.ron`, the shaders' code from `shaders/`, and what `media/` holds
+/// written out under `media` (its own folder in Velo's data folder), its nodes pointed there.
+fn read_package(path: &Path, media: Option<&Path>) -> Result<(Project, Vec<String>), String> {
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path).map_err(|e| err(&e))?).map_err(|e| err(&e))?;
+    let text = |zip: &mut zip::ZipArchive<std::fs::File>, name: &str| {
+        let mut text = String::new();
+        zip.by_name(name).ok()?.read_to_string(&mut text).ok().map(|_| text)
+    };
+    let mut project = parse(&text(&mut zip, PROJECT).ok_or_else(|| tr!("{} is not a valid project: {}", path.display(), PROJECT))?, path)?;
+    let mut missing = Vec::new();
+    for node in project.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+        let Some(file) = node.file.clone() else { continue };
+        match plain(&file).then(|| text(&mut zip, &format!("{SHADERS}/{file}"))).flatten() {
+            Some(code) => node.code = Some(code),
+            None => missing.push(file),
+        }
+    }
+    let Some(media) = media.filter(|_| zip.file_names().any(|n| n.is_ok_and(|n| n.starts_with(MEDIA)))) else { return Ok((project, missing)) };
+    // nothing from outside the zip's own media folder, and nowhere outside ours
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| err(&e))?;
+        let Some(name) = entry.enclosed_name().filter(|n| n.starts_with(MEDIA) && !entry.is_dir()) else { continue };
+        let to = media.join(&name);
+        let written = to.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::File::create(&to)).and_then(|mut out| std::io::copy(&mut entry, &mut out));
+        written.map_err(|e| format!("{}: {e}", to.display()))?;
+    }
+    for node in project.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+        if let Some(own) = node.media.as_deref().map(Path::new).filter(|m| m.starts_with(MEDIA) && m.components().all(|c| matches!(c, std::path::Component::Normal(_)))) {
+            node.media = Some(media.join(own).to_string_lossy().into_owned());
+        }
+    }
+    Ok((project, missing))
+}
+
+/// Writes a one-file project: a zip of `project.ron` and each Shader node's code in `shaders/`.
+/// With `media`, the files its nodes show go in `media/` too, their paths made its own: it opens
+/// on any computer.
+pub fn write_package(path: &Path, project: &Project, media: bool) -> Result<(), String> {
+    use zip::write::SimpleFileOptions;
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    let err = |e: &dyn std::fmt::Display| format!("{}: {e}", path.display());
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(&tmp).map_err(|e| err(&e))?);
+    let text = SimpleFileOptions::default();
+    let mut stored = project.clone();
+    let mut written = std::collections::HashSet::new();
+    for node in stored.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+        let Some(code) = node.code.take() else { continue };
+        let file = file_of(node);
+        if written.insert(file.clone()) {
+            zip.start_file(format!("{SHADERS}/{file}"), text).map_err(|e| err(&e))?;
+            zip.write_all(code.as_bytes()).map_err(|e| err(&e))?;
+        }
+        node.file = Some(file);
+    }
+    if media {
+        // each file (or folder of frames) once, under a name of its own; pictures and movies are
+        // packed already, so they go in as they are
+        let mut names: HashMap<PathBuf, String> = HashMap::new();
+        for node in stored.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+            let Some(from) = node.media.as_deref().map(PathBuf::from).filter(|m| m.exists()) else { continue };
+            if let Some(name) = names.get(&from) {
+                node.media = Some(name.clone());
+                continue;
+            }
+            let file = from.file_name().map_or_else(|| "media".to_string(), |f| f.to_string_lossy().into_owned());
+            let (stem, ext) = file.rsplit_once('.').filter(|_| from.is_file()).map_or((file.as_str(), String::new()), |(s, e)| (s, format!(".{e}")));
+            let taken = |n: &String| names.values().any(|v| v == n);
+            let name = std::iter::once(format!("{MEDIA}/{stem}{ext}")).chain((2..).map(|k| format!("{MEDIA}/{stem}-{k}{ext}"))).find(|n| !taken(n)).expect("a free name");
+            for file in if from.is_dir() { walk(&from) } else { vec![from.clone()] } {
+                // a folder's files under its name, as they sit in it
+                let at = match file.strip_prefix(&from) {
+                    Ok(rest) if !rest.as_os_str().is_empty() => format!("{name}/{}", rest.to_string_lossy().replace('\\', "/")),
+                    _ => name.clone(),
+                };
+                let size = std::fs::metadata(&file).map_or(0, |m| m.len());
+                let options = SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored).large_file(size >= u64::from(u32::MAX));
+                zip.start_file(at, options).map_err(|e| err(&e))?;
+                std::io::copy(&mut std::fs::File::open(&file).map_err(|e| format!("{}: {e}", file.display()))?, &mut zip).map_err(|e| err(&e))?;
+            }
+            names.insert(from, name.clone());
+            node.media = Some(name);
+        }
+    }
+    let ron = ron::ser::to_string_pretty(&stored, ron::ser::PrettyConfig::default().compact_arrays(true)).map_err(|e| e.to_string())?;
+    zip.start_file(PROJECT, text).map_err(|e| err(&e))?;
+    zip.write_all(ron.as_bytes()).map_err(|e| err(&e))?;
+    let file = zip.finish().map_err(|e| err(&e))?;
+    file.sync_all().map_err(|e| err(&e))?;
+    drop(file);
+    std::fs::rename(&tmp, path).map_err(|e| err(&e))
+}
+
+/// Every file under `dir`, in its folders too.
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).flat_map(|p| if p.is_dir() { walk(&p) } else { vec![p] }).collect();
+    files.sort();
+    files
 }
 
 /// Writes a bundle: each Shader node's code to `shaders/` (only files that changed, so an
@@ -340,10 +468,17 @@ impl App {
         }
     }
 
-    /// Saves as a bundle, unless `path` is a single-file project already (it stays one until
+    /// Saves as one file, unless `path` is a bundle or a RON file already (it stays one until
     /// Save As).
     fn save_to(&mut self, path: PathBuf) -> bool {
-        let written = if path.is_file() { write_ron(&path, &self.session.project) } else { write_bundle(&path, &self.session.project) };
+        let project = &self.session.project;
+        let written = if path.is_dir() {
+            write_bundle(&path, project)
+        } else if path.is_file() && !is_package(&path) {
+            write_ron(&path, project)
+        } else {
+            write_package(&path, project, false)
+        };
         match written {
             Ok(()) => {
                 self.saved = self.session.project.clone();
@@ -365,26 +500,80 @@ impl App {
         }
     }
 
-    /// Twice a second, in a bundle: what an outside editor saved comes into its node, each
-    /// save one undoable step.
+    /// Adds the scenes of another project (one file, a bundle or a RON file) to this one, as one
+    /// undoable step.
+    pub fn import_dialog(&mut self) {
+        let Some(path) = self.project_dialog().add_filter(tr!("Velo project"), &[EXTENSION, "ron"]).pick_file() else { return };
+        let path = bundle(&path).unwrap_or(path);
+        let (project, missing) = match read(&path) {
+            Ok(read) => read,
+            Err(e) => return self.say(Tone::Error, e),
+        };
+        let name = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+        for scene in &project.scenes {
+            if let Err(e) = self.session.run_merge("scene.import", json!({ "scene": scene }), "import") {
+                self.session.close_merge();
+                return self.say(Tone::Error, e);
+            }
+        }
+        self.session.close_merge();
+        match (project.scenes.as_slice(), missing.is_empty()) {
+            ([], _) => self.say(Tone::Error, tr!("{} has no scenes", name)),
+            (_, false) => self.say(Tone::Error, tr!("Imported from {}, but these shader files are missing: {}", name, missing.join(", "))),
+            ([one], true) => self.say(Tone::Done, tr!("Imported {} from {}", one.name, name)),
+            (all, true) => self.say(Tone::Done, tr!("Imported {} scenes from {}", all.len(), name)),
+        }
+    }
+
+    /// Writes the project, or one scene of it as a project of its own, to one file with the
+    /// files its nodes show: what to hand to someone else.
+    pub fn export_dialog(&mut self, scene: Option<&str>) {
+        let mut project = self.session.project.clone();
+        if let Some(id) = scene {
+            project.scenes.retain(|s| s.id == id);
+            // what controllers do belongs to the show it came from
+            project.bindings.clear();
+            project.name = project.scenes.first().map_or_else(String::new, |s| s.name.clone());
+        }
+        let name = if scene.is_some() { project.name.clone() } else { self.file_name() };
+        let Some(path) = self.project_dialog().add_filter(tr!("Velo project"), &[EXTENSION]).set_file_name(format!("{name}.{EXTENSION}")).save_file() else { return };
+        let path = path.with_extension(EXTENSION);
+        match write_package(&path, &project, true) {
+            Ok(()) => self.say(Tone::Done, tr!("Exported {}: one file with its media, ready to share", path.file_name().unwrap_or_default().to_string_lossy())),
+            Err(e) => self.say(Tone::Error, e),
+        }
+    }
+
+    /// Twice a second, in a bundle or a one-file project: what an outside editor saved comes
+    /// into its node, each save one undoable step.
     pub fn watch_shaders(&mut self, now: f64) {
         if now - self.watch.last < 0.5 {
             return;
         }
         self.watch.last = now;
-        let Some(dir) = self.file.clone().filter(|f| f.is_dir()) else { return };
+        let Some(dir) = self.shader_dir() else { return };
         for (scene, node, code) in changed_shaders(&dir, &self.session.project, &mut self.watch.seen) {
             self.run("node.set_code", json!({ "scene": scene, "node": node, "code": code }));
         }
     }
 
+    /// Where the Shader nodes' files are for an outside editor: the bundle itself, or for a
+    /// one-file project a folder of its own in Velo's data folder.
+    fn shader_dir(&self) -> Option<PathBuf> {
+        let file = self.file.as_deref()?;
+        if file.is_dir() {
+            return Some(file.to_path_buf());
+        }
+        package_dir("editing", file).filter(|_| is_package(file))
+    }
+
     /// Opens a Shader node's file in the outside editor (Preferences → Code), saving the
-    /// project as a bundle first if it isn't one; Velo then picks up every save made there.
+    /// project first if it never was; Velo then picks up every save made there.
     pub fn edit_outside(&mut self, node: &str) {
-        if !self.file.as_deref().is_some_and(Path::is_dir) && !self.save_as() {
+        if self.shader_dir().is_none() && !self.save_as() {
             return;
         }
-        let Some(dir) = self.file.clone() else { return };
+        let Some(dir) = self.shader_dir() else { return };
         let Some(n) = self.session.project.scenes.iter().flat_map(|s| &s.nodes).find(|n| n.id == node) else { return };
         let opened = std::fs::create_dir_all(dir.join(SHADERS)).map_err(|e| e.to_string()).and_then(|_| store(&dir, n, n.code.as_deref().unwrap_or_default())).and_then(|path| launch(&self.settings.editor, &path).map(|_| path));
         match opened {
@@ -501,6 +690,47 @@ mod tests {
         assert!(read(&path).is_err());
         std::fs::write(&path, format!("(format: {})", FORMAT + 1)).unwrap();
         assert!(read(&path).unwrap_err().contains("newer"), "a newer file isn't opened (saving it would lose data)");
+    }
+
+    #[test]
+    fn one_file_projects_carry_their_shaders_and_when_exported_their_media() {
+        let dir = std::env::temp_dir().join(format!("velo-package-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("frames")).unwrap();
+        // a picture, and a folder of frames, somewhere on this computer
+        let (picture, frames) = (dir.join("logo.png"), dir.join("frames"));
+        std::fs::write(&picture, b"png bytes").unwrap();
+        std::fs::write(frames.join("0001.png"), b"frame one").unwrap();
+        let mut session = Session::default();
+        session.run("scene.add", json!({})).unwrap();
+        session.run("node.add", json!({ "kind": velo_core::SHADER, "name": "Tunnel", "code": velo_engine::TEMPLATE })).unwrap();
+        for media in [&picture, &picture, &frames] {
+            session.run("node.add", json!({ "kind": velo_core::IMAGE })).unwrap();
+            session.project.scenes[0].nodes.last_mut().unwrap().media = Some(media.to_string_lossy().into_owned());
+        }
+        let project = session.project.clone();
+        // saved: one file, the code in it, the media where they are
+        let path = dir.join("Show.velo");
+        write_package(&path, &project, false).unwrap();
+        assert!(is_package(&path) && !dir.join("Show.velo.tmp").exists());
+        assert_eq!(read_package(&path, None).unwrap(), (project.clone(), Vec::new()));
+        // exported: the media go in too, each once, and come out somewhere else
+        let shared = dir.join("Shared.velo");
+        write_package(&shared, &project, true).unwrap();
+        std::fs::remove_file(&picture).unwrap();
+        let (opened, missing) = read_package(&shared, Some(&dir.join("out"))).unwrap();
+        assert!(missing.is_empty());
+        let shown: Vec<PathBuf> = opened.scenes[0].nodes.iter().filter_map(|n| n.media.as_deref().map(PathBuf::from)).collect();
+        assert_eq!(shown.len(), 3);
+        assert!(shown.iter().all(|m| m.starts_with(dir.join("out"))), "{shown:?}");
+        assert_eq!(shown[0], shown[1], "one file for the two nodes that show it");
+        assert_eq!(std::fs::read(&shown[0]).unwrap(), b"png bytes");
+        assert_eq!(std::fs::read(shown[2].join("0001.png")).unwrap(), b"frame one", "a folder of frames whole");
+        assert_eq!(opened.scenes[0].nodes[0].code, project.scenes[0].nodes[0].code);
+        // and a RON file is no zip
+        write_ron(&dir.join("Old.velo"), &project).unwrap();
+        assert!(!is_package(&dir.join("Old.velo")));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

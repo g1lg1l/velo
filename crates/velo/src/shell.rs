@@ -827,6 +827,9 @@ impl App {
         });
         self.menu_command(ui, icons::FLOPPY_DISK, tr!("Save"), "app.save");
         self.menu_command(ui, icons::FLOPPY_DISK, tr!("Save As…"), "app.save_as");
+        ui.separator();
+        self.menu_command(ui, icons::FOLDER_OPEN, tr!("Import Scenes…"), "app.import");
+        self.menu_command(ui, icons::FLOPPY_DISK, tr!("Export with Media…"), "app.export");
         self.menu_command(ui, icons::SPARKLE, tr!("Open the demo"), "app.demo");
         ui.separator();
         self.menu_command(ui, icons::KEYBOARD, tr!("Keyboard shortcuts"), "app.shortcuts");

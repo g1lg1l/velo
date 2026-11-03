@@ -645,6 +645,13 @@ impl App {
             "app.save_as" => {
                 self.save_as();
             }
+            "app.import" => self.import_dialog(),
+            "app.export" => self.export_dialog(None),
+            "app.export_scene" => {
+                if let Some(id) = self.session.active_scene.clone() {
+                    self.export_dialog(Some(&id));
+                }
+            }
             "app.preferences" => self.show_settings = !self.show_settings,
             "app.demo" => self.request(files::Pending::Demo),
             "canvas.import_isf" => self.import_isf_dialog(),
@@ -903,6 +910,9 @@ impl App {
             }
             if ui.button(format!("{}  {}", icons::STACK, tr!("Duplicate"))).clicked() {
                 self.run("scene.duplicate", json!({ "scene": scene.id }));
+            }
+            if ui.button(format!("{}  {}", icons::FLOPPY_DISK, tr!("Export as a project…"))).on_hover_text(tr!("One file with this scene and its media, to share or to start a show from")).clicked() {
+                self.export_dialog(Some(&scene.id));
             }
             ui.menu_button(format!("{}  {}", if scene.icon.is_empty() { "✨" } else { scene.icon.as_str() }, tr!("Icon")), |ui| {
                 if let Some(icon) = widgets::emoji_grid(ui, &scene.icon) {

@@ -310,42 +310,25 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let SceneRef { scene, name, .. } = props(v)?;
             let i = s.scene_index(scene.as_deref())?;
-            let p = &s.project;
-            let mut copy = p.scenes[i].clone();
-            copy.id = new_id("s_", |id| p.scene(id).is_some());
-            let base = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| copy.name.clone());
-            let taken = |name: &str| p.scenes.iter().any(|c| c.name == name);
-            copy.name = if taken(&base) { (2..).map(|k| format!("{base} {k}")).find(|n| !taken(n)).unwrap_or(base) } else { base };
-            // new node ids, and everything that named the old ones following them
-            let mut ids: BTreeMap<String, String> = BTreeMap::new();
-            for n in &mut copy.nodes {
-                let new = new_id("n_", |id| p.scenes.iter().any(|c| c.node(id).is_some()) || ids.values().any(|v| v == id));
-                ids.insert(std::mem::replace(&mut n.id, new.clone()), new);
-                // a Shader node's code gets a file of its own
-                if let Some(file) = &n.file {
-                    let ext = file.rsplit_once('.').map_or("wgsl", |(_, e)| e);
-                    n.file = Some(shader_file(p, &n.name, ext));
-                }
-            }
-            let renamed = |id: &mut String| {
-                if let Some(new) = ids.get(id.as_str()) {
-                    *id = new.clone();
-                }
-            };
-            for e in &mut copy.edges {
-                renamed(&mut e.from.0);
-                renamed(&mut e.to.0);
-            }
-            for m in copy.nodes.iter_mut().flat_map(|n| &mut n.mappings) {
-                if let Some(new) = signal_output(&m.source).and_then(|(id, port)| Some(format!("{}/{port}", ids.get(id)?))) {
-                    m.source = new;
-                }
-            }
-            for t in copy.macros.iter_mut().flat_map(|m| &mut m.targets) {
-                renamed(&mut t.node);
-            }
+            let copy = adopt(&s.project, s.project.scenes[i].clone(), name);
             let id = copy.id.clone();
             s.project.scenes.insert(i + 1, copy);
+            s.active_scene = Some(id);
+            Ok(())
+        },
+    },
+    Operator {
+        id: "scene.import",
+        label: "Import Scene",
+        description: "Add a scene from another project, given whole as `scene` (as a project file holds it), after the others, and select it: it gets new ids, its own shader files and a free name.",
+        example: r#"{"scene": {"id": "s_ab12", "name": "Drop", "nodes": [], "edges": []}}"#,
+        undo: true,
+        poll: always,
+        exec: |s, v| {
+            let scene: Scene = serde_json::from_value(v.get("scene").cloned().ok_or("a scene is required")?).map_err(|e| format!("bad scene: {e}"))?;
+            let copy = adopt(&s.project, scene, None);
+            let id = copy.id.clone();
+            s.project.scenes.push(copy);
             s.active_scene = Some(id);
             Ok(())
         },
@@ -1205,6 +1188,48 @@ fn short_icon(icon: &str) -> String {
 
 /// A fresh id, `prefix` and four random letters or digits, unlike any `taken` one
 /// (xorshift64*, no extra crates).
+/// `scene` made ready to join `p`: a new id and a free name (`name`, else its own), new node
+/// ids with everything that named the old ones following them, and a shader file of its own for
+/// each Shader node.
+fn adopt(p: &Project, mut scene: Scene, name: Option<String>) -> Scene {
+    scene.id = new_id("s_", |id| p.scene(id).is_some());
+    let base = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| scene.name.clone());
+    let taken = |name: &str| p.scenes.iter().any(|c| c.name == name);
+    scene.name = if taken(&base) { (2..).map(|k| format!("{base} {k}")).find(|n| !taken(n)).unwrap_or(base) } else { base };
+    // the files are picked one by one against the project with the ones picked so far in it:
+    // two nodes of the same name never share one
+    let mut files = p.clone();
+    files.scenes.push(Scene::default());
+    let mut ids: BTreeMap<String, String> = BTreeMap::new();
+    for n in &mut scene.nodes {
+        let new = new_id("n_", |id| p.scenes.iter().any(|c| c.node(id).is_some()) || ids.values().any(|v| v == id));
+        ids.insert(std::mem::replace(&mut n.id, new.clone()), new);
+        if let Some(file) = &n.file {
+            let ext = file.rsplit_once('.').map_or("wgsl", |(_, e)| e);
+            n.file = Some(shader_file(&files, &n.name, ext));
+            files.scenes.last_mut().expect("pushed").nodes.push(n.clone());
+        }
+    }
+    let renamed = |id: &mut String| {
+        if let Some(new) = ids.get(id.as_str()) {
+            *id = new.clone();
+        }
+    };
+    for e in &mut scene.edges {
+        renamed(&mut e.from.0);
+        renamed(&mut e.to.0);
+    }
+    for m in scene.nodes.iter_mut().flat_map(|n| &mut n.mappings) {
+        if let Some(new) = signal_output(&m.source).and_then(|(id, port)| Some(format!("{}/{port}", ids.get(id)?))) {
+            m.source = new;
+        }
+    }
+    for t in scene.macros.iter_mut().flat_map(|m| &mut m.targets) {
+        renamed(&mut t.node);
+    }
+    scene
+}
+
 fn new_id(prefix: &str, taken: impl Fn(&str) -> bool) -> String {
     const CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
     let mut x = random_seed() | 1;

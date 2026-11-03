@@ -21,7 +21,7 @@ const fn cmd(group: &'static str, id: &'static str, label: &'static str) -> Comm
 }
 
 /// In the shortcut sheet's order: the canvas first, it's where you work.
-pub const COMMANDS: [Command; 49] = [
+pub const COMMANDS: [Command; 52] = [
     cmd("Nodes", "canvas.add", "Add a node"),
     cmd("Nodes", "canvas.home", "Zoom to fit"),
     cmd("Nodes", "canvas.zoom_selection", "Zoom to selection"),
@@ -61,6 +61,9 @@ pub const COMMANDS: [Command; 49] = [
     cmd("Project", "app.open", "Open"),
     cmd("Project", "app.save", "Save"),
     cmd("Project", "app.save_as", "Save as"),
+    cmd("Project", "app.import", "Import the scenes of another project"),
+    cmd("Project", "app.export", "Export the project with its media, to share"),
+    cmd("Scenes", "app.export_scene", "Export the scene as a project of its own"),
     cmd("Project", "app.demo", "Open the demo"),
     cmd("Edit", "edit.undo", "Undo"),
     cmd("Edit", "edit.redo", "Redo"),
@@ -108,6 +111,9 @@ impl Preset {
             (Preset::Velo, "app.open") => vec![k(C, Key::O)],
             (Preset::Velo, "app.save") => vec![k(C, Key::S)],
             (Preset::Velo, "app.save_as") => vec![k(CS, Key::S)],
+            (Preset::Velo, "app.import") => vec![k(CA, Key::I)],
+            (Preset::Velo, "app.export") => vec![k(C, Key::E)],
+            (Preset::Velo, "app.export_scene") => vec![k(CS, Key::E)],
             (Preset::Velo, "app.demo") => vec![k(CS, Key::O)],
             (Preset::Velo, "app.hud") => vec![k(CS, Key::H)],
             (Preset::Velo, "app.chat") => vec![k(C, Key::I)],
