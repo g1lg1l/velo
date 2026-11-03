@@ -43,11 +43,32 @@ fn over(base: vec3f, top: vec4f) -> vec3f {
     return mix(base, c, opacity * top.a * keyed);
 }
 
+// input n (1 the second), one texture read: only the `inputs` it shows are read (the engine
+// counts every wired one in)
+fn top(n: i32, uv: vec2f) -> vec4f {
+    switch n {
+        case 1: { return textureSampleLevel(i2, smp, uv, 0.0); }
+        case 2: { return textureSampleLevel(i3, smp, uv, 0.0); }
+        case 3: { return textureSampleLevel(i4, smp, uv, 0.0); }
+        case 4: { return textureSampleLevel(i5, smp, uv, 0.0); }
+        case 5: { return textureSampleLevel(i6, smp, uv, 0.0); }
+        case 6: { return textureSampleLevel(i7, smp, uv, 0.0); }
+        case 7: { return textureSampleLevel(i8, smp, uv, 0.0); }
+        case 8: { return textureSampleLevel(i9, smp, uv, 0.0); }
+        case 9: { return textureSampleLevel(i10, smp, uv, 0.0); }
+        case 10: { return textureSampleLevel(i11, smp, uv, 0.0); }
+        case 11: { return textureSampleLevel(i12, smp, uv, 0.0); }
+        case 12: { return textureSampleLevel(i13, smp, uv, 0.0); }
+        case 13: { return textureSampleLevel(i14, smp, uv, 0.0); }
+        case 14: { return textureSampleLevel(i15, smp, uv, 0.0); }
+        default: { return textureSampleLevel(i16, smp, uv, 0.0); }
+    }
+}
+
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
-    let tops = array<vec4f, 15>(textureSample(i2, smp, uv), textureSample(i3, smp, uv), textureSample(i4, smp, uv), textureSample(i5, smp, uv), textureSample(i6, smp, uv), textureSample(i7, smp, uv), textureSample(i8, smp, uv), textureSample(i9, smp, uv), textureSample(i10, smp, uv), textureSample(i11, smp, uv), textureSample(i12, smp, uv), textureSample(i13, smp, uv), textureSample(i14, smp, uv), textureSample(i15, smp, uv), textureSample(i16, smp, uv));
-    var c = textureSample(i1, smp, uv).rgb;
-    for (var k = 0; k < 15; k++) {
-        c = over(c, tops[k]);
+    var c = textureSampleLevel(i1, smp, uv, 0.0).rgb;
+    for (var n = 1; n < clamp(inputs, 2, 16); n++) {
+        c = over(c, top(n, uv));
     }
     return vec4f(c, 1.0);
 }

@@ -45,7 +45,7 @@
 fn entries() -> i32 {
     var n = 0;
     for (var i = 0; i < nwords; i++) {
-        if i == 0 || quad(words + i * 8 + 4).w > 0.5 {
+        if i == 0 || num(words + i * 8 + 7) > 0.5 {
             n += 1;
         }
     }
@@ -57,7 +57,7 @@ fn entry(k: i32, all: vec2i) -> vec2i {
     var n = -1;
     var first = 0;
     for (var i = 0; i < all.y; i++) {
-        if i == 0 || quad(all.x + i * 8 + 4).w > 0.5 {
+        if i == 0 || num(all.x + i * 8 + 7) > 0.5 {
             n += 1;
             if n == k {
                 first = i;

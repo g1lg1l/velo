@@ -1308,6 +1308,99 @@ pub fn model_badge(ui: &mut Ui, t: &Theme) -> Response {
     response.on_hover_text(model_tip())
 }
 
+/// One of Velo's loads, as the status bar shows it.
+pub struct Load {
+    pub name: &'static str,
+    /// The value now, as `format` writes it; `room` is as wide as it gets, so the chips beside
+    /// it don't move as it counts.
+    pub value: f32,
+    pub format: fn(f32) -> String,
+    pub room: &'static str,
+    /// How near its limit it runs (0..1): amber past `warn`, red past `high`.
+    pub strain: f32,
+    pub warn: f32,
+    pub high: f32,
+    /// Its last half minute (0..1, oldest first) for the sparkline.
+    pub trail: Vec<f32>,
+}
+
+/// A load as a chip, its right edge at `right`: a dot in its level's color (breathing once it's
+/// red), its name, the last half minute as a sparkline and the value now, which counts to each
+/// new reading instead of jumping. The chip warms to amber or red with it.
+pub fn load_chip(ui: &mut Ui, t: &Theme, right: f32, load: &Load) -> Response {
+    let ctx = ui.ctx().clone();
+    let id = egui::Id::unique(("load", load.name));
+    let value = ctx.animate_value_with_time(id.with("value"), load.value, 0.6);
+    let last = ctx.animate_value_with_time(id.with("last"), load.trail.last().copied().unwrap_or(0.0), 0.6);
+    let level = if load.strain >= load.high {
+        2.0
+    } else if load.strain >= load.warn {
+        1.0
+    } else {
+        0.0
+    };
+    let k = ctx.animate_value_with_time(id.with("level"), level, 0.3);
+    let color = if k <= 1.0 { Theme::mix(Theme::TONE_DONE, t.warn, k) } else { Theme::mix(t.warn, t.error, k - 1.0) };
+    let painter = ui.painter();
+    let name = painter.layout_no_wrap(load.name.into(), Theme::mono(t.text_xs), t.fg_muted);
+    let font = Theme::mono(t.text_sm);
+    let text = painter.layout_no_wrap((load.format)(value), font.clone(), Theme::mix(t.fg_text, color, k.min(1.0)));
+    let room = painter.layout_no_wrap(load.room.into(), font, t.fg_text).size().x.max(text.size().x);
+    let (pad, gap, spark) = (7.0, 6.0, vec2(34.0, 12.0));
+    let width = pad + 6.0 + gap + name.size().x + gap + spark.x + gap + room + pad;
+    let y = ui.max_rect().center().y;
+    let rect = Rect::from_min_max(pos2(right - width, y - 9.0), pos2(right, y + 9.0));
+    let resp = ui.interact(rect, id, Sense::hover());
+    let h = kit::hover(ui, t, &resp);
+    let painter = ui.painter();
+    let fill = Theme::mix(Theme::mix(t.bg_field, t.fg_text, 0.06 * h), color, 0.08 * k);
+    painter.rect(rect, CornerRadius::same(t.radius_sm), fill, Stroke::new(1.0, Theme::mix(t.line, color, 0.45 * k.min(1.0))), StrokeKind::Inside);
+    // the dot, a halo breathing round it while it's red
+    let dot = pos2(rect.left() + pad + 3.0, y);
+    if level >= 2.0 && t.motion > 0.0 {
+        let breath = 0.5 + 0.5 * (ui.input(|i| i.time) * 5.0).sin() as f32;
+        painter.circle_filled(dot, 3.0 + 3.5 * breath, color.gamma_multiply(0.35 * (1.0 - breath)));
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
+    }
+    painter.circle_filled(dot, 3.0, color);
+    let x = dot.x + 3.0 + gap + name.size().x + gap;
+    painter.galley(pos2(dot.x + 3.0 + gap, y - name.size().y / 2.0), name, t.fg_muted);
+    sparkline(painter, t, Rect::from_min_size(pos2(x, y - spark.y / 2.0), spark), &load.trail, last, Theme::mix(t.fg_muted, color, 0.35 + 0.65 * k.min(1.0)));
+    // the value, right-aligned in its room
+    painter.galley(pos2(rect.right() - pad - text.size().x, y - text.size().y / 2.0), text, t.fg_text);
+    resp
+}
+
+/// A trail of readings (0..1, oldest first, the newest at `last` as it eases there) as a line
+/// with a fading area under it, from the right edge.
+fn sparkline(painter: &Painter, t: &Theme, rect: Rect, trail: &[f32], last: f32, color: egui::Color32) {
+    painter.rect_filled(rect.expand2(vec2(2.0, 1.0)), CornerRadius::same(2), t.bg_base.gamma_multiply(0.6));
+    let step = rect.width() / (crate::usage::TRAIL - 1) as f32;
+    let n = trail.len();
+    let points: Vec<Pos2> = trail
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let v = if i + 1 == n { last } else { *v };
+            pos2(rect.right() - (n - 1 - i) as f32 * step, rect.bottom() - v.clamp(0.0, 1.0) * rect.height())
+        })
+        .collect();
+    let Some(&end) = points.last() else { return };
+    let mut mesh = Mesh::default();
+    for (i, p) in points.iter().enumerate() {
+        mesh.colored_vertex(*p, color.gamma_multiply(0.3));
+        mesh.colored_vertex(pos2(p.x, rect.bottom()), color.gamma_multiply(0.02));
+        if i > 0 {
+            let k = 2 * i as u32;
+            mesh.add_triangle(k - 2, k - 1, k);
+            mesh.add_triangle(k - 1, k + 1, k);
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+    painter.add(Shape::line(points, Stroke::new(1.25, color)));
+    painter.circle_filled(end, 1.75, color);
+}
+
 /// A detector's signal over the last `span` seconds (`now` at the right edge, 0 to `top` up),
 /// its threshold as a line, its hits as dots along the top: what to tune it by while the music
 /// plays. Repaints while shown.

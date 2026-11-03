@@ -623,6 +623,15 @@ pub fn inputs_shown(scene: &Scene, n: &Node) -> usize {
     asked.max(wired).clamp(2, k.inputs.len())
 }
 
+/// A parameter as the engine runs it: as set, but a Blend's `inputs` counts every wired one
+/// too (its shader reads only that many).
+pub fn engine_param(scene: &Scene, n: &Node, id: &str) -> Option<[f32; 4]> {
+    if n.kind == BLEND && id == "inputs" {
+        return Some([inputs_shown(scene, n) as f32, 0.0, 0.0, 0.0]);
+    }
+    n.params.get(id).copied()
+}
+
 /// Reads its input as it was last frame: the one node that may close a loop.
 pub const FEEDBACK: &str = "velo.feedback";
 /// A picture from a file ([`Node::media`]): a still, an animated GIF, or a folder of frames.

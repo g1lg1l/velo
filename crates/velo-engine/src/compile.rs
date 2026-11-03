@@ -343,7 +343,7 @@ fn build(
     let mut mods = Vec::with_capacity(plan.nodes.len());
     for (n, (id, _)) in plan.nodes.iter().enumerate() {
         let (node, shader) = (scene.node(id), &programs[specs[n].program].node);
-        let values = shader.values(|p| node.and_then(|node| node.params.get(p).copied()));
+        let values = shader.values(|p| node.and_then(|node| velo_core::engine_param(scene, node, p)));
         runner.set_params(queue, &programs, n, &values);
         mods.push(Modulator::new(shader, &values, node.map_or_else(Vec::new, |node| routes(shader, &node.mappings, &signals))));
     }

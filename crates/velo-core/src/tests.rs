@@ -234,6 +234,8 @@ fn a_blend_shows_the_inputs_it_asks_for_and_every_wired_one() {
     assert_eq!(shown(&s), 5);
     connect(&mut s, &noise, &blend, 9).unwrap();
     assert_eq!(shown(&s), 10, "a wire into the tenth keeps it shown");
+    let scene = s.active().unwrap();
+    assert_eq!(engine_param(scene, scene.node(&blend).unwrap(), "inputs"), Some([10.0, 0.0, 0.0, 0.0]), "and the engine reads it");
     let blur = add(&mut s, "velo.blur", 400.0);
     assert_eq!(inputs_shown(s.active().unwrap(), s.active().unwrap().node(&blur).unwrap()), 1, "any other kind: all it has");
 }

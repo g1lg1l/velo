@@ -85,6 +85,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 
 **Holds up for a whole set**
 - A scene too heavy for the GPU slows down; it never piles up memory.
+- The status bar shows what Velo takes, each with its last half minute: the engine's frames a second, CPU, memory, and on Windows the GPU and video memory. A chip turns amber when it runs high and red near the top.
 - A driver reset, an unplugged projector or a lost audio input: Velo recovers and tells you.
 - Autosave every minute, and crash recovery on the next start.
 

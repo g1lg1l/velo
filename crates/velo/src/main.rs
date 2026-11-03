@@ -3085,11 +3085,15 @@ impl eframe::App for App {
         if std::env::var_os("VELO_CAPTURE_TO").is_some() && now > 4.8 && !self.cpu.reported {
             self.cpu.reported = true;
             let ((avg, worst), (layout, layout_worst)) = (self.cpu.stats(), self.cpu.layout());
-            eprintln!("velo: UI frame {:.2} ms average, {:.2} ms worst; our ui() {:.2} ms average, {:.2} ms worst (last 2 s)", avg * 1000.0, worst * 1000.0, layout * 1000.0, layout_worst * 1000.0);
+            eprintln!("velo: UI frame {:.2} ms average, {:.2} ms worst; our ui() {:.2} ms average, {:.2} ms worst; {} frames (last 2 s)", avg * 1000.0, worst * 1000.0, layout * 1000.0, layout_worst * 1000.0, self.cpu.samples.len());
             if let Some(live) = &self.live {
                 let s = &live.engine.status;
                 let output = self.live_output().map_or("none".to_string(), |o| format!("{o:?}"));
                 eprintln!("velo: engine {:.1} fps, last frame {} µs on the render thread, {} frames, {} late; output {output}", live.fps, s.frame_us.load(Relaxed), s.frames.load(Relaxed), s.late.load(Relaxed));
+                if let Some(scene) = self.session.active() {
+                    let costs: Vec<String> = scene.nodes.iter().filter_map(|n| live.cost(&n.id).map(|c| format!("{} {c:.2}", n.kind))).collect();
+                    eprintln!("velo: GPU ms per node of {}: {}", scene.name, costs.join(", "));
+                }
             }
         }
         // VELO_DEMO_TOAST=done|error|action: a toast fully out when the 5-s capture is taken

@@ -353,7 +353,8 @@ impl App {
         if live {
             let fill = level.clamp(0.0, 1.0).sqrt();
             ui.painter().circle_filled(center, 1.0 + 4.0 * fill, Theme::mix(t.fg_muted, t.accent, 0.4 + 0.6 * fill));
-            ui.ctx().request_repaint();
+            // at the preview's rate, not the display's (a 144 Hz screen drew it 144 times a second)
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
         self.hint(&r, tip);
         let mut picked = (None, false);
@@ -834,38 +835,71 @@ impl App {
 
     // ---- status bar and toasts ----------------------------------------------
 
+    /// Velo's loads for the status bar, as far as this system tells them, each with what its
+    /// hover says: the engine's rate, then the CPU, memory, GPU and video memory it takes.
+    fn loads(&self) -> Vec<(widgets::Load, String)> {
+        let u = &self.usage;
+        let size = |mb: f32| if mb >= 1000.0 { format!("{:.1} GB", mb / 1024.0) } else { format!("{mb:.0} MB") };
+        let mb = |bytes: u64| (bytes >> 20) as f32;
+        let trail = |t: &std::collections::VecDeque<f32>| t.iter().copied().collect::<Vec<f32>>();
+        // memory against its own highest with room above: a share of all of it would lie flat
+        let relative = |t: &std::collections::VecDeque<f32>| {
+            let top = t.iter().copied().fold(0.0, f32::max) * 1.25;
+            t.iter().map(|v| if top > 0.0 { v / top } else { 0.0 }).collect::<Vec<f32>>()
+        };
+        let mut loads = Vec::new();
+        if let (Some(live), Some(fps)) = (&self.live, u.fps) {
+            let target = 60.0;
+            let frame = live.engine.status.frame_us.load(Relaxed) as f32 / 1000.0;
+            let tip = tr!("The engine: {} frames a second, {} ms a frame on its thread; the interface {} ms a frame", format!("{fps:.0}"), format!("{frame:.1}"), format!("{:.1}", self.cpu.stats().0 * 1000.0));
+            let strain = 1.0 - fps / target;
+            loads.push((widgets::Load { name: "FPS", value: fps, format: |v| format!("{v:.0}"), room: "120", strain, warn: 0.08, high: 0.25, trail: u.trails.fps.iter().map(|f| f / target).collect() }, tip));
+        }
+        if let Some(cpu) = u.cpu {
+            let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+            loads.push((
+                widgets::Load { name: "CPU", value: cpu, format: |v| format!("{v:.0}%"), room: "100%", strain: cpu / 100.0, warn: 0.6, high: 0.85, trail: trail(&u.trails.cpu) },
+                tr!("Velo's share of the whole CPU ({} threads)", cores),
+            ));
+        }
+        if let Some(memory) = u.memory {
+            let strain = u.trails.memory.back().copied().unwrap_or(0.0);
+            let tip = match u.memory_total {
+                Some(total) => tr!("Velo's memory: {} of the {} this computer has", size(mb(memory)), size(mb(total))),
+                None => tr!("Velo's memory: {}", size(mb(memory))),
+            };
+            loads.push((widgets::Load { name: "RAM", value: mb(memory), format: size, room: "999 MB", strain, warn: 0.5, high: 0.75, trail: relative(&u.trails.memory) }, tip));
+        }
+        if let Some(gpu) = u.gpu {
+            let mut tip = tr!("How busy Velo keeps the GPU, as Task Manager counts it").to_string();
+            if gpu >= 70.0 {
+                tip = format!("{tip}. {}", tr!("Each node's card says what it costs a frame, in ms: the heavy ones show amber or red"));
+            }
+            loads.push((widgets::Load { name: "GPU", value: gpu, format: |v| format!("{v:.0}%"), room: "100%", strain: gpu / 100.0, warn: 0.7, high: 0.9, trail: trail(&u.trails.gpu) }, tip));
+        }
+        if let Some(vram) = u.vram {
+            let strain = u.trails.vram.back().copied().unwrap_or(0.0);
+            let tip = match u.vram_budget.filter(|b| *b > 0) {
+                Some(budget) => tr!("Video memory Velo holds: {} of the {} the system lets it use", size(mb(vram)), size(mb(budget))),
+                None => tr!("Video memory Velo holds: {}", size(mb(vram))),
+            };
+            loads.push((widgets::Load { name: "VRAM", value: mb(vram), format: size, room: "999 MB", strain, warn: 0.7, high: 0.9, trail: relative(&u.trails.vram) }, tip));
+        }
+        loads
+    }
+
     pub fn status_bar(&mut self, ui: &mut Ui) {
         let t = self.theme.clone();
         kit::strip(ui, &t, 24.0, t.bg_panel, |ui| {
-            // the app's load on the right: the engine's rate and frame time, CPU and memory, and
-            // with the HUD on what the UI costs per frame (the budget is 2 ms)
-            self.usage.sample();
-            let mut load = Vec::new();
-            if let Some(live) = &self.live {
-                load.push(format!("{:.0} fps {:.1} ms", live.fps, live.engine.status.frame_us.load(Relaxed) as f32 / 1000.0));
+            // the app's load on the right, a chip each, close together
+            self.usage.sample(self.live.as_ref().map(|l| l.fps));
+            let mut right = ui.max_rect().right();
+            for (load, tip) in self.loads().iter().rev() {
+                let r = widgets::load_chip(ui, &t, right, load);
+                self.hint(&r, tip);
+                right = r.rect.left() - 4.0;
             }
-            if let Some(cpu) = self.usage.cpu {
-                load.push(format!("CPU {cpu:.0}%"));
-            }
-            if let Some(memory) = self.usage.memory {
-                load.push(format!("RAM {} MB", memory >> 20));
-            }
-            if let Some(gpu) = self.usage.gpu {
-                load.push(format!("GPU {gpu:.0}%"));
-            }
-            if let Some(vram) = self.usage.vram {
-                load.push(format!("VRAM {} MB", vram >> 20));
-            }
-            if self.settings.hud {
-                load.push(format!("UI {:.1} ms", self.cpu.stats().0 * 1000.0));
-            }
-            if !load.is_empty() {
-                let right = ui.max_rect().right_center();
-                let load = ui.painter().text(right, Align2::RIGHT_CENTER, load.join("  ·  "), Theme::mono(t.text_sm), t.fg_muted);
-                let r = ui.interact(load, Id::unique("status-load"), Sense::hover());
-                self.hint(&r, tr!("Velo's load: engine frames per second and frame time, its share of the whole CPU, its memory, how busy it keeps the GPU and the video memory it holds"));
-                ui.set_max_width(load.left() - ui.max_rect().left() - t.pad);
-            }
+            ui.set_max_width(right - ui.max_rect().left() - t.pad);
             // what's under the mouse, else the two keys that find everything
             if self.info.is_empty() {
                 let map = &self.settings.keymap;

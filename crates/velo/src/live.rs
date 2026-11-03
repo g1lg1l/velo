@@ -343,7 +343,7 @@ impl Live {
             }
             for (n, (id, shader)) in slot.installed.iter().enumerate() {
                 let Some(node) = scene.node(id) else { continue };
-                let values = shader.values(|p| node.params.get(p).copied());
+                let values = shader.values(|p| velo_core::engine_param(scene, node, p));
                 if slot.sent[n] != values {
                     self.engine.send(Command::Params { key: slot.key, node: n, values: values.clone() });
                     slot.sent[n] = values;
@@ -1190,5 +1190,74 @@ mod tests {
         let mut other = scene.clone();
         other.nodes[0].kind = "velo.gradient".into();
         assert_ne!(structure(Some(&other), [1920, 1080]), base, "a node's kind does");
+    }
+
+    /// Not a check: `VELO_PROFILE=<project> cargo test -p velo scene_costs -- --ignored --nocapture`
+    /// builds each scene of a project at its canvas size and prints what a frame of it costs the
+    /// GPU, its costliest nodes, and what the nodes nothing goes out through cost.
+    #[test]
+    #[ignore]
+    fn scene_costs() {
+        use eframe::wgpu;
+        let path = std::env::var_os("VELO_PROFILE").expect("VELO_PROFILE=<project>");
+        let (project, _) = crate::files::read(std::path::Path::new(&path)).unwrap();
+        let engine = velo_engine::Engine::start(None).unwrap();
+        let (device, queue) = (engine.device(), engine.queue());
+        assert!(device.features().contains(wgpu::Features::TIMESTAMP_QUERY), "no timestamps on this GPU");
+        let compiler = Compiler::new(device.clone(), queue.clone(), engine.wave_texture().clone());
+        let size = [project.canvas.width, project.canvas.height];
+        let n = velo_engine::gpu::MAX_TIMED as u64 * 2;
+        let set = device.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty: wgpu::QueryType::Timestamp, count: n as u32 });
+        let resolve = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: n * 8, usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: false });
+        let back = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: n * 8, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let mut total = 0.0;
+        for (k, scene) in project.scenes.iter().enumerate() {
+            // twice: the first build starts the text and image loads, the second has them
+            compiler.build(k as u64, scene.clone(), size);
+            let _ = compiler.built.recv();
+            std::thread::sleep(Duration::from_millis(300));
+            compiler.build(k as u64, scene.clone(), size);
+            let Ok((_, Ok(mut built))) = compiler.built.recv() else { continue };
+            let g = &mut built.graph;
+            // each node's best of 30 frames, after 30 to warm up
+            let mut best = vec![f32::MAX; g.runner.len().min(velo_engine::gpu::MAX_TIMED)];
+            for f in 0..60 {
+                let timed = f >= 30;
+                let mut encoder = device.create_command_encoder(&Default::default());
+                let globals = [f as f32 / 60.0, 1.0 / 60.0, f as f32, size[0] as f32 / size[1] as f32, 120.0, 0.0, 0.0];
+                g.runner.render_timed(queue, &mut encoder, &g.programs, &globals, timed.then_some(&set));
+                if timed {
+                    encoder.resolve_query_set(&set, 0..n as u32, &resolve, 0);
+                    encoder.copy_buffer_to_buffer(&resolve, 0, &back, 0, n * 8);
+                }
+                queue.submit([encoder.finish()]);
+                if timed {
+                    back.map_async(wgpu::MapMode::Read, .., |r| r.expect("map"));
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    let ticks: Vec<u64> = back.slice(..).get_mapped_range().unwrap().as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect();
+                    back.unmap();
+                    for (i, b) in best.iter_mut().enumerate() {
+                        *b = b.min(ticks[2 * i + 1].saturating_sub(ticks[2 * i]) as f32 * queue.get_timestamp_period() / 1e6);
+                    }
+                }
+            }
+            // what reaches the output, walking up from it
+            let mut used = vec![false; built.plan.nodes.len()];
+            let mut todo: Vec<usize> = built.plan.output.into_iter().collect();
+            while let Some(i) = todo.pop() {
+                if !std::mem::replace(&mut used[i], true) {
+                    todo.extend(built.plan.inputs[i].iter().flatten());
+                }
+            }
+            let name = |i: usize| scene.node(&built.plan.nodes[i].0).map_or_else(String::new, |n| format!("{} ({})", n.name, n.kind));
+            let sum: f32 = best.iter().sum();
+            let unused: f32 = best.iter().zip(&used).filter(|(_, u)| !**u).map(|(b, _)| b).sum();
+            total += sum;
+            let mut top: Vec<usize> = (0..best.len()).collect();
+            top.sort_by(|a, b| best[*b].total_cmp(&best[*a]));
+            let top: Vec<String> = top.iter().take(3).map(|&i| format!("{} {:.2}", name(i), best[i])).collect();
+            println!("{sum:5.2} ms  {:2} nodes, {unused:.2} ms in {} unused  {}: {}", used.len(), used.iter().filter(|u| !**u).count(), scene.name, top.join(", "));
+        }
+        println!("{total:.2} ms for all {} scenes at {}×{}", project.scenes.len(), size[0], size[1]);
     }
 }
