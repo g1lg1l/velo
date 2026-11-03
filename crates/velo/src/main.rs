@@ -1705,7 +1705,9 @@ impl App {
     fn sync_live(&mut self, ctx: &egui::Context) {
         self.watch_engine(ctx.input(|i| i.time));
         self.autopilot(ctx.input(|i| i.stable_dt).min(0.1), ctx.input(|i| i.time));
+        self.usage.sample(self.live.as_ref().map(|l| l.fps));
         let Some(live) = &mut self.live else { return };
+        live.budget = self.usage.vram_budget;
         if let Some((scene, beats)) = self.session.morph.take() {
             live.morph(scene, beats);
         }

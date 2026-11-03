@@ -882,10 +882,18 @@ impl App {
         }
         if let Some(vram) = u.vram {
             let strain = u.trails.vram.back().copied().unwrap_or(0.0);
-            let tip = match u.vram_budget.filter(|b| *b > 0) {
+            let mut tip = match u.vram_budget.filter(|b| *b > 0) {
                 Some(budget) => tr!("Video memory Velo holds: {} of the {} the system lets it use", size(mb(vram)), size(mb(budget))),
                 None => tr!("Video memory Velo holds: {}", size(mb(vram))),
             };
+            // what the scenes kept ready take, and what they may
+            if let Some(live) = &self.live {
+                let (graphs, bytes) = live.held;
+                tip = match u.vram_budget.filter(|b| *b > 0) {
+                    Some(budget) => format!("{tip}. {}", tr!("{} scenes built, {} of the {} they may take", graphs, size(mb(bytes)), size(mb(budget / 2)))),
+                    None => format!("{tip}. {}", tr!("{} scenes built, {}", graphs, size(mb(bytes)))),
+                };
+            }
             loads.push((widgets::Load { name: "VRAM", value: mb(vram), format: size, room: "999 MB", strain, warn: 0.7, high: 0.9, trail: relative(&u.trails.vram) }, tip));
         }
         loads
@@ -895,7 +903,6 @@ impl App {
         let t = self.theme.clone();
         kit::strip(ui, &t, 24.0, t.bg_panel, |ui| {
             // the app's load on the right, a chip each, close together
-            self.usage.sample(self.live.as_ref().map(|l| l.fps));
             let mut right = ui.max_rect().right();
             for (load, tip) in self.loads().iter().rev() {
                 let r = widgets::load_chip(ui, &t, right, load);

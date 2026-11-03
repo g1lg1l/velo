@@ -313,6 +313,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ),
     ("Video memory Velo holds: {} of the {} the system lets it use", "Memoria video di Velo: {} dei {} che il sistema le concede"),
     ("Video memory Velo holds: {}", "Memoria video di Velo: {}"),
+    ("{} scenes built, {} of the {} they may take", "{} scene pronte, {} dei {} che possono occupare"),
+    ("{} scenes built, {}", "{} scene pronte, {}"),
     ("Starting the engine", "Avvio del motore"),
     ("Building the scenes", "Preparazione delle scene"),
     ("Opening the audio", "Apertura dell'audio"),

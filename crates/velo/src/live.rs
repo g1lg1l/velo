@@ -127,8 +127,11 @@ fn infos(p: &Param) -> Vec<ParamInfo> {
 // The engine: the scenes it holds, what goes out
 
 /// Scene graphs kept built (docs/scenes.md §3, the warm cache): launching one of them back is
-/// instant. More stay only while in use (live, fading out, launched, edited).
+/// instant. More stay only while in use (live, fading out, launched, edited). Where the system
+/// says how much video memory Velo may hold, as many as fit in half of it, at most [`WARM_MOST`];
+/// elsewhere [`WARM`].
 pub const WARM: usize = 4;
+pub const WARM_MOST: usize = 12;
 
 /// A scene's graph in the engine, or on its way there.
 struct Slot {
@@ -175,6 +178,10 @@ pub struct Live {
     thumbs: Option<egui::TextureHandle>,
     /// Each scene's picture as it last went out while it was the one edited (its card's).
     shots: HashMap<String, egui::TextureHandle>,
+    /// The video memory the system lets Velo hold, where it says (Windows), and the graphs held
+    /// with what their pictures take, as of the last sync.
+    pub budget: Option<u64>,
+    pub held: (usize, u64),
     pub blackout: bool,
     /// The output held on one frame (Freeze), and the test pattern on it instead.
     pub frozen: bool,
@@ -219,6 +226,8 @@ impl Live {
             preview: None,
             thumbs: None,
             shots: HashMap::new(),
+            budget: None,
+            held: (0, 0),
             blackout: false,
             frozen: false,
             pattern: false,
@@ -358,13 +367,21 @@ impl Live {
         let status = &self.engine.status;
         let (live, fading) = (status.live.load(Relaxed), status.fading.load(Relaxed));
         let in_use = [live, fading, status.armed().map_or(0, |a| a.0), self.launched, self.edit];
-        let held: Vec<(u64, bool)> = self.slots.iter().map(|s| (s.key, project.scene(&s.scene).is_some())).collect();
-        // fewer scenes kept warm as the canvas grows: four at 1080p, one at 4K
-        let warm = (WARM as u64 * 1920 * 1080 / (u64::from(size[0]) * u64::from(size[1])).max(1)).clamp(1, WARM as u64) as usize;
-        for key in evictions(&held, &in_use, warm) {
+        // what a graph's pictures take: a texture of the canvas each node, two for feedback
+        let texture = u64::from(size[0]) * u64::from(size[1]) * 8;
+        let bytes = |s: &Slot| s.installed.iter().map(|(_, shader)| 1 + u64::from(shader.feedback)).sum::<u64>() * texture;
+        let held: Vec<(u64, bool, u64)> = self.slots.iter().map(|s| (s.key, project.scene(&s.scene).is_some(), bytes(s))).collect();
+        let room = match self.budget.filter(|b| *b > 0) {
+            // half of what the system lets Velo hold: the rest is the computer's
+            Some(budget) => Room::Bytes(budget / 2),
+            // fewer scenes kept warm as the canvas grows: four at 1080p, one at 4K
+            None => Room::Graphs((WARM as u64 * 1920 * 1080 / (u64::from(size[0]) * u64::from(size[1])).max(1)).clamp(1, WARM as u64) as usize),
+        };
+        for key in evictions(&held, &in_use, room) {
             self.slots.retain(|s| s.key != key);
             self.engine.send(Command::Evict(key));
         }
+        self.held = (self.slots.len(), self.slots.iter().map(bytes).sum());
         // the preview: the program while the edited scene is the live one, else the edited scene
         let shows = |key: u64| self.slots.iter().any(|s| s.key == key && s.built && s.output.is_some());
         self.showing = if self.edit == 0 || self.edit == live { shows(live) || shows(fading) } else { shows(self.edit) };
@@ -655,18 +672,34 @@ impl Live {
     }
 }
 
+/// How much the warm cache may hold, the graphs in use included: so many graphs, or so many
+/// bytes of pictures (and [`WARM_MOST`] graphs).
+#[derive(Clone, Copy, Debug)]
+enum Room {
+    Graphs(usize),
+    Bytes(u64),
+}
+
 /// The warm cache's evictions: given the held graphs most recently used first (each with
-/// whether its scene still exists), the ones to drop. A deleted scene's goes at once, the least
-/// recently used go beyond `warm` (at most [`WARM`]); never one in use.
-fn evictions(held: &[(u64, bool)], in_use: &[u64], warm: usize) -> Vec<u64> {
-    let mut kept = held.len();
+/// whether its scene still exists and what its pictures take), the ones to drop, least recently
+/// used first. A deleted scene's goes at once, then the least recently used past `room`; never
+/// one in use.
+fn evictions(held: &[(u64, bool, u64)], in_use: &[u64], room: Room) -> Vec<u64> {
+    let used = held.iter().filter(|h| in_use.contains(&h.0));
+    let (mut kept, mut taken) = (used.clone().count(), used.map(|h| h.2).sum::<u64>());
     let mut out = Vec::new();
-    for &(key, exists) in held.iter().rev() {
-        if !in_use.contains(&key) && (!exists || kept > warm) {
+    for &(key, exists, bytes) in held.iter().filter(|h| !in_use.contains(&h.0)) {
+        let fits = match room {
+            Room::Graphs(most) => kept < most,
+            Room::Bytes(most) => kept < WARM_MOST && taken + bytes <= most,
+        };
+        if exists && fits {
+            (kept, taken) = (kept + 1, taken + bytes);
+        } else {
             out.push(key);
-            kept -= 1;
         }
     }
+    out.reverse();
     out
 }
 
@@ -1154,24 +1187,37 @@ mod tests {
     }
 
     #[test]
+    fn the_warm_cache_keeps_what_fits_in_half_the_budget() {
+        let held = |sizes: &[(u64, u64)]| sizes.iter().map(|&(key, bytes)| (key, true, bytes)).collect::<Vec<_>>();
+        // most recent first: 300 MB in use, then what fits in 1 GB
+        let mb = 1 << 20;
+        let all = held(&[(1, 300 * mb), (2, 400 * mb), (3, 400 * mb), (4, 100 * mb)]);
+        assert_eq!(evictions(&all, &[1], Room::Bytes(1024 * mb)), [3], "what doesn't fit goes; an older, smaller one still fits");
+        assert_eq!(evictions(&all, &[1], Room::Bytes(600 * mb)), [3, 2], "the small old one still fits");
+        assert!(evictions(&all, &[1, 2, 3, 4], Room::Bytes(mb)).is_empty(), "never one in use, whatever it takes");
+        let many: Vec<_> = (1..=20).map(|k| (k, true, mb)).collect();
+        assert_eq!(evictions(&many, &[], Room::Bytes(1 << 40)).len(), 20 - WARM_MOST, "a big card still keeps a dozen");
+    }
+
+    #[test]
     fn the_warm_cache_keeps_the_last_four_used_and_never_one_in_use() {
-        let held = |keys: &[u64]| keys.iter().map(|&k| (k, true)).collect::<Vec<_>>();
-        assert!(evictions(&held(&[1, 2, 3, 4]), &[], WARM).is_empty(), "four stay warm");
+        let held = |keys: &[u64]| keys.iter().map(|&k| (k, true, 0)).collect::<Vec<_>>();
+        assert!(evictions(&held(&[1, 2, 3, 4]), &[], Room::Graphs(WARM)).is_empty(), "four stay warm");
         // most recently used first: the fifth and sixth go, oldest first
-        assert_eq!(evictions(&held(&[6, 5, 4, 3, 2, 1]), &[], WARM), [1, 2]);
+        assert_eq!(evictions(&held(&[6, 5, 4, 3, 2, 1]), &[], Room::Graphs(WARM)), [1, 2]);
         // the live scene, one fading out, a launch and the edited one stay, even beyond four
-        assert_eq!(evictions(&held(&[6, 5, 4, 3, 2, 1]), &[1], WARM), [2, 3]);
-        assert!(evictions(&held(&[5, 4, 3, 2, 1]), &[1, 2, 3, 4, 5], WARM).is_empty());
+        assert_eq!(evictions(&held(&[6, 5, 4, 3, 2, 1]), &[1], Room::Graphs(WARM)), [2, 3]);
+        assert!(evictions(&held(&[5, 4, 3, 2, 1]), &[1, 2, 3, 4, 5], Room::Graphs(WARM)).is_empty());
         // a deleted scene's graph goes at once, unless it's still out (deleting never blacks out)
-        assert_eq!(evictions(&[(1, true), (2, false), (3, false)], &[3], WARM), [2]);
+        assert_eq!(evictions(&[(1, true, 0), (2, false, 0), (3, false, 0)], &[3], Room::Graphs(WARM)), [2]);
         // a big canvas keeps fewer
-        assert_eq!(evictions(&held(&[3, 2, 1]), &[3], 1), [1, 2]);
+        assert_eq!(evictions(&held(&[3, 2, 1]), &[3], Room::Graphs(1)), [1, 2]);
         // launching back and forth between two keeps both: each launch makes it the most recent
         let mut order = vec![1, 2, 3, 4];
         for launch in [5, 1, 5, 1] {
             order.retain(|&k| k != launch);
             order.insert(0, launch);
-            let gone = evictions(&held(&order), &[launch], WARM);
+            let gone = evictions(&held(&order), &[launch], Room::Graphs(WARM));
             order.retain(|k| !gone.contains(k));
         }
         assert_eq!(order, [1, 5, 2, 3], "the least recently used (4) went");
