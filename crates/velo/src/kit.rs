@@ -866,6 +866,16 @@ pub fn unmenu(ui: &mut Ui) {
 }
 
 /// A group's title in a menu, inset as its lines.
+/// A menu line that is one of a set, or a switch: a tick in the icon column while it's on, its
+/// label starting where the lines with an icon start theirs.
+pub fn menu_tick(ui: &mut Ui, t: &Theme, on: bool, label: &str) -> Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    job.append(crate::icons::CHECK, 0.0, egui::TextFormat::simple(font.clone(), if on { t.accent } else { Color32::TRANSPARENT }));
+    job.append(&format!("  {label}"), 0.0, egui::TextFormat::simple(font, Color32::PLACEHOLDER));
+    ui.add(egui::Button::new(job))
+}
+
 pub fn menu_title(ui: &mut Ui, t: &Theme, text: &str) {
     let margin = egui::Margin { left: (t.pad * 1.5) as i8, right: t.pad as i8, top: (t.gap * 2.0) as i8, bottom: t.gap as i8 };
     Frame::new().inner_margin(margin).show(ui, |ui| caps(ui, t, text));

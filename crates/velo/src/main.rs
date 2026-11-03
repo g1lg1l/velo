@@ -926,7 +926,7 @@ impl App {
             if ui.button(format!("{}  {}", icons::PENCIL_SIMPLE, tr!("Rename…"))).clicked() {
                 self.rename = Some(shell::Renaming::new(&scene.id, &scene.name));
             }
-            if ui.button(format!("{}  {}", icons::STACK, tr!("Duplicate"))).clicked() {
+            if ui.button(format!("{}  {}", icons::COPY, tr!("Duplicate"))).clicked() {
                 self.run("scene.duplicate", json!({ "scene": scene.id }));
             }
             if ui.button(format!("{}  {}", icons::FLOPPY_DISK, tr!("Export as a project…"))).on_hover_text(tr!("One file with this scene and its media, to share or to start a show from")).clicked() {
@@ -936,7 +936,7 @@ impl App {
             ui.menu_button(format!("{}  {}", icons::STACK, tr!("Layer")), |ui| {
                 let roles = [(Layer::Scene, tr!("A scene, launched like the others")), (Layer::Top, tr!("Always on top")), (Layer::Bottom, tr!("Always underneath"))];
                 for (layer, label) in roles {
-                    if ui.radio(scene.layer == layer, label).clicked() {
+                    if kit::menu_tick(ui, t, scene.layer == layer, label).clicked() {
                         self.run("scene.set_layer", json!({ "scene": scene.id, "layer": layer }));
                         ui.close();
                     }
@@ -946,16 +946,15 @@ impl App {
                     kit::menu_title(ui, t, tr!("BLEND"));
                     let blends = [(LayerBlend::Over, tr!("Over, through its transparency")), (LayerBlend::Add, tr!("Add")), (LayerBlend::Screen, tr!("Screen: lights on black")), (LayerBlend::Multiply, tr!("Multiply: darks on white"))];
                     for (blend, label) in blends {
-                        if ui.radio(scene.blend == blend, label).clicked() {
+                        if kit::menu_tick(ui, t, scene.blend == blend, label).clicked() {
                             self.run("scene.set_layer", json!({ "scene": scene.id, "blend": blend }));
                             ui.close();
                         }
                     }
                 }
             });
-            let mut turns = !scene.manual;
-            if scene.layer == Layer::Scene && ui.checkbox(&mut turns, tr!("In the autopilot")).clicked() {
-                self.run("scene.set_autopilot", json!({ "scene": scene.id, "on": turns }));
+            if scene.layer == Layer::Scene && kit::menu_tick(ui, t, !scene.manual, tr!("In the autopilot")).clicked() {
+                self.run("scene.set_autopilot", json!({ "scene": scene.id, "on": scene.manual }));
             }
             ui.menu_button(format!("{}  {}", if scene.icon.is_empty() { "✨" } else { scene.icon.as_str() }, tr!("Icon")), |ui| {
                 if let Some(icon) = widgets::emoji_grid(ui, &scene.icon) {
