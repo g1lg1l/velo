@@ -182,6 +182,9 @@ pub struct Live {
     /// with what their pictures take, as of the last sync.
     pub budget: Option<u64>,
     pub held: (usize, u64),
+    /// Layer scenes switched off (launching one switches it), and the layers as last sent.
+    pub off: std::collections::HashSet<String>,
+    layers: Vec<(u64, velo_core::Layer, velo_core::LayerBlend)>,
     pub blackout: bool,
     /// The output held on one frame (Freeze), and the test pattern on it instead.
     pub frozen: bool,
@@ -228,6 +231,8 @@ impl Live {
             shots: HashMap::new(),
             budget: None,
             held: (0, 0),
+            off: Default::default(),
+            layers: Vec::new(),
             blackout: false,
             frozen: false,
             pattern: false,
@@ -268,6 +273,13 @@ impl Live {
         if edit != self.edit {
             self.edit = edit;
             self.engine.send(Command::Edit(edit));
+        }
+        // the layers switched on, held and rendered every frame
+        let on: Vec<&Scene> = project.scenes.iter().filter(|s| s.layer != velo_core::Layer::Scene && !self.off.contains(&s.id)).collect();
+        let layers: Vec<_> = on.into_iter().map(|s| (self.slot(&s.id).key, s.layer, s.blend)).collect();
+        if layers != self.layers {
+            self.engine.send(Command::Layers(layers.clone()));
+            self.layers = layers;
         }
         // a file decoded since its graph was built: built again, with it
         for slot in &mut self.slots {
@@ -366,7 +378,7 @@ impl Live {
         }
         let status = &self.engine.status;
         let (live, fading) = (status.live.load(Relaxed), status.fading.load(Relaxed));
-        let in_use = [live, fading, status.armed().map_or(0, |a| a.0), self.launched, self.edit];
+        let in_use: Vec<u64> = [live, fading, status.armed().map_or(0, |a| a.0), self.launched, self.edit].into_iter().chain(self.layers.iter().map(|l| l.0)).collect();
         // what a graph's pictures take: a texture of the canvas each node, two for feedback
         let texture = u64::from(size[0]) * u64::from(size[1]) * 8;
         let bytes = |s: &Slot| s.installed.iter().map(|(_, shader)| 1 + u64::from(shader.feedback)).sum::<u64>() * texture;
@@ -482,7 +494,14 @@ impl Live {
         self.launch_with(scene, Launch { transition: Transition::Cut, duration: 0.0, quantize: Quantize::Off });
     }
 
+    /// Puts `scene` on the output with its launch settings; a layer is switched on or off.
     pub fn launch(&mut self, scene: &Scene) {
+        if scene.layer != velo_core::Layer::Scene {
+            if !self.off.remove(&scene.id) {
+                self.off.insert(scene.id.clone());
+            }
+            return;
+        }
         self.launch_with(scene, scene.launch);
     }
 

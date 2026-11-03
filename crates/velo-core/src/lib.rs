@@ -219,6 +219,44 @@ pub struct Scene {
     /// Cables tied into bundles on its canvas.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ties: Vec<Tie>,
+    /// A layer shows over or under whichever scene goes out, combined with it as `blend` says;
+    /// launching one switches it on or off.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub layer: Layer,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub blend: LayerBlend,
+    /// Left out of the autopilot's turns (a layer always is).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub manual: bool,
+}
+
+fn is_default<T: Default + PartialEq>(v: &T) -> bool {
+    *v == T::default()
+}
+
+/// What a scene is to the show (docs/scenes.md §4): one launched like the others, or a layer
+/// always over or under whichever of them goes out (a title, a logo, a background).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Layer {
+    #[default]
+    Scene,
+    Top,
+    Bottom,
+}
+
+/// How a layer and what's under it go together: the upper one over the lower through its
+/// transparency, or added, screened (lights on black) or multiplied (darks on white).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LayerBlend {
+    Over,
+    Add,
+    #[default]
+    Screen,
+    Multiply,
+}
+
+impl LayerBlend {
+    pub const ALL: [LayerBlend; 4] = [LayerBlend::Over, LayerBlend::Add, LayerBlend::Screen, LayerBlend::Multiply];
 }
 
 // ---------------------------------------------------------------------------

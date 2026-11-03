@@ -1070,6 +1070,8 @@ pub struct CardState {
     pub armed: Option<f32>,
     /// Its picture as it last went out (none yet: a wash in its hue).
     pub shot: Option<egui::TextureId>,
+    /// A layer: over (else under) every scene, and whether it's switched on.
+    pub layer: Option<(bool, bool)>,
 }
 
 /// A stable hue (0..1) for an id: what thumbnails and node viewers are tinted with until the
@@ -1156,6 +1158,12 @@ pub fn scene_card(ui: &mut Ui, t: &Theme, index: usize, name: &str, icon: &str, 
         let c = pos2(inner.right() - 9.0, inner.top() + 9.0);
         painter.circle_filled(c, 11.0, t.bg_base.gamma_multiply(0.75));
         ring(&painter, t, c, progress);
+    } else if let Some((over, on)) = state.layer {
+        // a layer: where it shows, lit while it's on
+        let text = if over { tr!("ON TOP") } else { tr!("UNDER") }.to_string();
+        let color = if on { t.accent } else { t.fg_muted };
+        let w = painter.layout_no_wrap(text.clone(), Theme::mono(t.text_xs), color).size().x + 10.0;
+        chip(pos2(inner.right() - w, inner.top()), text, color);
     }
     // its emoji and its name, over the shade
     let mut x = inner.left();

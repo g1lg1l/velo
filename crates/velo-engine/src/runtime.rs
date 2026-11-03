@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use velo_core::{MACROS, Quantize, Transition};
+use velo_core::{Layer, LayerBlend, MACROS, Quantize, Transition};
 
 use crate::gpu::{Program, Runner};
 use crate::launch::Show;
@@ -211,6 +211,9 @@ pub enum Command {
     /// The graph being edited: its node is the watched one, and the preview shows it alone
     /// (rendering it too) while it isn't the live one.
     Edit(u64),
+    /// The layer scenes switched on, in scene order: each rendered every frame and put over or
+    /// under the program the way its blend says.
+    Layers(Vec<(u64, Layer, LayerBlend)>),
     /// Tap tempo, a new tempo, a downbeat now: the beat clock (docs/control.md §4). Taps carry
     /// when they happened, so the time the command waits in the queue doesn't count.
     Tap(Instant),
@@ -686,6 +689,10 @@ impl Thread {
         let black = crate::gpu::texture(&self.device, [1, 1]);
         // Freeze: the program copied once, shown until it's let go
         let held_blit = Blit::new(&self.device, crate::gpu::FORMAT);
+        // the layers: the program drawn on a stage, then each layer onto the other side of it
+        let (stage_blit, compose) = (Blit::new(&self.device, crate::gpu::FORMAT), Compose::new(&self.device));
+        let mut stage: Option<([u32; 2], [wgpu::TextureView; 2])> = None;
+        let mut layers: Vec<(u64, Layer, LayerBlend)> = Vec::new();
         let (mut freeze, mut held, mut pattern) = (false, None, false);
         let start = Instant::now();
         let tick = Duration::from_micros(16_667);
@@ -767,6 +774,7 @@ impl Thread {
                     }
                     Command::Launch { scene, transition, duration_beats, quantize } => show.launch(scene, transition, duration_beats, quantize),
                     Command::Edit(key) => edit = key,
+                    Command::Layers(on) => layers = on,
                     Command::Tap(at) => clock.tap(secs(at)),
                     Command::Tempo(bpm) => clock.set_bpm(start.elapsed().as_secs_f64(), bpm),
                     Command::Resync(at) => clock.resync(secs(at)),
@@ -865,7 +873,8 @@ impl Thread {
                 slot.store(v.to_bits(), Relaxed);
             }
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            if graphs.iter().any(|(key, g)| [show.live, fading, edit].contains(key) && g.programs.iter().any(|p| p.node.audio)) {
+            let renders = |key: &u64| [show.live, fading, edit].contains(key) || layers.iter().any(|l| l.0 == *key);
+            if graphs.iter().any(|(key, g)| renders(key) && g.programs.iter().any(|p| p.node.audio)) {
                 self.wave.load(&mut wave);
                 for (bytes, value) in wave_bytes.as_chunks_mut::<4>().0.iter_mut().zip(wave.iter().flatten()) {
                     *bytes = value.to_ne_bytes();
@@ -890,7 +899,7 @@ impl Thread {
             let watch = self.status.watch.load(Relaxed);
             let beats = clock.beats(t);
             self.status.beats.store(beats.to_bits(), Relaxed);
-            for (key, g) in graphs.iter_mut().filter(|(k, _)| [show.live, fading, edit].contains(k)) {
+            for (key, g) in graphs.iter_mut().filter(|(k, _)| renders(k)) {
                 // this graph's LFOs after the shared sources; its Probes with what they last read
                 for p in &g.probes {
                     g.signals[p.signal].feed(p.color());
@@ -936,7 +945,7 @@ impl Thread {
                     let mut awake = g.runner.needed(std::iter::once(out).chain(g.probes.iter().map(|p| p.node)), reads);
                     if *key == edit {
                         self.status.asleep.store(awake.iter().take(64).enumerate().filter(|(_, a)| !**a).fold(0, |bits, (n, _)| bits | 1 << n), Relaxed);
-                        if *key != show.live && *key != fading {
+                        if *key != show.live && *key != fading && !layers.iter().any(|l| l.0 == *key) {
                             for (n, a) in awake.iter_mut().enumerate() {
                                 *a |= (frame + n as u64).is_multiple_of(8);
                             }
@@ -970,6 +979,28 @@ impl Thread {
                 None => picture(show.live).map(|v| (v, v, 0.0)),
             };
             let size = graphs.iter().find(|g| g.0 == show.live).map(|(_, g)| g.runner.size());
+            // the layers switched on: those under the program, then those over it (one that is
+            // the live scene shows once, as the scene)
+            let shown: Vec<_> = layers.iter().filter(|l| ![show.live, fading].contains(&l.0)).filter_map(|&(key, layer, blend)| Some((picture(key)?, layer, blend))).collect();
+            let size = size.or_else(|| layers.iter().find_map(|l| graphs.iter().find(|g| g.0 == l.0).map(|(_, g)| g.runner.size())));
+            let program = match size.filter(|_| !shown.is_empty()) {
+                Some(size) => {
+                    if stage.as_ref().is_none_or(|s| s.0 != size) {
+                        stage = Some((size, [crate::gpu::texture(&self.device, size), crate::gpu::texture(&self.device, size)]));
+                    }
+                    let views = &stage.as_ref().expect("made above").1;
+                    let (a, b, p) = program.unwrap_or((&black, &black, 0.0));
+                    stage_blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), &views[0], None);
+                    let mut at = 0;
+                    for &(view, layer, blend) in shown.iter().filter(|l| l.1 == Layer::Bottom).chain(shown.iter().filter(|l| l.1 == Layer::Top)) {
+                        let (under, over) = if layer == Layer::Top { (&views[at], view) } else { (view, &views[at]) };
+                        compose.draw(&self.device, &mut encoder, [under, over], blend, &views[1 - at]);
+                        at = 1 - at;
+                    }
+                    Some((&views[at], &views[at], 0.0))
+                }
+                None => program,
+            };
             if freeze
                 && held.is_none()
                 && let (Some((a, b, p)), Some(size)) = (program, size)
@@ -1089,6 +1120,97 @@ fn find(graphs: &mut [(u64, Box<Graph>)], key: u64) -> Option<&mut Graph> {
 /// Drops a graph on a worker, not here: freeing GPU memory can take a while.
 fn drop_later(graph: Box<Graph>) {
     std::thread::spawn(move || drop(graph));
+}
+
+/// Puts a layer and what's under it together, a [`LayerBlend`] each: one pipeline per blend, its
+/// constant set when built, so the passes of a frame share no uniform.
+struct Compose {
+    pipelines: Vec<wgpu::RenderPipeline>,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+}
+
+impl Compose {
+    fn new(device: &wgpu::Device) -> Self {
+        const SHADER: &str = "
+struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> V {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return V(vec4<f32>(p * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0), p);
+}
+@group(0) @binding(0) var under: texture_2d<f32>;
+@group(0) @binding(1) var over: texture_2d<f32>;
+@group(0) @binding(2) var smp: sampler;
+// LayerBlend::ALL's index: over (premultiplied), add, screen, multiply
+override BLEND: u32 = 0u;
+@fragment fn fs(v: V) -> @location(0) vec4<f32> {
+    let a = textureSample(under, smp, v.uv);
+    let b = textureSample(over, smp, v.uv);
+    var c = b.rgb + a.rgb * (1.0 - b.a);
+    if BLEND == 1u {
+        c = a.rgb + b.rgb;
+    } else if BLEND == 2u {
+        c = 1.0 - (1.0 - clamp(a.rgb, vec3<f32>(0.0), vec3<f32>(1.0))) * (1.0 - clamp(b.rgb, vec3<f32>(0.0), vec3<f32>(1.0)));
+    } else if BLEND == 3u {
+        // where the upper one is clear it changes nothing
+        c = a.rgb * (b.rgb + 1.0 - b.a);
+    }
+    return vec4<f32>(c, 1.0 - (1.0 - a.a) * (1.0 - b.a));
+}";
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("compose"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty, count: None };
+        let texture = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("compose"), entries: &[entry(0, texture), entry(1, texture), entry(2, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering))] });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("compose"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipelines = (0..LayerBlend::ALL.len())
+            .map(|blend| {
+                let constants = [("BLEND", blend as f64)];
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("compose"),
+                    layout: Some(&pipeline_layout),
+                    vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs"),
+                        compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
+                        targets: &[Some(wgpu::ColorTargetState { format: crate::gpu::FORMAT, blend: None, write_mask: wgpu::ColorWrites::ALL })],
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            })
+            .collect();
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        Self { pipelines, layout, sampler }
+    }
+
+    /// Draws `[under, over]` put together the way `blend` says over all of `dst`.
+    fn draw(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, [under, over]: [&wgpu::TextureView; 2], blend: LayerBlend, dst: &wgpu::TextureView) {
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("compose"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(under) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(over) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("compose"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: dst, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store }, depth_slice: None })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let blend = LayerBlend::ALL.iter().position(|b| *b == blend).unwrap_or(0);
+        pass.set_pipeline(&self.pipelines[blend]);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..3, 0..1);
+    }
 }
 
 /// A render pass that only clears `view` to black.

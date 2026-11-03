@@ -912,6 +912,26 @@ fn an_imported_scene_joins_with_ids_and_files_of_its_own() {
 }
 
 #[test]
+fn a_scene_becomes_a_layer_and_leaves_the_autopilot() {
+    let mut s = session();
+    let id = s.active().unwrap().id.clone();
+    assert_eq!((s.active().unwrap().layer, s.active().unwrap().blend, s.active().unwrap().manual), (Layer::Scene, LayerBlend::Screen, false), "a scene, at first");
+    ok(&mut s, "scene.set_layer", json!({ "layer": "Top" }));
+    ok(&mut s, "scene.set_layer", json!({ "scene": id, "blend": "Multiply" }));
+    ok(&mut s, "scene.set_autopilot", json!({ "on": false }));
+    let scene = s.active().unwrap();
+    assert_eq!((scene.layer, scene.blend, scene.manual), (Layer::Top, LayerBlend::Multiply, true));
+    assert!(s.run("scene.set_layer", json!({ "layer": "Sideways" })).is_err());
+    // saved only when set: an older file loads as a plain scene
+    let text = ron::to_string(&s.project).unwrap();
+    assert!(text.contains("layer:Top") && text.contains("manual:true"), "{text}");
+    let plain: Scene = ron::from_str(r#"(id: "s_a", name: "A")"#).unwrap();
+    assert_eq!((plain.layer, plain.manual), (Layer::Scene, false));
+    ok(&mut s, "edit.undo", json!({}));
+    assert!(!s.active().unwrap().manual);
+}
+
+#[test]
 fn a_canvas_past_4k_is_brought_down_its_shape_kept() {
     assert_eq!(crate::fit_canvas(3840, 2160), (3840, 2160));
     let (w, h) = crate::fit_canvas(8192, 8192);

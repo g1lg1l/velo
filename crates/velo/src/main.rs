@@ -47,7 +47,7 @@ use eframe::egui::{self, Event, Frame, Id, Response, RichText};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use theme::Theme;
-use velo_core::{CANVAS, Category, Curve, LAUNCH_BEATS, Mapping, ParamInfo, Project, Quantize, SOURCES, Scene, Session, Target, Transition, VARIATIONS, node_kind};
+use velo_core::{CANVAS, Category, Curve, LAUNCH_BEATS, Layer, LayerBlend, Mapping, ParamInfo, Project, Quantize, SOURCES, Scene, Session, Target, Transition, VARIATIONS, node_kind};
 use velo_engine::Engine;
 use widgets::ModView;
 
@@ -82,6 +82,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = eframe::create_native("Velo", options, Box::new(move |cc| Ok(Box::new(App::new(cc, ui_engine.map(|e| live::Live::new(e, ui_shared)))))), &event_loop);
     event_loop.run_app(&mut host::Host::new(app, engine, shared))?;
     Ok(())
+}
+
+/// The autopilot's next scene among those that take turns (not a layer, not left out): the one
+/// after `now`, or with `random` (0..1) any but `now`. None with fewer than two.
+fn next_turn(scenes: &[Scene], now: Option<&str>, random: Option<f64>) -> Option<String> {
+    let turns: Vec<&Scene> = scenes.iter().filter(|s| s.layer == Layer::Scene && !s.manual).collect();
+    if turns.len() < 2 {
+        return None;
+    }
+    let at = now.and_then(|id| turns.iter().position(|s| s.id == id));
+    let pick = match (random, at) {
+        (Some(r), Some(at)) => (at + 1 + (r * (turns.len() - 1) as f64) as usize) % turns.len(),
+        (Some(r), None) => (r * turns.len() as f64) as usize % turns.len(),
+        (None, Some(at)) => (at + 1) % turns.len(),
+        (None, None) => 0,
+    };
+    Some(turns[pick].id.clone())
 }
 
 /// The usual canvas sizes, for the Canvas section's menu.
@@ -885,9 +902,10 @@ impl App {
 
     fn scene_card(&mut self, ui: &mut egui::Ui, t: &Theme, i: usize, scene: &Scene, active: bool) {
         // LIVE pulses with the beat; a launch counts down to its boundary
+        let layer = (scene.layer != Layer::Scene).then(|| (scene.layer == Layer::Top, self.live.as_ref().is_none_or(|l| !l.off.contains(&scene.id))));
         let state = match &self.live {
-            Some(l) => widgets::CardState { selected: active, live: (l.live_scene() == Some(scene.id.as_str())).then(|| l.clock()[1]), armed: l.armed(&scene.id), shot: l.shot(&scene.id) },
-            None => widgets::CardState { selected: active, ..Default::default() },
+            Some(l) => widgets::CardState { selected: active, live: (l.live_scene() == Some(scene.id.as_str())).then(|| l.clock()[1]), armed: l.armed(&scene.id), shot: l.shot(&scene.id), layer },
+            None => widgets::CardState { selected: active, layer, ..Default::default() },
         };
         let resp = widgets::scene_card(ui, t, i, &scene.name, &scene.icon, widgets::hue_of(&scene.id), state);
         self.hint(&resp, tr!("Click to select · its number key launches it · double-click to rename · right-click for more"));
@@ -913,6 +931,31 @@ impl App {
             }
             if ui.button(format!("{}  {}", icons::FLOPPY_DISK, tr!("Export as a project…"))).on_hover_text(tr!("One file with this scene and its media, to share or to start a show from")).clicked() {
                 self.export_dialog(Some(&scene.id));
+            }
+            // a layer: always over or under whichever scene goes out
+            ui.menu_button(format!("{}  {}", icons::STACK, tr!("Layer")), |ui| {
+                let roles = [(Layer::Scene, tr!("A scene, launched like the others")), (Layer::Top, tr!("Always on top")), (Layer::Bottom, tr!("Always underneath"))];
+                for (layer, label) in roles {
+                    if ui.radio(scene.layer == layer, label).clicked() {
+                        self.run("scene.set_layer", json!({ "scene": scene.id, "layer": layer }));
+                        ui.close();
+                    }
+                }
+                if scene.layer != Layer::Scene {
+                    ui.separator();
+                    kit::menu_title(ui, t, tr!("BLEND"));
+                    let blends = [(LayerBlend::Over, tr!("Over, through its transparency")), (LayerBlend::Add, tr!("Add")), (LayerBlend::Screen, tr!("Screen: lights on black")), (LayerBlend::Multiply, tr!("Multiply: darks on white"))];
+                    for (blend, label) in blends {
+                        if ui.radio(scene.blend == blend, label).clicked() {
+                            self.run("scene.set_layer", json!({ "scene": scene.id, "blend": blend }));
+                            ui.close();
+                        }
+                    }
+                }
+            });
+            let mut turns = !scene.manual;
+            if scene.layer == Layer::Scene && ui.checkbox(&mut turns, tr!("In the autopilot")).clicked() {
+                self.run("scene.set_autopilot", json!({ "scene": scene.id, "on": turns }));
             }
             ui.menu_button(format!("{}  {}", if scene.icon.is_empty() { "✨" } else { scene.icon.as_str() }, tr!("Icon")), |ui| {
                 if let Some(icon) = widgets::emoji_grid(ui, &scene.icon) {
@@ -1689,17 +1732,10 @@ impl App {
             (true, false) => next + period,
             (false, false) => next,
         });
-        let scenes = &self.session.project.scenes;
-        let now = live.live_scene().and_then(|id| scenes.iter().position(|s| s.id == id)).unwrap_or(0);
-        let pick = if a.random {
-            // any but the one out
-            let r = (beats * 7919.0).fract().abs();
-            (now + 1 + (r * (scenes.len() - 1) as f64) as usize) % scenes.len()
-        } else {
-            (now + 1) % scenes.len()
-        };
-        let id = scenes[pick].id.clone();
-        self.launch(&id);
+        let random = a.random.then(|| (beats * 7919.0).fract().abs());
+        if let Some(id) = next_turn(&self.session.project.scenes, live.live_scene(), random) {
+            self.launch(&id);
+        }
     }
 
     fn sync_live(&mut self, ctx: &egui::Context) {
@@ -3013,7 +3049,21 @@ impl App {
 
 #[cfg(test)]
 mod pilot_tests {
-    use super::Pilot;
+    use super::{Layer, Pilot, Scene, next_turn};
+
+    #[test]
+    fn the_autopilot_takes_turns_among_the_scenes_left_in() {
+        let scene = |id: &str, layer: Layer, manual: bool| Scene { id: id.into(), layer, manual, ..Default::default() };
+        let scenes = [scene("a", Layer::Scene, false), scene("t", Layer::Top, false), scene("b", Layer::Scene, false), scene("m", Layer::Scene, true), scene("c", Layer::Scene, false)];
+        assert_eq!(next_turn(&scenes, Some("a"), None).as_deref(), Some("b"), "past the layer");
+        assert_eq!(next_turn(&scenes, Some("c"), None).as_deref(), Some("a"), "past the one left out, round to the first");
+        assert_eq!(next_turn(&scenes, Some("m"), None).as_deref(), Some("a"), "from a scene out of the turns: the first");
+        for r in [0.0, 0.3, 0.6, 0.99] {
+            let next = next_turn(&scenes, Some("b"), Some(r)).unwrap();
+            assert!(next != "b" && ["a", "c"].contains(&next.as_str()), "{r}: {next}");
+        }
+        assert_eq!(next_turn(&scenes[..2], Some("a"), None), None, "one scene and a layer: nothing to turn to");
+    }
 
     #[test]
     fn a_drop_is_the_music_back_at_full_after_a_quieter_while() {

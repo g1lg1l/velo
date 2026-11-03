@@ -217,6 +217,21 @@ fn mapping<'a>(s: &'a mut Session, m: &MapRef) -> Result<(&'a mut Vec<Mapping>, 
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
+struct SetLayer {
+    scene: Option<String>,
+    layer: Option<Layer>,
+    blend: Option<LayerBlend>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SetAutopilot {
+    scene: Option<String>,
+    on: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
 struct SetLaunch {
     scene: Option<String>,
     transition: Option<Transition>,
@@ -416,6 +431,38 @@ pub static OPERATORS: &[Operator] = &[
             if let Some(q) = quantize {
                 launch.quantize = q;
             }
+            Ok(())
+        },
+    },
+    Operator {
+        id: "scene.set_layer",
+        label: "Set Layer",
+        description: "Make a scene (the selected one unless scene has an id) a layer that shows over (Top) or under (Bottom) whichever scene goes out, or a Scene launched like the others again; blend Over, Add, Screen (lights on black, the default) or Multiply says how it goes with the rest.",
+        example: r#"{"layer": "Top", "blend": "Screen"}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let SetLayer { scene, layer, blend } = props(v)?;
+            let scene = s.scene_mut(scene.as_deref())?;
+            if let Some(layer) = layer {
+                scene.layer = layer;
+            }
+            if let Some(blend) = blend {
+                scene.blend = blend;
+            }
+            Ok(())
+        },
+    },
+    Operator {
+        id: "scene.set_autopilot",
+        label: "Set Autopilot",
+        description: "Whether the autopilot takes a scene (the selected one unless scene has an id) in its turns: on true or false. Layers never are.",
+        example: r#"{"on": false}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let SetAutopilot { scene, on } = props(v)?;
+            s.scene_mut(scene.as_deref())?.manual = !on;
             Ok(())
         },
     },
