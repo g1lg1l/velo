@@ -33,7 +33,7 @@ It opens on a demo that already moves with whatever the computer is playing.
 **[Get the latest release](https://github.com/g1lg1l/velo/releases/latest)**
 
 - **Windows:** run the installer. It installs for you alone, no admin needed. It isn't signed yet: if SmartScreen stops it, click **More info**, then **Run anyway**.
-- **macOS** (Apple silicon): open the `.dmg` and drag Velo to Applications. The app isn't notarized yet, so the first time macOS refuses to open it: go to **System Settings → Privacy & Security** and click **Open Anyway**.
+- **macOS** (Apple silicon, macOS 14 Sonoma or later): open the `.dmg` and drag Velo to Applications. The app isn't notarized yet, so the first time macOS refuses to open it: go to **System Settings → Privacy & Security** and click **Open Anyway**.
 - **Linux:** build from source (below).
 
 Once installed, Velo can check for a newer release and update itself in place.

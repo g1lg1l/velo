@@ -1,6 +1,6 @@
 # Install
 
-Velo runs on Windows and on macOS with Apple silicon. Every release is on the [releases page](https://github.com/g1lg1l/velo/releases/latest).
+Velo runs on Windows and on macOS 14 (Sonoma) or later with Apple silicon. Every release is on the [releases page](https://github.com/g1lg1l/velo/releases/latest).
 
 ## Windows
 
