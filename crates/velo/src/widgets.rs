@@ -1213,7 +1213,7 @@ fn ghost_card(painter: &Painter, t: &Theme, rect: Rect, angle: f32, key: usize, 
     // a shadow under it, so the cards read as a stack
     let mut shadow = card.clone();
     shadow.translate(vec2(0.0, 3.0));
-    shadow.vertices.iter_mut().for_each(|v| v.color = egui::Color32::from_black_alpha(70));
+    shadow.vertices.iter_mut().for_each(|v| v.color = t.bg_base.gamma_multiply(0.7));
     painter.add(Shape::mesh(shadow));
     painter.add(Shape::mesh(card));
     let mut edge = Vec::new();
