@@ -89,12 +89,14 @@ Signal wires never mix with picture wires. Signal nodes run on the render thread
 | Timer (`velo.timer`) | out | a hit every so many seconds; `reset` starts it over |
 | Smooth (`velo.smooth`) | out | its input followed: Glide at a steady speed, or Lag (one-pole), rise and fall apart |
 | Quantize (`velo.quantize`) | out | its input snapped to 2 to 32 even steps |
+| Speed (`velo.speed`) | out | round a cycle of 0.1 to 600 seconds as fast as `in` says (full while nothing's wired), as a ramp, back and forth or a wave: a louder input turns it faster instead of further; `reset` starts it over |
+| Delay (`velo.delay`) | out | its input as it was 1/4 to 16 beats ago on the clock |
 
 A card with several outputs (Audio In, Beat) lists them as rows, each with its meter and port; its inspector picks which rows show. A signal node's inspector also lists what its outputs move, with the same settings as the moved parameter's mapping chip, so a link is changed from either end.
 
 **Probe.** After the frame is drawn, `probe.wgsl` draws the region (`size` of the picture round `position`; the whole picture by default, a point at size 0) into 32 x 16 cells of 4 x 4 taps each, which are read back and averaged; the next signal pass measures that color (brightness, red, green, blue or alpha; see-through counts as dark). One read is in flight at a time, so it lags the picture by a frame or two.
 
-Recipes: Noise into Threshold into a Mask is a moving stencil; an LFO through Quantize into a Switch's value steps through its pictures; a Kick through Smooth is a slow swell; a Video into a Probe onto a Blur's radius.
+Recipes: Noise into Threshold into a Mask is a moving stencil; an LFO through Quantize into a Switch's value steps through its pictures; a Kick through Smooth is a slow swell; Bass into Speed onto a Transform's rotate (set to -1, amount 1: a whole turn) turns faster with the bass and never jumps back; a Kick through a Delay of half a beat is its echo; a Video into a Probe onto a Blur's radius.
 
 ## 4. Node kinds
 
@@ -107,7 +109,7 @@ Every picture node is a shader file in `crates/velo-engine/shaders/`; signal nod
 | Composite | **Blend** (up to 16 inputs, 14 modes, intensity, a key) · **Mask** (keep, cut or multiply) · **Merge** (up to four pictures as one picture's channels) |
 | Control | **Switch** (one of up to sixteen inputs as `value` picks, cut, crossfaded, dissolved, wiped or through a circle; only what it shows renders) · **Grid** (up to 4 x 4 cells of eight inputs) · **Layer Stack** (up to eight inputs with blend mode, opacity and order; a signal on a layer's order lifts it) |
 | Output | **Output**: what goes out, through its grade (exposure, contrast, saturation, hue, colorize, invert, vignette, fade to black), on the preview, the displays and the shares alike. With several, the last one something is wired into goes out; at its defaults the picture passes unchanged. |
-| Signals, Logic | the 17 signal nodes in §3 |
+| Signals, Logic | the 19 signal nodes in §3 |
 
 Several pictures or movies dropped on the canvas at once become one Media List (a new one every 4 beats), wired into an Output nothing feeds yet, in one undo step. Freeze and Feedback read their own last frame. A Shader node starts from the first preset (Tunnel), a Shader FX from Glitch; Custom, the template to start code of your own from, heads their preset menus. Saved Shader and Shader FX nodes keep their code; a built-in node changes with its shader.
 

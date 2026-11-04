@@ -3,13 +3,15 @@
 //! hears on the canvas, a Beat the clock; an LFO is a shape over a number of beats; a Remap
 //! brings a signal into the range wanted; a Math puts two together; an Envelope plays a shape
 //! on each hit; a Counter steps on each hit; a Random picks a value on the beat; a Smooth
-//! follows its input slowly; a Quantize snaps it to steps; a Probe reads a picture (its color
-//! comes back from the GPU, [`crate::gpu::Probe`]). Each output has a slot after the
+//! follows its input slowly; a Quantize snaps it to steps; a Speed goes round a cycle as fast
+//! as its input says; a Delay plays its input back some beats later; a Probe reads a picture
+//! (its color comes back from the GPU, [`crate::gpu::Probe`]). Each output has a slot after the
 //! shared sources; a mapping names it as "node id/output".
 
+use std::collections::VecDeque;
 use std::f64::consts::TAU;
 
-use velo_core::{AUDIO, CLOCK, COMPARE, COUNTER, Category, ENVELOPE, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SMOOTH, SOURCES, Scene, TIME, TIMER, TOGGLE, node_kind};
+use velo_core::{AUDIO, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SMOOTH, SOURCES, SPEED, Scene, TIME, TIMER, TOGGLE, node_kind};
 
 use crate::shader::{Param, ParamType};
 
@@ -68,6 +70,9 @@ pub fn params(kind: &str) -> Option<Vec<Param>> {
         RANDOM => vec![p("beats", float, 1.0, 0.25, 64.0), p("glide_ms", float, 1.0, 1.0, 10_000.0), p("threshold", float, 0.5, 0.0, 1.0)],
         SMOOTH => vec![named("mode", &SMOOTH_MODES), p("rise_ms", float, 300.0, 1.0, 10_000.0), p("fall_ms", float, 300.0, 1.0, 10_000.0)],
         QUANTIZE => vec![p("steps", ParamType::Int, 4.0, 2.0, 32.0)],
+        // a turn every 4 s at full speed
+        SPEED => vec![p("seconds", float, 4.0, 0.1, 600.0), named("shape", &TIME_SHAPES)],
+        DELAY => vec![p("beats", float, 1.0, 0.25, DELAY_BEATS)],
         // the whole picture to start with
         PROBE => vec![named("measure", &PROBE_MEASURES), p("position", ParamType::Vec2, 0.0, -1.0, 1.0), p("size", float, 1.0, 0.0, 1.0)],
         _ => return None,
@@ -94,6 +99,40 @@ pub const COMPARE_OPS: [&str; 2] = ["Above", "Below"];
 pub const SMOOTH_MODES: [&str; 2] = ["Glide", "Lag"];
 /// What a Probe reads of the color, in its `measure` parameter's order.
 pub const PROBE_MEASURES: [&str; 5] = ["Brightness", "Red", "Green", "Blue", "Alpha"];
+
+/// The longest a Delay holds its input back, in beats.
+pub const DELAY_BEATS: f32 = 16.0;
+
+/// Where `x` (0..1) is in a cycle, through one of [`TIME_SHAPES`].
+fn cycle(shape: u8, x: f32) -> f32 {
+    match shape {
+        1 => 1.0 - (2.0 * x - 1.0).abs(),
+        2 => 0.5 - 0.5 * (std::f32::consts::TAU * x).cos(),
+        _ => x,
+    }
+}
+
+/// `x` as it was `back` beats ago on the clock (0 till the clock has gone that far). `history`
+/// keeps (clock, value) [`DELAY_BEATS`] back, so a delay made longer finds what it needs.
+fn delay(x: f32, beats: f64, back: f32, history: &mut VecDeque<(f64, f32)>) -> f32 {
+    // the clock went back (a resync): what's kept is from another time
+    if history.back().is_some_and(|&(b, _)| b > beats) {
+        history.clear();
+    }
+    // a clock standing still keeps one value, not a frame's each
+    if let Some(last) = history.back_mut().filter(|(b, _)| *b == beats) {
+        last.1 = x;
+    } else {
+        history.push_back((beats, x));
+    }
+    while history.get(1).is_some_and(|&(b, _)| b <= beats - f64::from(DELAY_BEATS)) {
+        history.pop_front();
+    }
+    match history.partition_point(|&(b, _)| b <= beats - f64::from(back)) {
+        0 => 0.0,
+        i => history[i - 1].1,
+    }
+}
 
 /// `v` (0..1) through one of [`CURVES`].
 fn curve(curve: u8, v: f32) -> f32 {
@@ -459,6 +498,11 @@ pub enum Kind {
     Smooth(Smooth),
     /// How many steps.
     Quantize(u8),
+    /// Seconds a cycle takes at full speed (its input 1, or nothing wired), and its shape
+    /// ([`TIME_SHAPES`]).
+    Speed(f32, u8),
+    /// How many beats back.
+    Delay(f32),
     Probe(Probe),
 }
 
@@ -489,6 +533,8 @@ impl Kind {
             RANDOM => Kind::Random(Random { beats: v("beats", 1.0).clamp(0.25, 64.0), glide: v("glide_ms", 1.0).max(0.0) / 1000.0, threshold: v("threshold", 0.5) }),
             SMOOTH => Kind::Smooth(Smooth { lag: index("mode", SMOOTH_MODES.len() - 1) == 1, rise: v("rise_ms", 300.0).max(0.0) / 1000.0, fall: v("fall_ms", 300.0).max(0.0) / 1000.0 }),
             QUANTIZE => Kind::Quantize(v("steps", 4.0).round().clamp(2.0, 32.0) as u8),
+            SPEED => Kind::Speed(v("seconds", 4.0).clamp(0.1, 600.0), index("shape", TIME_SHAPES.len() - 1)),
+            DELAY => Kind::Delay(v("beats", 1.0).clamp(0.25, DELAY_BEATS)),
             PROBE => Kind::Probe(Probe {
                 measure: index("measure", PROBE_MEASURES.len() - 1),
                 position: node.params.get("position").map_or([0.0; 2], |v| [v[0].clamp(-1.0, 1.0), v[1].clamp(-1.0, 1.0)]),
@@ -508,13 +554,14 @@ impl Kind {
 }
 
 /// A signal node as the render thread runs it: what it is, where its inputs come from (slots),
-/// where its outputs go, what it keeps between frames.
+/// where its outputs go, what it keeps between frames (a Delay its input's past too).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Signal {
     pub kind: Kind,
     pub inputs: [Option<usize>; 2],
     pub slot: usize,
     state: [f32; 4],
+    history: VecDeque<(f64, f32)>,
 }
 
 impl Signal {
@@ -552,7 +599,7 @@ pub fn plan(scene: &Scene) -> (Vec<Signal>, Vec<String>) {
             Kind::Probe(_) => [0.0; 4],
             _ => [0.0, 1.0, 0.0, 1.0],
         };
-        signals.push(Signal { kind, inputs, slot, state });
+        signals.push(Signal { kind, inputs, slot, state, history: VecDeque::new() });
     }
     (signals, keys)
 }
@@ -577,13 +624,18 @@ pub fn run(signals: &mut [Signal], sources: &mut [f32], beats: f64, dt: f32) {
             // where it is in its cycle, kept between frames
             Kind::Time(seconds, shape) => {
                 s.state[0] = (s.state[0] + dt / seconds).fract();
-                let x = s.state[0];
-                sources[s.slot] = match shape {
-                    1 => 1.0 - (2.0 * x - 1.0).abs(),
-                    2 => 0.5 - 0.5 * (std::f32::consts::TAU * x).cos(),
-                    _ => x,
-                };
+                sources[s.slot] = cycle(shape, s.state[0]);
             }
+            // as Time, its input the speed (full while nothing's wired); a hit on reset starts over
+            Kind::Speed(seconds, shape) => {
+                if hit(input(1), &mut s.state[1], 0.5) {
+                    s.state[0] = 0.0;
+                }
+                let speed = s.inputs[0].map_or(1.0, |i| sources[i]);
+                s.state[0] = (s.state[0] + speed * dt / seconds).rem_euclid(1.0);
+                sources[s.slot] = cycle(shape, s.state[0]);
+            }
+            Kind::Delay(back) => sources[s.slot] = delay(input(0), beats, back, &mut s.history),
             Kind::Remap(remap) => sources[s.slot] = remap.step(input(0), dt, &mut s.state),
             Kind::Math(math) => sources[s.slot] = math.at(input(0), s.inputs[1].map_or(math.value, |i| sources[i])),
             Kind::Envelope(envelope) => sources[s.slot] = envelope.step(input(0), dt, &mut s.state),
@@ -625,7 +677,7 @@ mod tests {
 
     /// A signal node fed from sources 0 and 1 (or not), its output in source 2, as plan starts it.
     fn node(kind: Kind, wired: [bool; 2]) -> Signal {
-        Signal { kind, inputs: [wired[0].then_some(0), wired[1].then_some(1)], slot: 2, state: [0.0, 1.0, 0.0, 1.0] }
+        Signal { kind, inputs: [wired[0].then_some(0), wired[1].then_some(1)], slot: 2, state: [0.0, 1.0, 0.0, 1.0], history: VecDeque::new() }
     }
 
     /// Its output for each pair of inputs, a frame each, at `beats`.
@@ -761,7 +813,7 @@ mod tests {
 
     #[test]
     fn time_goes_round_its_cycle() {
-        let mut signals = vec![Signal { kind: Kind::Time(2.0, 0), inputs: [None; 2], slot: SOURCES.len(), state: [0.0, 1.0, 0.0, 1.0] }];
+        let mut signals = vec![Signal { slot: SOURCES.len(), ..node(Kind::Time(2.0, 0), [false; 2]) }];
         let mut sources = [0.0f32; SOURCES.len() + MAX_SIGNALS];
         let mut seen = Vec::new();
         for _ in 0..5 {
@@ -860,7 +912,7 @@ mod tests {
 
     #[test]
     fn a_random_picks_on_the_beat_or_on_a_hit_and_glides() {
-        let fresh = |kind| Signal { kind, inputs: [None, None], slot: 2, state: [0.5, 0.5, 0.0, f32::NAN] };
+        let fresh = |kind| Signal { state: [0.5, 0.5, 0.0, f32::NAN], ..node(kind, [false; 2]) };
         // every two beats: one value through each step, another on the next, never close by
         let mut s = fresh(Kind::Random(Random { beats: 2.0, glide: 0.0, threshold: 0.5 }));
         let v = outputs(&mut s, &[(0.0, 0.0, 0.1), (0.0, 0.0, 1.9), (0.0, 0.0, 2.1), (0.0, 0.0, 3.9), (0.0, 0.0, 4.0)]);
@@ -914,5 +966,46 @@ mod tests {
         let mut q = node(Kind::Quantize(4), [true, false]);
         let snapped = outputs(&mut q, &[(0.1, 0.0, 0.0), (0.2, 0.0, 0.0), (0.6, 0.0, 0.0), (0.95, 0.0, 0.0), (1.4, 0.0, 0.0)]);
         assert_eq!(snapped, [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_speed_goes_round_as_fast_as_its_input_and_starts_over_on_reset() {
+        // a turn in 2 s at full speed, a frame 1/60 s: nothing wired is full speed
+        let mut s = node(Kind::Speed(2.0, 0), [false, false]);
+        let v = outputs(&mut s, &vec![(0.0, 0.0, 0.0); 60]);
+        assert!((v[59] - 0.5).abs() < 1e-4, "half a turn in a second: {}", v[59]);
+        // wired: half speed, then standing still, never jumping back
+        let mut s = node(Kind::Speed(2.0, 0), [true, true]);
+        let half = outputs(&mut s, &vec![(0.5, 0.0, 0.0); 60]);
+        assert!((half[59] - 0.25).abs() < 1e-4, "{}", half[59]);
+        assert_eq!(outputs(&mut s, &[(0.0, 0.0, 0.0); 10]), [half[59]; 10], "no speed, no move");
+        assert_eq!(outputs(&mut s, &[(0.0, 1.0, 0.0)]), [0.0], "reset");
+        // round again after a whole turn, or back and forth
+        let mut s = node(Kind::Speed(0.5, 1), [false, false]);
+        let v = outputs(&mut s, &vec![(0.0, 0.0, 0.0); 45]);
+        assert!((v[14] - 1.0).abs() < 1e-4 && v[29].abs() < 1e-4 && (v[44] - 1.0).abs() < 1e-4, "{v:?}");
+    }
+
+    #[test]
+    fn a_delay_plays_its_input_back_some_beats_later() {
+        // a beat back, the clock a quarter beat a frame: the input four frames later, 0 till then
+        let mut s = node(Kind::Delay(1.0), [true, false]);
+        let frames: Vec<(f32, f32, f64)> = (0..10).map(|i| (i as f32 / 10.0, 0.0, f64::from(i) * 0.25)).collect();
+        let v = outputs(&mut s, &frames);
+        assert_eq!(v[..4], [0.0; 4]);
+        assert!(v[4..].iter().zip(&frames).all(|(v, f)| (v - f.0).abs() < 1e-6), "{v:?}");
+        // longer while it plays: what it kept is there, up to DELAY_BEATS back
+        s.kind = Kind::Delay(2.0);
+        assert!((outputs(&mut s, &[(0.0, 0.0, 2.5)])[0] - 0.2).abs() < 1e-6, "two beats back: the third frame");
+        // a clock standing still keeps one value; one going back starts over
+        let still = s.history.len();
+        outputs(&mut s, &vec![(0.7, 0.0, 2.5); 100]);
+        assert_eq!(s.history.len(), still);
+        assert_eq!(outputs(&mut s, &[(0.9, 0.0, 1.0)]), [0.0]);
+        assert_eq!(s.history.len(), 1);
+        // a long run keeps no more than DELAY_BEATS
+        let mut s = node(Kind::Delay(16.0), [true, false]);
+        outputs(&mut s, &(0..2000).map(|i| (1.0, 0.0, f64::from(i) * 0.05)).collect::<Vec<_>>());
+        assert!(s.history.len() <= (f64::from(DELAY_BEATS) / 0.05) as usize + 1, "{}", s.history.len());
     }
 }

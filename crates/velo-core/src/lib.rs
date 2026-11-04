@@ -644,6 +644,8 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(TIMER, "Timer", Category::Signal, &["reset"], OUT),
     kind(SMOOTH, "Smooth", Category::Signal, IN, OUT),
     kind(QUANTIZE, "Quantize", Category::Signal, IN, OUT),
+    kind(SPEED, "Speed", Category::Signal, &["in", "reset"], OUT),
+    kind(DELAY, "Delay", Category::Signal, IN, OUT),
 ];
 
 /// Up to sixteen pictures merged in one, as many inputs shown as its `inputs` parameter says.
@@ -778,6 +780,10 @@ pub const RANDOM: &str = "velo.random";
 pub const SMOOTH: &str = "velo.smooth";
 /// Its input snapped to a number of even steps.
 pub const QUANTIZE: &str = "velo.quantize";
+/// A cycle its input drives: how fast it goes, not where it is, so motion never jumps.
+pub const SPEED: &str = "velo.speed";
+/// Its input as it was a number of beats ago.
+pub const DELAY: &str = "velo.delay";
 /// A picture read as a number: its brightness (or a channel) over a region, or at a point. The
 /// one signal node a picture goes into.
 pub const PROBE: &str = "velo.probe";

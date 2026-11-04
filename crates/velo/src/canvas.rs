@@ -3485,6 +3485,8 @@ fn node_icon(id: &str) -> &'static str {
         v::TIMER => icons::TIMER,
         v::SMOOTH => icons::CHART_LINE_UP,
         v::QUANTIZE => icons::STAIRS,
+        v::SPEED => icons::SPEEDOMETER,
+        v::DELAY => icons::CLOCK_COUNTER_CLOCKWISE,
         _ => icons::SPARKLE,
     }
 }
@@ -3556,6 +3558,8 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::RANDOM => tr!("A new random value every few beats or on each hit, gliding or not."),
         velo_core::SMOOTH => tr!("Follows what comes in slowly: a glide or a lag, up and down apart."),
         velo_core::QUANTIZE => tr!("Snaps what comes in to a few even steps."),
+        velo_core::SPEED => tr!("Goes round as fast as what comes in says: motion that speeds up and slows down, never jumps."),
+        velo_core::DELAY => tr!("What comes in, played back a few beats later."),
         velo_core::PROBE => tr!("A picture read as a number: its brightness or a channel, over all of it, a part or a point."),
         _ => return None,
     })

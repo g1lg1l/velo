@@ -29,6 +29,7 @@ pub const CIRCLE_HALF: &str = "\u{E18C}";
 pub const CIRCLE_HALF_TILT: &str = "\u{E18E}";
 pub const CIRCLE_NOTCH: &str = "\u{EB44}";
 pub const CLOCK: &str = "\u{E19A}";
+pub const CLOCK_COUNTER_CLOCKWISE: &str = "\u{E1A0}";
 pub const CLOUD: &str = "\u{E1AA}";
 pub const CODE: &str = "\u{E1BC}";
 pub const CONFETTI: &str = "\u{E81A}";
