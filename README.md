@@ -108,6 +108,8 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 
 Not a 3D engine, a mapping suite or a timeline editor: see [what Velo is not](docs/product.md#3-what-it-is-what-it-is-not).
 
+> **Making the beats too?** [Ravune](https://github.com/g1lg1l/ravune), from the same maker, is a modular DAW for deep sound design.
+
 ## How to connect an AI
 
 There are two ways, independent of each other. In the AI panel, **How to connect an AI…** shows both with the paths of your own install, ready to copy.

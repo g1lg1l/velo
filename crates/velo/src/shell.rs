@@ -1115,7 +1115,7 @@ impl App {
     // ---- preferences (floating, not modal) ----------------------------------
 
     /// Preferences: a modal with its sections down a sidebar (General, Appearance, Audio, AI
-    /// and agents, Control, Code, Updates), the picked one on the right.
+    /// and agents, Control, Code, Updates, About), the picked one on the right.
     pub fn preferences(&mut self, ctx: &egui::Context) {
         if !self.show_settings {
             return;
@@ -1129,6 +1129,7 @@ impl App {
             (icons::BROADCAST, tr!("Control")),
             (icons::CODE, tr!("Code")),
             (icons::DOWNLOAD_SIMPLE, tr!("Updates")),
+            (icons::INFO, tr!("About")),
         ];
         let key = Id::unique("preferences page");
         // (VELO_DEMO_PREFS=n: opened on page n, for screenshots)
@@ -1167,7 +1168,8 @@ impl App {
                         3 => self.prefs_agents(ui, &t),
                         4 => self.prefs_osc(ui, &t),
                         5 => self.prefs_code(ui, &t),
-                        _ => self.prefs_updates(ui, &t),
+                        6 => self.prefs_updates(ui, &t),
+                        _ => self.prefs_about(ui, &t),
                     });
                 });
             });
@@ -1226,6 +1228,22 @@ impl App {
                 self.settings.reduce_motion = reduce;
                 self.use_theme(ui.ctx(), self.settings.theme.clone());
             }
+        });
+    }
+
+    /// Preferences → About: who makes Velo, its source, and its sister project, as Ravune's About
+    /// names Velo.
+    fn prefs_about(&mut self, ui: &mut Ui, t: &Theme) {
+        kit::section(ui, t, icons::INFO, "VELO", true, |ui| {
+            ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+            ui.label(RichText::new(tr!("Live visuals played by the music.")).color(t.fg_text));
+            ui.label(RichText::new(tr!("Made by gilgil")).strong().color(t.accent));
+            ui.hyperlink_to(format!("{}  {}", icons::ARROW_SQUARE_OUT, tr!("Source on GitHub")), "https://github.com/g1lg1l/velo");
+            ui.label(RichText::new(tr!("Free and open source: the app under GPL-3.0-or-later, its libraries MIT or Apache-2.0.")).small().color(t.fg_muted));
+        });
+        kit::section(ui, t, icons::PIANO_KEYS, tr!("SISTER PROJECT"), false, |ui| {
+            ui.label(RichText::new(tr!("Making the beats too? Ravune, from the same maker, is a modular DAW for deep sound design.")).color(t.fg_text));
+            ui.hyperlink_to(format!("{}  {}", icons::ARROW_SQUARE_OUT, tr!("Ravune · a modular DAW")), "https://github.com/g1lg1l/ravune");
         });
     }
 
