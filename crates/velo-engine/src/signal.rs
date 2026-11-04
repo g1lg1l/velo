@@ -11,7 +11,7 @@
 use std::collections::VecDeque;
 use std::f64::consts::TAU;
 
-use velo_core::{AUDIO, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SMOOTH, SOURCES, SPEED, Scene, TIME, TIMER, TOGGLE, node_kind};
+use velo_core::{AUDIO, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind};
 
 use crate::shader::{Param, ParamType};
 
@@ -73,6 +73,10 @@ pub fn params(kind: &str) -> Option<Vec<Param>> {
         // a turn every 4 s at full speed
         SPEED => vec![p("seconds", float, 4.0, 0.1, 600.0), named("shape", &TIME_SHAPES)],
         DELAY => vec![p("beats", float, 1.0, 0.25, DELAY_BEATS)],
+        // a swing of half a second, overshooting by about a fifth
+        SPRING => vec![p("time_ms", float, 500.0, 50.0, 4000.0), p("bounce", float, 0.5, 0.0, 0.95)],
+        // the whole range in a tenth of a second is 1
+        SLOPE => vec![named("direction", &SLOPE_DIRECTIONS), p("time_ms", float, 100.0, 10.0, 2000.0)],
         // the whole picture to start with
         PROBE => vec![named("measure", &PROBE_MEASURES), p("position", ParamType::Vec2, 0.0, -1.0, 1.0), p("size", float, 1.0, 0.0, 1.0)],
         _ => return None,
@@ -97,6 +101,8 @@ const SEQ_BEATS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 pub const COMPARE_OPS: [&str; 2] = ["Above", "Below"];
 /// How a Smooth follows, in its `mode` parameter's order: at a steady speed, or slowing as it nears.
 pub const SMOOTH_MODES: [&str; 2] = ["Glide", "Lag"];
+/// Which way a Slope counts change, in its `direction` parameter's order.
+pub const SLOPE_DIRECTIONS: [&str; 3] = ["Rising", "Falling", "Either way"];
 /// What a Probe reads of the color, in its `measure` parameter's order.
 pub const PROBE_MEASURES: [&str; 5] = ["Brightness", "Red", "Green", "Blue", "Alpha"];
 
@@ -449,6 +455,56 @@ impl Smooth {
     }
 }
 
+/// Its input followed on a spring: a swing takes `time` seconds, and `bounce` (0 to under 1) is
+/// how far it overshoots and how long it rings (0 settles without passing it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spring {
+    pub time: f32,
+    pub bounce: f32,
+}
+
+impl Spring {
+    /// One frame; `state` is (where it is, how fast it moves).
+    pub fn step(&self, x: f32, dt: f32, state: &mut [f32; 4]) -> f32 {
+        let w = std::f32::consts::TAU / self.time.max(0.01);
+        let damping = 1.0 - self.bounce.clamp(0.0, 0.95);
+        // steps small enough to stay steady however fast it swings or long the frame
+        let steps = (w * dt / 0.2).ceil().clamp(1.0, 256.0);
+        let h = dt / steps;
+        let [at, speed, ..] = state;
+        for _ in 0..steps as u32 {
+            *speed += (w * w * (x - *at) - 2.0 * damping * w * *speed) * h;
+            *at += *speed * h;
+        }
+        *at
+    }
+}
+
+/// How fast its input changes: 1 when it crosses the whole range in `time` seconds, counting
+/// the way [`SLOPE_DIRECTIONS`] says.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Slope {
+    pub direction: u8,
+    pub time: f32,
+}
+
+impl Slope {
+    /// One frame; `state[0]` is the last input (NaN before the first).
+    pub fn step(&self, x: f32, dt: f32, state: &mut [f32; 4]) -> f32 {
+        let last = std::mem::replace(&mut state[0], x);
+        if last.is_nan() || dt <= 0.0 {
+            return 0.0;
+        }
+        let rate = (x - last) / dt * self.time;
+        (match self.direction {
+            1 => -rate,
+            2 => rate.abs(),
+            _ => rate,
+        })
+        .clamp(0.0, 1.0)
+    }
+}
+
 /// A picture read as a number: one of [`PROBE_MEASURES`] of its average color over a region,
 /// `size` of the picture each way round `position` (-1 to 1; size 0 is a point).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -503,6 +559,8 @@ pub enum Kind {
     Speed(f32, u8),
     /// How many beats back.
     Delay(f32),
+    Spring(Spring),
+    Slope(Slope),
     Probe(Probe),
 }
 
@@ -535,6 +593,8 @@ impl Kind {
             QUANTIZE => Kind::Quantize(v("steps", 4.0).round().clamp(2.0, 32.0) as u8),
             SPEED => Kind::Speed(v("seconds", 4.0).clamp(0.1, 600.0), index("shape", TIME_SHAPES.len() - 1)),
             DELAY => Kind::Delay(v("beats", 1.0).clamp(0.25, DELAY_BEATS)),
+            SPRING => Kind::Spring(Spring { time: v("time_ms", 500.0).clamp(50.0, 4000.0) / 1000.0, bounce: v("bounce", 0.5).clamp(0.0, 0.95) }),
+            SLOPE => Kind::Slope(Slope { direction: index("direction", SLOPE_DIRECTIONS.len() - 1), time: v("time_ms", 100.0).clamp(10.0, 2000.0) / 1000.0 }),
             PROBE => Kind::Probe(Probe {
                 measure: index("measure", PROBE_MEASURES.len() - 1),
                 position: node.params.get("position").map_or([0.0; 2], |v| [v[0].clamp(-1.0, 1.0), v[1].clamp(-1.0, 1.0)]),
@@ -593,10 +653,12 @@ pub fn plan(scene: &Scene) -> (Vec<Signal>, Vec<String>) {
         let inputs = [0, 1].map(|p| feeds(n, p).and_then(|(from, port)| keys.iter().position(|k| *k == format!("{from}/{port}")).map(|i| SOURCES.len() + i)));
         keys.extend((0..kind.outputs()).map(|p| format!("{}/{p}", n.id)));
         // a Remap's range unlearned (low over high), the last inputs high: no hit on the first
-        // frame; a Random from the middle, picking at once on the clock; a Probe dark till it reads
+        // frame; a Random from the middle, picking at once on the clock; a Probe dark till it reads;
+        // a Spring at rest at 0; a Slope with no last input, so no change on its first frame
         let state = match kind {
             Kind::Random(_) => [0.5, 0.5, 0.0, f32::NAN],
-            Kind::Probe(_) => [0.0; 4],
+            Kind::Probe(_) | Kind::Spring(_) => [0.0; 4],
+            Kind::Slope(_) => [f32::NAN, 0.0, 0.0, 0.0],
             _ => [0.0, 1.0, 0.0, 1.0],
         };
         signals.push(Signal { kind, inputs, slot, state, history: VecDeque::new() });
@@ -636,6 +698,8 @@ pub fn run(signals: &mut [Signal], sources: &mut [f32], beats: f64, dt: f32) {
                 sources[s.slot] = cycle(shape, s.state[0]);
             }
             Kind::Delay(back) => sources[s.slot] = delay(input(0), beats, back, &mut s.history),
+            Kind::Spring(spring) => sources[s.slot] = spring.step(input(0), dt, &mut s.state),
+            Kind::Slope(slope) => sources[s.slot] = slope.step(input(0), dt, &mut s.state),
             Kind::Remap(remap) => sources[s.slot] = remap.step(input(0), dt, &mut s.state),
             Kind::Math(math) => sources[s.slot] = math.at(input(0), s.inputs[1].map_or(math.value, |i| sources[i])),
             Kind::Envelope(envelope) => sources[s.slot] = envelope.step(input(0), dt, &mut s.state),
@@ -1007,5 +1071,34 @@ mod tests {
         let mut s = node(Kind::Delay(16.0), [true, false]);
         outputs(&mut s, &(0..2000).map(|i| (1.0, 0.0, f64::from(i) * 0.05)).collect::<Vec<_>>());
         assert!(s.history.len() <= (f64::from(DELAY_BEATS) / 0.05) as usize + 1, "{}", s.history.len());
+    }
+
+    #[test]
+    fn a_spring_overshoots_as_its_bounce_says_and_settles() {
+        let run = |bounce: f32, dt: f32| {
+            let spring = Spring { time: 0.5, bounce };
+            let mut state = [0.0; 4];
+            (0..(3.0 / dt) as usize).map(|_| spring.step(1.0, dt, &mut state)).collect::<Vec<f32>>()
+        };
+        let peak = |v: &[f32]| v.iter().copied().fold(0.0, f32::max);
+        let (none, some, lots) = (run(0.0, 1.0 / 60.0), run(0.5, 1.0 / 60.0), run(0.9, 1.0 / 60.0));
+        assert!(peak(&none) <= 1.0 + 1e-3, "no bounce, no overshoot: {}", peak(&none));
+        assert!(peak(&some) > 1.05 && peak(&some) < peak(&lots), "{} then {}", peak(&some), peak(&lots));
+        assert!((some.last().unwrap() - 1.0).abs() < 0.01, "settled after 3 s: {}", some.last().unwrap());
+        // a long frame (a hitch) stays steady
+        assert!(run(0.9, 0.5).iter().all(|v| v.is_finite() && v.abs() < 3.0));
+    }
+
+    #[test]
+    fn a_slope_says_how_fast_its_input_rises_or_falls() {
+        // the whole range in a tenth of a second is 1; a frame is 1/60 s
+        let mut s = Signal { state: [f32::NAN, 0.0, 0.0, 0.0], ..node(Kind::Slope(Slope { direction: 0, time: 0.1 }), [true, false]) };
+        let v = outputs(&mut s, &[(0.5, 0.0, 0.0), (0.55, 0.0, 0.0), (0.8, 0.0, 0.0), (0.7, 0.0, 0.0)]);
+        assert_eq!(v[0], 0.0, "nothing to compare the first frame with");
+        assert!((v[1] - 0.3).abs() < 1e-3 && v[2] == 1.0 && v[3] == 0.0, "{v:?}");
+        s.kind = Kind::Slope(Slope { direction: 1, time: 0.1 });
+        assert!((outputs(&mut s, &[(0.65, 0.0, 0.0)])[0] - 0.3).abs() < 1e-3, "falling counts");
+        s.kind = Kind::Slope(Slope { direction: 2, time: 0.1 });
+        assert!((outputs(&mut s, &[(0.7, 0.0, 0.0)])[0] - 0.3).abs() < 1e-3, "either way");
     }
 }

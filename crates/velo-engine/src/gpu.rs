@@ -2,7 +2,8 @@
 //! fullscreen passes ([`Runner`]): one texture per node, two for a feedback node (it reads the
 //! one it wrote last frame), a black texture for unconnected inputs. A particle node keeps its
 //! particles in a buffer of its own: two compute steps move them, then a sprite each is added up.
-//! A Probe node's picture side reads a node's picture back as a color ([`Probe`]).
+//! A Probe node's picture side reads a node's picture back as a color ([`Probe`]). A node with
+//! a history ([`ShaderNode::history`]) keeps its first input's last [`HISTORY`] frames.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering::Relaxed};
@@ -11,6 +12,16 @@ use crate::shader::{GLOBAL_FLOATS, ShaderError, ShaderNode};
 
 /// Every node renders in half floats: feedback trails and glow add up past 1 without banding.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// The frames a node with a history keeps, at half the canvas each way: a second at 30 fps, 133 MB
+/// at 1080p. ponytail: fixed; a length of its own (rebuilt when it changes) if more is wanted.
+pub const HISTORY: u32 = 32;
+/// Draws a picture into a history's frame, halving it.
+const RECORD: &str = r#"/*{ "name": "Record", "category": "effect", "inputs": [{ "id": "src" }], "amount": "none" }*/
+fn main_image(uv: vec2f, px: vec2f) -> vec4f {
+    return textureSample(src, smp, uv);
+}
+"#;
 
 /// The particles a particle node's buffer holds (its `count` keeps fewer), 2 MB of them.
 pub const PARTICLES: u32 = 65536;
@@ -68,6 +79,11 @@ impl Program {
             };
             entry(3 + i, ty)
         }));
+        if node.history {
+            let at = 3 + textures(&node) as u32;
+            entries.push(entry(at, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2Array, multisampled: false }));
+            entries.push(entry(at + 1, uniform));
+        }
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(&node.name), entries: &entries });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(&node.name), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         // a particle node draws a quad a particle, read from its buffer: position and velocity, then age, life, seed, size
@@ -177,6 +193,17 @@ struct RunNode {
     groups: [wgpu::BindGroup; 2],
     /// A particle node's particles (zeroed, so none, in a new graph) and their compute binding.
     sim: Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    past: Option<Past>,
+}
+
+/// A node's history: its first input drawn into a frame of a ring each frame, before it runs.
+struct Past {
+    /// A view a frame, drawn into in turn.
+    frames: Vec<wgpu::TextureView>,
+    /// Which frame is this one's (and how many), for `past_frame`.
+    head: wgpu::Buffer,
+    /// The record pass reading the first input, by parity.
+    groups: [wgpu::BindGroup; 2],
 }
 
 /// A graph, ready to render frames: textures allocated, bind groups built. Nothing in
@@ -192,6 +219,8 @@ pub struct Runner {
     inputs: Vec<Vec<Option<usize>>>,
     order: Vec<usize>,
     frame: u64,
+    /// What draws a history's frames, when a node keeps one.
+    record: Option<Program>,
 }
 
 impl Runner {
@@ -205,6 +234,11 @@ impl Runner {
         let globals = buffer("globals", (GLOBAL_FLOATS * 4) as u64);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
         let black = texture(device, [1, 1]);
+        let record = match nodes.iter().any(|n| programs.get(n.program).is_some_and(|p| p.node.history)) {
+            true => Some(ShaderNode::parse(RECORD).and_then(|node| Program::new(device, node)).map_err(|e| format!("history: {e}"))?),
+            false => None,
+        };
+        let no_params = buffer("params", 16);
         let mut targets = Vec::with_capacity(nodes.len());
         for spec in nodes {
             let program = programs.get(spec.program).ok_or_else(|| format!("no program {}", spec.program))?;
@@ -216,6 +250,31 @@ impl Runner {
         for (n, spec) in nodes.iter().enumerate() {
             let program = &programs[spec.program];
             let params = buffer("params", (program.node.params.len().max(1) * 16) as u64);
+            let first = |p: usize| spec.inputs.first().copied().flatten().map_or(&black, |from| shown(from, p));
+            let past = record.as_ref().filter(|_| program.node.history).map(|record| {
+                let ring = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("history"),
+                    size: wgpu::Extent3d { width: (size[0] / 2).max(1), height: (size[1] / 2).max(1), depth_or_array_layers: HISTORY },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let frame = |i| ring.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: i, array_layer_count: Some(1), ..Default::default() });
+                let all = ring.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2Array), ..Default::default() });
+                let group = |p: usize| {
+                    let entries = [
+                        wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: no_params.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+                        wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(first(p)) },
+                    ];
+                    device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("history"), layout: &record.layout, entries: &entries })
+                };
+                (Past { frames: (0..HISTORY).map(frame).collect(), head: buffer("history", 16), groups: [group(0), group(1)] }, all)
+            });
             let group = |p: usize| {
                 let file = media.iter().find(|m| m.0 == n).map(|m| &m.1);
                 let mut views: Vec<&wgpu::TextureView> = (0..program.node.inputs.len())
@@ -235,7 +294,12 @@ impl Runner {
                     wgpu::BindGroupEntry { binding: 1, resource: params.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
                 ];
+                let at = 3 + views.len() as u32;
                 entries.extend(views.into_iter().enumerate().map(|(i, v)| wgpu::BindGroupEntry { binding: 3 + i as u32, resource: wgpu::BindingResource::TextureView(v) }));
+                if let Some((past, all)) = &past {
+                    entries.push(wgpu::BindGroupEntry { binding: at, resource: wgpu::BindingResource::TextureView(all) });
+                    entries.push(wgpu::BindGroupEntry { binding: at + 1, resource: past.head.as_entire_binding() });
+                }
                 device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(&program.node.name), layout: &program.layout, entries: &entries })
             };
             let groups = [group(0), group(1)];
@@ -250,12 +314,12 @@ impl Runner {
                 let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("particles"), layout: &sim.layout, entries: &entries });
                 (buffer, group)
             });
-            run.push(RunNode { program: spec.program, params, targets: Vec::new(), groups, sim });
+            run.push(RunNode { program: spec.program, params, targets: Vec::new(), groups, sim, past: past.map(|p| p.0) });
         }
         for (node, views) in run.iter_mut().zip(targets) {
             node.targets = views;
         }
-        Ok(Self { size, globals, nodes: run, inputs: nodes.iter().map(|n| n.inputs.clone()).collect(), order, frame: 0 })
+        Ok(Self { size, globals, nodes: run, inputs: nodes.iter().map(|n| n.inputs.clone()).collect(), order, frame: 0, record })
     }
 
     /// Sets a node's parameter values (one vec4 per parameter, in header order).
@@ -298,6 +362,26 @@ impl Runner {
             let node = &self.nodes[n];
             let program = &programs[node.program];
             let target = &node.targets[parity % node.targets.len()];
+            // a history: the first input into this frame's place in the ring, before the node reads it
+            if let (Some(past), Some(record)) = (&node.past, &self.record) {
+                let head = (self.frame % u64::from(HISTORY)) as usize;
+                let mut at = [0u8; 16];
+                for (chunk, v) in at.as_chunks_mut::<4>().0.iter_mut().zip([head as f32, HISTORY as f32]) {
+                    *chunk = v.to_ne_bytes();
+                }
+                queue.write_buffer(&past.head, 0, &at);
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("history"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &past.frames[head], resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store }, depth_slice: None })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&record.pipeline);
+                pass.set_bind_group(0, &past.groups[parity], &[]);
+                pass.draw(0..3, 0..1);
+            }
             if let (Some(sim), Some((_, group))) = (&program.sim, &node.sim) {
                 let mut pass = encoder.begin_compute_pass(&Default::default());
                 pass.set_bind_group(0, group, &[]);
@@ -1485,5 +1569,37 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             };
             println!("{slug}: {ms:.2} ms at 1080p");
         }
+    }
+
+    #[test]
+    fn a_time_machine_shows_its_input_as_it_was_frames_ago() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // a picture whose red is the time, into a Time Machine
+        let clock = ShaderNode::parse(r#"/*{ "name": "Clock" }*/
+fn main_image(uv: vec2f, px: vec2f) -> vec4f { return vec4f(g.time, 0.0, 0.0, 1.0); }"#).unwrap();
+        let programs = [Program::new(&device, clock).unwrap(), program(&device, "timemachine")];
+        let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![Some(0), None] }];
+        let mut runner = Runner::new(&device, &programs, &nodes, &[], [64, 36], &wave_texture(&device)).unwrap();
+        let frames = |runner: &mut Runner, back: f32, from: usize, to: usize| {
+            let values = programs[1].node.values(|p| (p == "frames").then_some([back, 0.0, 0.0, 0.0]));
+            runner.set_params(&queue, &programs, 1, &values);
+            for frame in from..to {
+                let mut encoder = device.create_command_encoder(&Default::default());
+                runner.render(&queue, &mut encoder, &programs, &[frame as f32 / 10.0, 1.0 / 60.0, frame as f32, 16.0 / 9.0]);
+                queue.submit([encoder.finish()]);
+            }
+            half(read(&device, &queue, runner, 1)[0])
+        };
+        // the tenth frame (0.9) shows the seventh's (0.6); between two frames, between their pictures
+        let got = frames(&mut runner, 3.0, 0, 10);
+        assert!((got - 0.6).abs() < 0.01, "{got}");
+        assert!((frames(&mut runner, 2.5, 10, 11) - 0.75).abs() < 0.01, "frame 10 (1.0), 2.5 back: between 0.8 and 0.7");
+        assert!((frames(&mut runner, 0.0, 11, 12) - 1.1).abs() < 0.01, "none back: as it is");
+        // further back than it has kept: the ring wraps over what came last, never past it
+        assert!((frames(&mut runner, 31.0, 12, 50) - (4.9 - 3.1)).abs() < 0.01);
     }
 }

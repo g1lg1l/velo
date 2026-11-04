@@ -53,6 +53,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
 | `inputs` | Textures, each `{ "id": "src", "type": "texture" }`, in binding order |
 | `feedback` | `true`: the node reads its own previous frame as `prev` |
 | `audio` | `true`: the node reads the audio texture as `wave` |
+| `history` | `true`: Velo keeps the first input's last 32 frames (at half the canvas each way) for `past_frame` |
 | `amount` | For effects: `"manual"` (the shader uses `amount` itself) or `"none"` (no amount knob) |
 
 Unknown keys are an error, so a typo doesn't pass silently.
@@ -69,8 +70,9 @@ Unknown keys are an error, so a typo doesn't pass silently.
 | `smp` | The sampler: `textureSample(src, smp, uv)` |
 | `prev` | The node's previous frame, with `"feedback": true` |
 | `wave` | The audio texture, with `"audio": true` |
+| `past_frame(uv, n)` | With `"history": true`, the first input `n` frames back (0 is this frame, up to 31; a fraction is between two frames) |
 
-The ids `g`, `smp`, `prev`, `wave`, `uv`, `main_image`, `velo_params` and anything starting with `velo_` are reserved. Errors are reported at the line of your file, not of the wrapped one.
+The ids `g`, `smp`, `prev`, `wave`, `uv`, `main_image`, `past_frame`, `velo_params` and anything starting with `velo_` are reserved. Errors are reported at the line of your file, not of the wrapped one.
 
 **Generators** get an `opacity` parameter (0..1) unless they declare one. **Effects** get `amount` (0..1, default 1): Velo returns `mix(input, main_image(...), amount)`, so 0 passes the input through. A shader that can do better (a blur whose radius scales with the amount) declares `"amount": "manual"` and must then return its input unchanged at 0.
 

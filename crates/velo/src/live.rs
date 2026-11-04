@@ -379,9 +379,11 @@ impl Live {
         let status = &self.engine.status;
         let (live, fading) = (status.live.load(Relaxed), status.fading.load(Relaxed));
         let in_use: Vec<u64> = [live, fading, status.armed().map_or(0, |a| a.0), self.launched, self.edit].into_iter().chain(self.layers.iter().map(|l| l.0)).collect();
-        // what a graph's pictures take: a texture of the canvas each node, two for feedback
+        // what a graph's pictures take: a texture of the canvas each node, two for feedback, and a
+        // history's frames at a quarter of one each (in quarters)
         let texture = u64::from(size[0]) * u64::from(size[1]) * 8;
-        let bytes = |s: &Slot| s.installed.iter().map(|(_, shader)| 1 + u64::from(shader.feedback)).sum::<u64>() * texture;
+        let quarters = |s: &velo_engine::ShaderNode| 4 * (1 + u64::from(s.feedback)) + if s.history { u64::from(velo_engine::gpu::HISTORY) } else { 0 };
+        let bytes = |s: &Slot| s.installed.iter().map(|(_, shader)| quarters(shader)).sum::<u64>() * texture / 4;
         let held: Vec<(u64, bool, u64)> = self.slots.iter().map(|s| (s.key, project.scene(&s.scene).is_some(), bytes(s))).collect();
         let room = match self.budget.filter(|b| *b > 0) {
             // half of what the system lets Velo hold: the rest is the computer's

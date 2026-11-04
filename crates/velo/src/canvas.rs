@@ -3461,6 +3461,9 @@ fn node_icon(id: &str) -> &'static str {
         "velo.uvmap" => icons::MAP_TRIFOLD,
         "velo.lookup" => icons::EYEDROPPER,
         "velo.freeze" => icons::SNOWFLAKE,
+        "velo.timemachine" => icons::HOURGLASS,
+        "velo.key" => icons::SCISSORS,
+        "velo.lumablur" => icons::DROP_HALF,
         v::BLEND => icons::CIRCLES_THREE,
         "velo.mask" => icons::SELECTION_INVERSE,
         "velo.merge" => icons::GIT_MERGE,
@@ -3487,6 +3490,8 @@ fn node_icon(id: &str) -> &'static str {
         v::QUANTIZE => icons::STAIRS,
         v::SPEED => icons::SPEEDOMETER,
         v::DELAY => icons::CLOCK_COUNTER_CLOCKWISE,
+        v::SPRING => icons::SPIRAL,
+        v::SLOPE => icons::TREND_UP,
         _ => icons::SPARKLE,
     }
 }
@@ -3534,6 +3539,9 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         "velo.uvmap" => tr!("Shows the picture where a second one, its map, says: any warp."),
         "velo.lookup" => tr!("Recolors the picture by its brightness from a second one, its palette."),
         "velo.freeze" => tr!("Holds the picture on a hit, or takes a frame every few beats."),
+        "velo.timemachine" => tr!("The picture as it was a few frames ago; with a map, each part as far back as the map is bright."),
+        "velo.key" => tr!("Cuts a color, the dark or the bright out of the picture, to see through it."),
+        "velo.lumablur" => tr!("Blurs the picture as much as a second one, its map, is bright there."),
         velo_core::SHADER_FX => tr!("An effect in WGSL on what comes in: one of its presets (Glitch, VHS, LED Wall…) or your own code."),
         velo_core::BLEND => tr!("Up to sixteen pictures in one: a blend mode, its intensity, a key for dark backgrounds."),
         "velo.layers" => tr!("Up to eight pictures, each with its mode, opacity and order."),
@@ -3560,6 +3568,8 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::QUANTIZE => tr!("Snaps what comes in to a few even steps."),
         velo_core::SPEED => tr!("Goes round as fast as what comes in says: motion that speeds up and slows down, never jumps."),
         velo_core::DELAY => tr!("What comes in, played back a few beats later."),
+        velo_core::SPRING => tr!("Follows what comes in on a spring: it overshoots and swings back."),
+        velo_core::SLOPE => tr!("How fast what comes in rises or falls: 1 for a sudden jump."),
         velo_core::PROBE => tr!("A picture read as a number: its brightness or a channel, over all of it, a part or a point."),
         _ => return None,
     })

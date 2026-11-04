@@ -619,6 +619,9 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind("velo.uvmap", "UV Map", Category::Effect, &["in", "map"], OUT),
     kind("velo.lookup", "Lookup", Category::Effect, &["in", "palette"], OUT),
     kind("velo.freeze", "Freeze", Category::Effect, IN, OUT),
+    kind("velo.timemachine", "Time Machine", Category::Effect, &["in", "map"], OUT),
+    kind("velo.key", "Key", Category::Effect, IN, OUT),
+    kind("velo.lumablur", "Luma Blur", Category::Effect, &["in", "map"], OUT),
     kind(SHADER_FX, "Shader FX", Category::Effect, &["src"], OUT),
     kind(BLEND, "Blend", Category::Composite, &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"], OUT),
     kind("velo.mask", "Mask", Category::Composite, &["in", "mask"], OUT),
@@ -646,6 +649,8 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(QUANTIZE, "Quantize", Category::Signal, IN, OUT),
     kind(SPEED, "Speed", Category::Signal, &["in", "reset"], OUT),
     kind(DELAY, "Delay", Category::Signal, IN, OUT),
+    kind(SPRING, "Spring", Category::Signal, IN, OUT),
+    kind(SLOPE, "Slope", Category::Signal, IN, OUT),
 ];
 
 /// Up to sixteen pictures merged in one, as many inputs shown as its `inputs` parameter says.
@@ -784,6 +789,10 @@ pub const QUANTIZE: &str = "velo.quantize";
 pub const SPEED: &str = "velo.speed";
 /// Its input as it was a number of beats ago.
 pub const DELAY: &str = "velo.delay";
+/// Its input followed on a spring: it overshoots and swings back.
+pub const SPRING: &str = "velo.spring";
+/// How fast its input changes, rising, falling or either way.
+pub const SLOPE: &str = "velo.slope";
 /// A picture read as a number: its brightness (or a channel) over a region, or at a point. The
 /// one signal node a picture goes into.
 pub const PROBE: &str = "velo.probe";

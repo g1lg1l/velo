@@ -2,8 +2,8 @@
 //! declares the node; its body defines `fn main_image(uv: vec2f, px: vec2f) -> vec4f`. Velo
 //! writes the rest around it: the globals `g` (time, audio, beat), every parameter as a plain
 //! variable named by its id (ISF-style: `speed`, not `params.speed`), one texture per input plus
-//! the sampler `smp`, `prev` for feedback, `wave` for audio, the entry points, and for effects the `amount`
-//! contract (0 passes the input through, docs/graph.md).
+//! the sampler `smp`, `prev` for feedback, `wave` for audio, `past_frame` for a history, the
+//! entry points, and for effects the `amount` contract (0 passes the input through, docs/graph.md).
 
 use std::fmt;
 
@@ -18,7 +18,7 @@ pub const GLOBALS: [&str; 21] =
 pub const GLOBAL_FLOATS: usize = 24;
 
 /// The built-in nodes, written in the same format as anyone's (dogfooding the format).
-pub const BUILTINS: [(&str, &str); 32] = [
+pub const BUILTINS: [(&str, &str); 35] = [
     ("noise", include_str!("../shaders/noise.wgsl")),
     ("gradient", include_str!("../shaders/gradient.wgsl")),
     ("shapes", include_str!("../shaders/shapes.wgsl")),
@@ -52,6 +52,9 @@ pub const BUILTINS: [(&str, &str); 32] = [
     ("crop", include_str!("../shaders/crop.wgsl")),
     ("polar", include_str!("../shaders/polar.wgsl")),
     ("freeze", include_str!("../shaders/freeze.wgsl")),
+    ("key", include_str!("../shaders/key.wgsl")),
+    ("lumablur", include_str!("../shaders/lumablur.wgsl")),
+    ("timemachine", include_str!("../shaders/timemachine.wgsl")),
     // the Output's last grade of what goes out
     ("output", include_str!("../shaders/output.wgsl")),
 ];
@@ -120,6 +123,8 @@ pub struct ShaderNode {
     pub feedback: bool,
     /// Reads the shared waveform texture as `wave`.
     pub audio: bool,
+    /// Keeps its first input's last [`crate::gpu::HISTORY`] frames, read with `past_frame`.
+    pub history: bool,
     /// A particle system ([`crate::gpu`]): instead of `main_image`, the file has the entry points
     /// `velo_emit` and `velo_step` (compute) and `velo_vs`, `velo_fs` (a sprite per particle), and
     /// calls `velo_load()` to read its parameters.
@@ -167,6 +172,8 @@ struct Header {
     #[serde(default)]
     audio: bool,
     #[serde(default)]
+    history: bool,
+    #[serde(default)]
     particles: bool,
     /// "manual": the shader honours `amount` itself instead of Velo mixing with the input;
     /// "none": an effect with no amount knob (Opacity: its own knob is the amount).
@@ -202,7 +209,19 @@ struct HeaderInput {
 }
 
 /// Words the generated code uses: a parameter or input can't take them.
-const RESERVED: [&str; 7] = ["g", "smp", "prev", "wave", "velo_params", "main_image", "uv"];
+const RESERVED: [&str; 8] = ["g", "smp", "prev", "wave", "past_frame", "velo_params", "main_image", "uv"];
+
+/// What a node with a history reads its first input's past frames with (gpu::Runner keeps them,
+/// half the canvas each way): `n` frames back, 0 this one, between two frames for a fraction.
+const PAST_FRAME: &str = "fn past_frame(uv: vec2f, n: f32) -> vec4f {
+    let count = velo_past.y;
+    let back = clamp(n, 0.0, count - 1.0);
+    let a = floor(back);
+    let near = textureSampleLevel(velo_history, smp, uv, i32((velo_past.x - a + count) % count), 0.0);
+    let far = textureSampleLevel(velo_history, smp, uv, i32((velo_past.x - a - 1.0 + count * 2.0) % count), 0.0);
+    return mix(near, far, back - a);
+}
+";
 
 impl ShaderNode {
     /// Reads the header and wraps the file. Doesn't compile it: see [`ShaderNode::validate`].
@@ -267,9 +286,15 @@ impl ShaderNode {
         pre += "}\n";
         pre += &format!("struct VeloParams {{\n    v: array<vec4<f32>, {}>,\n}}\n", params.len().max(1));
         pre += "@group(0) @binding(0) var<uniform> g: VeloGlobals;\n@group(0) @binding(1) var<uniform> velo_params: VeloParams;\n@group(0) @binding(2) var smp: sampler;\n";
-        // textures from binding 3 on: inputs, previous frame, audio
-        for (binding, id) in (3..).zip(inputs.iter().map(String::as_str).chain(header.feedback.then_some("prev")).chain(header.audio.then_some("wave"))) {
+        // textures from binding 3 on: inputs, previous frame, audio; then a history's frames and where it is
+        let textures: Vec<&str> = inputs.iter().map(String::as_str).chain(header.feedback.then_some("prev")).chain(header.audio.then_some("wave")).collect();
+        for (binding, id) in (3..).zip(&textures) {
             pre += &format!("@group(0) @binding({binding}) var {id}: texture_2d<f32>;\n");
+        }
+        let history = header.history && !header.particles && !inputs.is_empty();
+        if history {
+            let at = 3 + textures.len();
+            pre += &format!("@group(0) @binding({at}) var velo_history: texture_2d_array<f32>;\n@group(0) @binding({}) var<uniform> velo_past: vec4<f32>;\n{PAST_FRAME}", at + 1);
         }
         for p in &params {
             pre += &format!("var<private> {}: {};\n", p.id, p.ty.wgsl());
@@ -278,7 +303,7 @@ impl ShaderNode {
         let load: String = params.iter().enumerate().map(|(slot, p)| format!("    {} = {};\n", p.id, p.ty.read(slot))).collect();
         if header.particles {
             let wgsl = format!("{pre}{source}\n// Velo: the parameters\nfn velo_load() {{\n{load}}}\n");
-            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, particles: true, wgsl, preamble_lines });
+            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, history: false, particles: true, wgsl, preamble_lines });
         }
 
         let mut post = String::from("\n// Velo: entry points\nstruct VeloVertex {\n    @builtin(position) pos: vec4<f32>,\n    @location(0) uv: vec2<f32>,\n}\n");
@@ -292,13 +317,13 @@ impl ShaderNode {
             None => post += "    return c;\n}\n",
         }
         let wgsl = format!("{pre}{source}{post}");
-        Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: header.feedback, audio: header.audio, particles: false, wgsl, preamble_lines })
+        Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: header.feedback, audio: header.audio, history, particles: false, wgsl, preamble_lines })
     }
 
     /// A node whose whole module was written elsewhere (an ISF shader, translated by naga):
     /// it has Velo's bindings and entry points already.
     pub(crate) fn assembled(name: String, category: String, description: String, params: Vec<Param>, inputs: Vec<String>, wgsl: String) -> Self {
-        ShaderNode { name, category, description, params, inputs, feedback: false, audio: false, particles: false, wgsl, preamble_lines: 0 }
+        ShaderNode { name, category, description, params, inputs, feedback: false, audio: false, history: false, particles: false, wgsl, preamble_lines: 0 }
     }
 
     /// Compiles the module with naga, as wgpu will: syntax, types, uniformity. Errors come back at

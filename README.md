@@ -56,7 +56,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - Any source onto any value, with its amount, attack, release and invert. Every generator and effect also has an **Automagic** knob that plays along by itself.
 
 **Makes pictures**
-- 52 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Text, Image, Video, Media List), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (LFO, Envelope, Sequencer, Sample & Hold, Random, Probe and more).
+- 59 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Text, Image, Video, Media List), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze, Time Machine, Key and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (LFO, Envelope, Sequencer, Sample & Hold, Random, Probe, Speed, Delay, Spring and more).
 - 38 shader presets, from Plasma and Fire to Lasers, Fractal and V Beams, and 25 effect presets, from Glitch and VHS to LED Wall and God Rays.
 - Your own WGSL or ISF shaders become nodes with knobs, rebuilt as you type or save. A broken shader keeps the last one that worked.
 - Stills, GIFs, image sequences, HAP, H.264 and HEVC movies.
@@ -95,7 +95,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 <table>
 <tr>
 <td width="50%"><img src="docs/screenshots/patch.png" alt="The Audio In card: a cassette whose reels turn with the level, the test loop at 128 BPM, and graphs of level, bass, mid and high; the mid and high cables plug into jacks on the Velo shader card, beside the live preview"><br><sub><b>The patch.</b> Audio In's mid and high plug into the shader's jacks.</sub></td>
-<td width="50%"><img src="docs/screenshots/node-menu.png" alt="The node menu: a search box, a tab per group (All, Generators, Effects, Composite, Control, Output, Signals, Logic) and each node with its icon and a line on what it does"><br><sub><b>The node menu.</b> 52 nodes, one key away.</sub></td>
+<td width="50%"><img src="docs/screenshots/node-menu.png" alt="The node menu: a search box, a tab per group (All, Generators, Effects, Composite, Control, Output, Signals, Logic) and each node with its icon and a line on what it does"><br><sub><b>The node menu.</b> 59 nodes, one key away.</sub></td>
 </tr>
 <tr>
 <td width="50%"><img src="docs/screenshots/mapping.png" alt="A mapping's popover: Audio In's kick moving Kaleido's zoom, with its amount, an envelope drawing the attack and release, and an invert key"><br><sub><b>A mapping.</b> The kick moves Kaleido's zoom, with its own envelope.</sub></td>
