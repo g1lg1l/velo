@@ -111,7 +111,10 @@ impl Program {
         let sim = node.particles.then(|| {
             let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
             let storage = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None };
-            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(&node.name), entries: &[entry(0, uniform), entry(1, uniform), entry(SIM_BINDING, storage)] });
+            let mut entries = vec![entry(0, uniform), entry(1, uniform), entry(SIM_BINDING, storage)];
+            // the picture the emitter reads, when the node has one: loaded, so no sampler
+            entries.extend(node.inputs.iter().position(|id| id == "emit").map(|i| entry(3 + i as u32, texture)));
+            let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(&node.name), entries: &entries });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(&node.name), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
             let compute = |entry_point| {
                 device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -191,8 +194,9 @@ struct RunNode {
     targets: Vec<wgpu::TextureView>,
     /// Per frame parity: the textures it reads change when an input (or it) has feedback.
     groups: [wgpu::BindGroup; 2],
-    /// A particle node's particles (zeroed, so none, in a new graph) and their compute binding.
-    sim: Option<(wgpu::Buffer, wgpu::BindGroup)>,
+    /// A particle node's particles (zeroed, so none, in a new graph) and their compute binding,
+    /// by frame parity (the picture it emits from may come from a node with feedback).
+    sim: Option<(wgpu::Buffer, [wgpu::BindGroup; 2])>,
     past: Option<Past>,
 }
 
@@ -275,14 +279,20 @@ impl Runner {
                 };
                 (Past { frames: (0..HISTORY).map(frame).collect(), head: buffer("history", 16), groups: [group(0), group(1)] }, all)
             });
-            let group = |p: usize| {
-                let file = media.iter().find(|m| m.0 == n).map(|m| &m.1);
-                let mut views: Vec<&wgpu::TextureView> = (0..program.node.inputs.len())
-                    .map(|i| match (i, file) {
-                        (0, Some(file)) => file,
+            let file = media.iter().find(|m| m.0 == n).map(|m| &m.1);
+            // a file stands in for the input called sprite (Particles), else for the first
+            let from_file = program.node.inputs.iter().position(|id| id == "sprite").unwrap_or(0);
+            // what the inputs show after a frame of parity p
+            let inputs_of = |p: usize| -> Vec<&wgpu::TextureView> {
+                (0..program.node.inputs.len())
+                    .map(|i| match file {
+                        Some(file) if i == from_file => file,
                         _ => spec.inputs.get(i).copied().flatten().map_or(&black, |from| shown(from, p)),
                     })
-                    .collect();
+                    .collect()
+            };
+            let group = |p: usize| {
+                let mut views = inputs_of(p);
                 if program.node.feedback {
                     views.push(shown(n, p + 1));
                 }
@@ -306,13 +316,18 @@ impl Runner {
             let sim = program.sim.as_ref().map(|sim| {
                 let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX;
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("particles"), size: EMITTER + u64::from(PARTICLES) * PARTICLE, usage, mapped_at_creation: false });
-                let entries = [
-                    wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: params.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: SIM_BINDING, resource: buffer.as_entire_binding() },
-                ];
-                let group = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("particles"), layout: &sim.layout, entries: &entries });
-                (buffer, group)
+                let emit = program.node.inputs.iter().position(|id| id == "emit");
+                let group = |p: usize| {
+                    let mut entries = vec![
+                        wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: params.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: SIM_BINDING, resource: buffer.as_entire_binding() },
+                    ];
+                    entries.extend(emit.map(|i| wgpu::BindGroupEntry { binding: 3 + i as u32, resource: wgpu::BindingResource::TextureView(inputs_of(p)[i]) }));
+                    device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("particles"), layout: &sim.layout, entries: &entries })
+                };
+                let groups = [group(0), group(1)];
+                (buffer, groups)
             });
             run.push(RunNode { program: spec.program, params, targets: Vec::new(), groups, sim, past: past.map(|p| p.0) });
         }
@@ -382,9 +397,9 @@ impl Runner {
                 pass.set_bind_group(0, &past.groups[parity], &[]);
                 pass.draw(0..3, 0..1);
             }
-            if let (Some(sim), Some((_, group))) = (&program.sim, &node.sim) {
+            if let (Some(sim), Some((_, groups))) = (&program.sim, &node.sim) {
                 let mut pass = encoder.begin_compute_pass(&Default::default());
-                pass.set_bind_group(0, group, &[]);
+                pass.set_bind_group(0, &groups[parity], &[]);
                 pass.set_pipeline(&sim.emit);
                 pass.dispatch_workgroups(1, 1, 1);
                 pass.set_pipeline(&sim.step);
@@ -1232,7 +1247,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         // a 2×2 picture, all green: the sprites take it, tinted white, instead of soft dots
         let media = std::sync::Arc::new(crate::media::Media { size: [2, 2], frames: vec![[0u8, 255, 0, 255].repeat(4)], ends: vec![1.0], movie: None, video: None });
         let programs = [program(&device, "particles")];
-        let nodes = [NodeSpec { program: 0, inputs: vec![None] }];
+        let nodes = [NodeSpec { program: 0, inputs: vec![None, None] }];
         let playing = crate::media::Playing::new(&device, &queue, 0, None, media);
         let views = [(0, playing.texture.create_view(&Default::default()))];
         let mut runner = Runner::new(&device, &programs, &nodes, &views, [32, 32], &wave_texture(&device)).unwrap();
@@ -1247,6 +1262,41 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         let pixels = read(&device, &queue, &runner, 0);
         let (r, g) = pixels.as_chunks::<4>().0.iter().fold((0u32, 0u32), |(r, g), p| (r.max(u32::from(p[0])), g.max(u32::from(p[1]))));
         assert!(g > 0 && r == 0, "green sprites, no red: ({r}, {g})");
+    }
+
+    #[test]
+    fn particles_are_born_where_the_emit_picture_is_lit() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // a burst on shape Picture over a 64 × 64 canvas: where each lit pixel is, with the
+        // square `lit` (x0, x1, y0, y1, in 0..1) wired into emit, or nothing wired
+        let burst = |lit: Option<[f32; 4]>| -> Vec<(usize, usize)> {
+            let [x0, x1, y0, y1] = lit.unwrap_or_default();
+            let source = format!("/*{{ \"name\": \"Square\" }}*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f {{ let inside = step({x0:?}, uv.x) * step(uv.x, {x1:?}) * step({y0:?}, uv.y) * step(uv.y, {y1:?}); return vec4f(vec3f(inside), 1.0); }}");
+            let programs = [Program::new(&device, ShaderNode::parse(&source).unwrap()).unwrap(), program(&device, "particles")];
+            let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![lit.map(|_| 0), None] }];
+            let mut runner = Runner::new(&device, &programs, &nodes, &[], [64, 64], &wave_texture(&device)).unwrap();
+            runner.set_params(&queue, &programs, 0, &[]);
+            let set = [("emission", 3000.0), ("speed", 0.0), ("size", 0.03), ("life", 5.0), ("shape", 3.0)];
+            runner.set_params(&queue, &programs, 1, &programs[1].node.values(|p| set.iter().find(|s| s.0 == p).map(|s| [s.1, 0.0, 0.0, 0.0])));
+            for frame in 0..4 {
+                let mut encoder = device.create_command_encoder(&Default::default());
+                runner.render(&queue, &mut encoder, &programs, &[frame as f32 / 60.0, 1.0 / 60.0, frame as f32, 1.0]);
+                queue.submit([encoder.finish()]);
+            }
+            read(&device, &queue, &runner, 1).as_chunks::<4>().0.iter().enumerate().filter(|(_, p)| p[3] != 0).map(|(i, _)| (i % 64, i / 64)).collect()
+        };
+        // a sprite's few pixels round the lit ones are fine; elsewhere is not
+        let inside = |lit: &[(usize, usize)], x: std::ops::RangeInclusive<usize>, y: std::ops::RangeInclusive<usize>| lit.iter().all(|(px, py)| x.contains(px) && y.contains(py));
+        let square = burst(Some([0.6, 0.8, 0.25, 0.5]));
+        assert!(!square.is_empty() && inside(&square, 35..=55, 13..=35), "born on the lit square only: {square:?}");
+        // a few lit pixels (a quarter of a percent of the picture) still find some
+        let few = burst(Some([0.5, 0.56, 0.5, 0.56]));
+        assert!(!few.is_empty() && inside(&few, 29..=39, 29..=39), "born on the few lit pixels only: {few:?}");
+        assert!(burst(None).is_empty(), "nothing wired into emit: nothing born");
     }
 
     #[test]

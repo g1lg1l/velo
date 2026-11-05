@@ -602,7 +602,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(MEDIA_LIST, "Media List", Category::Generator, &[], OUT),
     kind(TEXT, "Text", Category::Generator, &[], OUT),
     kind(TEXT_LIST, "Text List", Category::Generator, &[], OUT),
-    kind(PARTICLES, "Particles", Category::Generator, &[], OUT),
+    kind(PARTICLES, "Particles", Category::Generator, &["emit", "sprite"], OUT),
     kind("velo.transform", "Transform", Category::Effect, IN, OUT),
     kind("velo.kaleido", "Kaleido", Category::Effect, IN, OUT),
     kind("velo.color", "Color", Category::Effect, IN, OUT),

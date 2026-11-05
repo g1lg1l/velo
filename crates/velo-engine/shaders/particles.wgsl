@@ -1,9 +1,9 @@
 /*{
   "name": "Particles",
   "category": "generator",
-  "description": "Soft round sprites, or a picture of your own (a still, a GIF, a movie), born from an emitter (a point, a line or a circle) at emission a second, sent off along direction (in turns: 0 right, a quarter down, three quarters up) within spread, pulled by gravity, slowed by drag, swirled by turbulence, fading and growing or shrinking over their life, turning by spin. Emission starts at 0: map Kick onto it for a burst on every kick",
+  "description": "Soft round sprites, or a picture of your own (a still, a GIF, a movie, or anything wired into sprite), born from an emitter (a point, a line, a circle, or the lit parts of a picture wired into emit) at emission a second, sent off along direction (in turns: 0 right, a quarter down, three quarters up) within spread, pulled by gravity, slowed by drag, swirled by turbulence, fading and growing or shrinking over their life, turning by spin. Emission starts at 0: map Kick onto it for a burst on every kick",
   "particles": true,
-  "inputs": [{ "id": "sprite", "type": "texture" }],
+  "inputs": [{ "id": "emit", "type": "texture" }, { "id": "sprite", "type": "texture" }],
   "params": [
     { "id": "audio", "type": "float", "default": 0.0, "min": 0.0, "max": 2.0 },
     { "id": "emission", "type": "float", "default": 0.0, "min": 0.0, "max": 5000.0 },
@@ -18,7 +18,7 @@
     { "id": "end_size", "type": "float", "default": 1.0, "min": 0.0, "max": 3.0 },
     { "id": "tint", "type": "color", "default": [1.0, 0.8, 0.5, 1.0] },
     { "id": "fade_out", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 },
-    { "id": "shape", "type": "int", "default": 0, "names": ["Point", "Line", "Circle"] },
+    { "id": "shape", "type": "int", "default": 0, "names": ["Point", "Line", "Circle", "Picture"] },
     { "id": "position", "type": "vec2", "default": [0.0, 0.0], "min": -1.0, "max": 1.0 },
     { "id": "width", "type": "float", "default": 0.5, "min": 0.0, "max": 2.0 },
     { "id": "count", "type": "int", "default": 16384, "min": 256, "max": 65536 },
@@ -30,7 +30,10 @@
 // Positions and speeds in canvas heights, x across 0..aspect and y down 0..1; size is a
 // sprite's radius at birth, end_size how much of it is left at death; width is a line's length
 // or a circle's diameter. count: how many live at most (the oldest go first). sprite: the
-// node's file when it has one (a 1×1 black when not: soft dots then); spin: turns a second.
+// node's file when it has one, else what's wired in (a 1×1 black when neither: soft dots then);
+// spin: turns a second. emit: with shape Picture, particles are born where it's lit (its
+// brightness times its alpha is the odds); a black one, or a few lit pixels in a big one, gives
+// few or none: position moves the whole picture of them.
 
 struct Particle {
     pos: vec2f,
@@ -111,12 +114,32 @@ fn velo_emit() {
     sim.head = (sim.start + spawned) % n;
 }
 
+// a lit place on the emit picture (0..1 across, z is 1 when found), by guessing: the brighter,
+// the likelier. Only the few born each frame guess, so a lot of guesses is cheap; a picture lit
+// on under a hundredth of it finds one less and less often, none on a black one.
+fn lit_spot(s: ptr<function, u32>) -> vec3f {
+    let dims = vec2f(textureDimensions(emit));
+    for (var i = 0; i < 512; i++) {
+        let q = vec2f(random(s), random(s));
+        let c = textureLoad(emit, vec2i(q * dims), 0);
+        if dot(c.rgb, vec3f(0.299, 0.587, 0.114)) * c.a > random(s) {
+            return vec3f(q, 1.0);
+        }
+    }
+    return vec3f(0.0);
+}
+
 // the k-th born this frame, in slot i: the later ones younger, so a stream doesn't come in clumps
 fn born(i: u32, k: u32) -> Particle {
     var s = hash(i ^ hash(u32(g.frame) * 9781u + k));
     let d = direction * TAU;
     var at = (0.5 + position * 0.5) * vec2f(g.aspect, 1.0);
-    if shape == 1 {
+    var found = true;
+    if shape == 3 {
+        let spot = lit_spot(&s);
+        at = (spot.xy + position * 0.5) * vec2f(g.aspect, 1.0);
+        found = spot.z > 0.5;
+    } else if shape == 1 {
         // across the direction
         at += vec2f(-sin(d), cos(d)) * (random(&s) - 0.5) * width;
     } else if shape == 2 {
@@ -127,7 +150,8 @@ fn born(i: u32, k: u32) -> Particle {
     let a = d + (random(&s) - 0.5) * spread * TAU;
     var p: Particle;
     p.vel = vec2f(cos(a), sin(a)) * speed * mix(0.6, 1.0, random(&s));
-    p.life = life * mix(0.75, 1.25, random(&s));
+    // one that found no place is dead at birth
+    p.life = select(0.0, life * mix(0.75, 1.25, random(&s)), found);
     p.seed = random(&s);
     p.size = mix(0.5, 1.0, random(&s));
     p.age = dt() * (1.0 - (f32(k) + 0.5) / f32(sim.spawned));

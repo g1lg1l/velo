@@ -1281,6 +1281,7 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("End size", "Dimensione finale"),
     ("Fade out", "Dissolvenza"),
     ("Point", "Punto"),
+    ("Picture", "Immagine"),
     ("Count", "Quantità"),
     // the Audio In's detectors
     ("INPUT", "INGRESSO"),

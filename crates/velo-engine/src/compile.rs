@@ -129,7 +129,8 @@ fn plan_of(scene: &Scene) -> Plan {
             if !node.off {
                 return index.get(node.id.as_str()).copied();
             }
-            if node_kind(&node.kind).is_none_or(|k| k.inputs.is_empty()) {
+            // a generator's pins feed it, they aren't what it shows
+            if node_kind(&node.kind).is_none_or(|k| k.inputs.is_empty() || k.category == Category::Generator) {
                 return None;
             }
             node = scene.node(&scene.wire_into(&node.id, 0)?.from.0)?;

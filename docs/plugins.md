@@ -85,7 +85,7 @@ The ids `g`, `smp`, `prev`, `wave`, `uv`, `main_image`, `past_frame`, `velo_para
 The Waveform node draws all three (Spectrum, Radial, Scope, Rings).
 
 ### Particles
-A file whose header says `"particles": true` has no `main_image`: it defines `velo_emit` and `velo_step` (compute) and `velo_vs`, `velo_fs` (a sprite per particle), and calls `velo_load()` to read its parameters. Only the built-in Particles node uses it for now (`crates/velo-engine/shaders/particles.wgsl`; [rendering.md](rendering.md) §6).
+A file whose header says `"particles": true` has no `main_image`: it defines `velo_emit` and `velo_step` (compute) and `velo_vs`, `velo_fs` (a sprite per particle), and calls `velo_load()` to read its parameters. Only the built-in Particles node uses it for now (`crates/velo-engine/shaders/particles.wgsl`; [rendering.md](rendering.md) §6). An input called `emit` is also bound to the compute steps, to read with `textureLoad` (Particles' shape Picture is born where it's lit); an input called `sprite` takes the node's file in place of the first input.
 
 Not yet: several passes with named targets, shaders as scene transitions, compute nodes of your own.
 

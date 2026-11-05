@@ -322,7 +322,8 @@ fn the_catalog_is_consistent() {
         assert!(k.id.starts_with("velo."), "{}", k.id);
         let (ins, outs) = (k.inputs.len(), k.outputs.len());
         match k.category {
-            Category::Generator => assert_eq!((ins, outs), (0, 1), "{}", k.id),
+            // a generator reads no picture, bar Particles': its emit and sprite feed it, they aren't what it shows
+            Category::Generator => assert_eq!((ins, outs), (if k.id == PARTICLES { 2 } else { 0 }, 1), "{}", k.id),
             Category::Effect => assert!(ins >= 1 && outs == 1, "{}", k.id),
             Category::Composite | Category::Control => assert!(ins >= 2 && outs == 1, "{}", k.id),
             Category::Output => assert!(ins >= 1 && outs == 0, "{}", k.id),
