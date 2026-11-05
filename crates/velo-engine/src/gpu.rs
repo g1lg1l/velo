@@ -27,8 +27,12 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
 pub const PARTICLES: u32 = 65536;
 /// Where a particle node finds its particles: past its textures (its sprite is binding 3).
 const SIM_BINDING: u32 = 15;
+/// Where it finds a model's points: a vec4 each, after one that says how many.
+const POINTS_BINDING: u32 = 16;
+/// The most points a model gives a particle node (a bigger one is thinned out as it loads).
+pub const MAX_POINTS: usize = 131_072;
 /// Bytes a particle takes (particles.wgsl's `Particle`), after the emitter's 16.
-const PARTICLE: u64 = 32;
+const PARTICLE: u64 = 48;
 const EMITTER: u64 = 16;
 
 /// A shader node compiled for the GPU. Cloning shares the pipeline (wgpu handles are counted
@@ -88,8 +92,8 @@ impl Program {
         }
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(&node.name), entries: &entries });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(&node.name), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
-        // a particle node draws a quad a particle, read from its buffer: position and velocity, then age, life, seed, size
-        let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+        // a particle node draws a quad a particle, read from its buffer: position and age, velocity and life, seed and size
+        let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
         let sprites = [Some(wgpu::VertexBufferLayout { array_stride: PARTICLE, step_mode: wgpu::VertexStepMode::Instance, attributes: &attributes })];
         // their light adds up; their alpha covers
         let add = |dst_factor| wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor, operation: wgpu::BlendOperation::Add };
@@ -115,7 +119,8 @@ impl Program {
         let sim = node.particles.then(|| {
             let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
             let storage = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None };
-            let mut entries = vec![entry(0, uniform), entry(1, uniform), entry(SIM_BINDING, storage)];
+            let read_only = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None };
+            let mut entries = vec![entry(0, uniform), entry(1, uniform), entry(SIM_BINDING, storage), entry(POINTS_BINDING, read_only)];
             // the picture the emitter reads, when the node has one: loaded, so no sampler
             entries.extend(node.inputs.iter().position(|id| id == "emit").map(|i| entry(3 + i as u32, texture)));
             let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some(&node.name), entries: &entries });
@@ -202,9 +207,10 @@ struct RunNode {
     /// textures it reads change when an input (or it) has feedback, and a pass reads what an
     /// earlier one drew this frame and what a later one drew the frame before.
     groups: Vec<[wgpu::BindGroup; 2]>,
-    /// A particle node's particles (zeroed, so none, in a new graph) and their compute binding,
-    /// by frame parity (the picture it emits from may come from a node with feedback).
-    sim: Option<(wgpu::Buffer, [wgpu::BindGroup; 2])>,
+    /// A particle node's particles (zeroed, so none, in a new graph), its model's points (none
+    /// until [`Runner::set_points`]) and their compute binding, by frame parity (the picture it
+    /// emits from may come from a node with feedback).
+    sim: Option<(wgpu::Buffer, wgpu::Buffer, [wgpu::BindGroup; 2])>,
     past: Option<Past>,
 }
 
@@ -335,18 +341,20 @@ impl Runner {
             let sim = program.sim.as_ref().map(|sim| {
                 let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX;
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("particles"), size: EMITTER + u64::from(PARTICLES) * PARTICLE, usage, mapped_at_creation: false });
+                let points = device.create_buffer(&wgpu::BufferDescriptor { label: Some("points"), size: 16 * (MAX_POINTS as u64 + 1), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
                 let emit = program.node.inputs.iter().position(|id| id == "emit");
                 let group = |p: usize| {
                     let mut entries = vec![
                         wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: params.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: SIM_BINDING, resource: buffer.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: POINTS_BINDING, resource: points.as_entire_binding() },
                     ];
                     entries.extend(emit.map(|i| wgpu::BindGroupEntry { binding: 3 + i as u32, resource: wgpu::BindingResource::TextureView(inputs_of(p)[i]) }));
                     device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("particles"), layout: &sim.layout, entries: &entries })
                 };
                 let groups = [group(0), group(1)];
-                (buffer, groups)
+                (buffer, points, groups)
             });
             run.push(RunNode { program: spec.program, params, targets: Vec::new(), buffers, groups, sim, past: past.map(|p| p.0) });
         }
@@ -360,6 +368,20 @@ impl Runner {
     pub fn set_params(&self, queue: &wgpu::Queue, programs: &[Program], node: usize, values: &[[f32; 4]]) {
         let n = &self.nodes[node];
         queue.write_buffer(&n.params, 0, &programs[n.program].node.param_bytes(values));
+    }
+
+    /// A particle node's model: its points, kept in -1..1 round the middle (the first
+    /// [`MAX_POINTS`] count). Nothing for a node that isn't a particle system.
+    pub fn set_points(&self, queue: &wgpu::Queue, node: usize, points: &[[f32; 3]]) {
+        let Some((_, buffer, _)) = &self.nodes[node].sim else { return };
+        let points = &points[..points.len().min(MAX_POINTS)];
+        // a vec4 a point: how many first, then each point and a spare float
+        let mut bytes = Vec::with_capacity(16 * (points.len() + 1));
+        bytes.extend((points.len() as f32).to_ne_bytes().into_iter().chain([0u8; 12]));
+        for p in points {
+            bytes.extend(p.iter().flat_map(|c| c.to_ne_bytes()).chain([0u8; 4]));
+        }
+        queue.write_buffer(buffer, 0, &bytes);
     }
 
     /// Writes a node's parameter buffer as it is (what [`crate::Modulator`] computed).
@@ -416,7 +438,7 @@ impl Runner {
                 pass.set_bind_group(0, &past.groups[parity], &[]);
                 pass.draw(0..3, 0..1);
             }
-            if let (Some(sim), Some((_, groups))) = (&program.sim, &node.sim) {
+            if let (Some(sim), Some((_, _, groups))) = (&program.sim, &node.sim) {
                 let mut pass = encoder.begin_compute_pass(&Default::default());
                 pass.set_bind_group(0, &groups[parity], &[]);
                 pass.set_pipeline(&sim.emit);
@@ -455,7 +477,7 @@ impl Runner {
             pass.set_pipeline(&program.pipeline);
             pass.set_bind_group(0, &node.groups[program.passes.len()][parity], &[]);
             match &node.sim {
-                Some((buffer, _)) => {
+                Some((buffer, ..)) => {
                     pass.set_vertex_buffer(0, buffer.slice(EMITTER..));
                     pass.draw(0..4, 0..PARTICLES);
                 }
@@ -850,7 +872,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         // two frames of 2×1 pixels: red | green, then blue | blue; half a second each
         let px = |c: [[u8; 3]; 2]| c.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect::<Vec<u8>>();
         let frames = vec![px([[255, 0, 0], [0, 255, 0]]), px([[0, 0, 255], [0, 0, 255]])];
-        let media = std::sync::Arc::new(crate::media::Media { size: [2, 1], frames, ends: vec![0.5, 1.0], movie: None, video: None, live: None });
+        let media = std::sync::Arc::new(crate::media::Media { size: [2, 1], frames, ends: vec![0.5, 1.0], movie: None, video: None, live: None, points: None });
         let programs = [program(&device, "image")];
         let nodes = [NodeSpec { program: 0, inputs: vec![] }];
         let mut playing = crate::media::Playing::new(&device, &queue, 0, Some(1), media);
@@ -1282,7 +1304,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             return;
         };
         // a 2×2 picture, all green: the sprites take it, tinted white, instead of soft dots
-        let media = std::sync::Arc::new(crate::media::Media { size: [2, 2], frames: vec![[0u8, 255, 0, 255].repeat(4)], ends: vec![1.0], movie: None, video: None, live: None });
+        let media = std::sync::Arc::new(crate::media::Media { size: [2, 2], frames: vec![[0u8, 255, 0, 255].repeat(4)], ends: vec![1.0], movie: None, video: None, live: None, points: None });
         let programs = [program(&device, "particles")];
         let nodes = [NodeSpec { program: 0, inputs: vec![None, None] }];
         let playing = crate::media::Playing::new(&device, &queue, 0, None, media);
@@ -1299,6 +1321,103 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         let pixels = read(&device, &queue, &runner, 0);
         let (r, g) = pixels.as_chunks::<4>().0.iter().fold((0u32, 0u32), |(r, g), p| (r.max(u32::from(p[0])), g.max(u32::from(p[1]))));
         assert!(g > 0 && r == 0, "green sprites, no red: ({r}, {g})");
+    }
+
+    #[test]
+    fn a_particle_takes_the_bytes_the_buffer_and_vertex_layout_say() {
+        let node = ShaderNode::parse(crate::BUILTINS.iter().find(|b| b.0 == "particles").unwrap().1).unwrap();
+        let module = node.validate().unwrap();
+        let span = module.types.iter().find_map(|(_, t)| match (&t.name, &t.inner) {
+            (Some(name), naga::TypeInner::Struct { span, .. }) if name == "Particle" => Some(*span),
+            _ => None,
+        });
+        assert_eq!(span, Some(PARTICLE as u32), "particles.wgsl's Particle and gpu.rs's PARTICLE agree");
+    }
+
+    #[test]
+    fn particles_are_seen_from_a_camera_in_orbit_view() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // where a burst is lit on a 64 × 64 canvas, the model's points (shape Model) or a sphere
+        // (shape Sphere), seen in Orbit view with `set` over the defaults
+        let seen = |set: &[(&str, f32)], model: &[[f32; 3]]| -> Vec<(usize, usize)> {
+            let programs = [program(&device, "particles")];
+            let mut runner = Runner::new(&device, &programs, &[NodeSpec { program: 0, inputs: vec![] }], &[], [64, 64], &wave_texture(&device)).unwrap();
+            runner.set_points(&queue, 0, model);
+            let base = [("emission", 3000.0), ("speed", 0.0), ("size", 0.05), ("life", 5.0), ("view", 1.0), ("turn", 0.0)];
+            runner.set_params(&queue, &programs, 0, &programs[0].node.values(|p| set.iter().chain(&base).find(|s| s.0 == p).map(|s| [s.1, 0.0, 0.0, 0.0])));
+            for frame in 0..4 {
+                let mut encoder = device.create_command_encoder(&Default::default());
+                runner.render(&queue, &mut encoder, &programs, &[frame as f32 / 60.0, 1.0 / 60.0, frame as f32, 1.0]);
+                queue.submit([encoder.finish()]);
+            }
+            read(&device, &queue, &runner, 0).as_chunks::<4>().0.iter().enumerate().filter(|(_, p)| p[3] != 0).map(|(i, _)| (i % 64, i / 64)).collect()
+        };
+        let near = |lit: &[(usize, usize)], x: usize| lit.iter().any(|p| p.0.abs_diff(x) <= 3 && p.1.abs_diff(32) <= 3);
+        // two points a half canvas either side of the middle, as width scales them: the camera
+        // 1.6 away sees them at ±0.5 / (1.6 · tan 25°) = ±0.67 of the half width: columns 10.6 and 53.4
+        let sides = [[-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let model = [("shape", 5.0)];
+        let front = seen(&model, &sides);
+        assert!(near(&front, 11) && near(&front, 53) && !near(&front, 32), "either side, none between: {front:?}");
+        // a quarter turn round: one behind the other, both on the middle
+        let turned = seen(&[("shape", 5.0), ("orbit", 0.25)], &sides);
+        assert!(near(&turned, 32) && !near(&turned, 11) && !near(&turned, 53), "both on the middle: {turned:?}");
+        // a point behind the camera isn't drawn; no model at all, nothing
+        assert!(seen(&[("shape", 5.0), ("distance", 0.4)], &[[0.0, 0.0, 1.0]]).is_empty(), "behind the camera");
+        assert!(seen(&model, &[]).is_empty(), "no points, no particles");
+        // a ball of radius 0.4 canvas heights: inside 0.4 · 1.34 · 32 = 17 columns of the middle, all round it
+        let ball = seen(&[("shape", 4.0), ("width", 0.4)], &[]);
+        assert!(ball.len() > 20 && ball.iter().all(|p| p.0.abs_diff(32) <= 21 && p.1.abs_diff(32) <= 21), "a ball: {ball:?}");
+        assert!(ball.iter().any(|p| p.0 < 28) && ball.iter().any(|p| p.0 > 36) && ball.iter().any(|p| p.1 < 28) && ball.iter().any(|p| p.1 > 36), "round the middle");
+    }
+
+    /// Not a check: `VELO_ORBIT_SHOT=<file.png> cargo test -p velo-engine orbit_shot -- --ignored`
+    /// draws a Particles node's Orbit view, as it looks after ten seconds, of a torus of points
+    /// with a ball in it (a model of 40,000), 640 × 360.
+    #[test]
+    #[ignore]
+    fn orbit_shot() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else { return };
+        let programs = [program(&device, "particles")];
+        let (w, h) = (640u32, 360u32);
+        let mut runner = Runner::new(&device, &programs, &[NodeSpec { program: 0, inputs: vec![] }], &[], [w, h], &wave_texture(&device)).unwrap();
+        // a torus of points and a ball inside it
+        let mut state = 12345u32;
+        let mut rnd = || {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            (state >> 8) as f32 / 16777216.0
+        };
+        let pts: Vec<[f32; 3]> = (0..40000)
+            .map(|i| {
+                let (u, v) = (rnd() * std::f32::consts::TAU, rnd() * std::f32::consts::TAU);
+                if i % 4 == 0 {
+                    let (a, b, r) = (u, v * 0.5, 0.3 * rnd().cbrt());
+                    [r * b.sin() * a.cos(), r * b.sin() * a.sin(), r * b.cos()]
+                } else {
+                    [(0.7 + 0.3 * v.cos()) * u.cos(), (0.7 + 0.3 * v.cos()) * u.sin(), 0.3 * v.sin()]
+                }
+            })
+            .collect();
+        runner.set_points(&queue, 0, &pts);
+        let set = [("emission", 5000.0), ("speed", 0.0), ("size", 0.004), ("life", 10.0), ("shape", 5.0), ("view", 1.0), ("width", 0.5), ("distance", 1.9), ("orbit", 0.1), ("tilt", 0.08), ("turn", 0.0), ("count", 65536.0)];
+        runner.set_params(&queue, &programs, 0, &programs[0].node.values(|p| set.iter().find(|s| s.0 == p).map(|s| [s.1, 0.0, 0.0, 0.0]).or_else(|| (p == "tint").then_some([0.6, 0.8, 1.0, 1.0]))));
+        for frame in 0..700 {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runner.render(&queue, &mut encoder, &programs, &[frame as f32 / 60.0, 1.0 / 60.0, frame as f32, 16.0 / 9.0]);
+            queue.submit([encoder.finish()]);
+        }
+        let texels = read(&device, &queue, &runner, 0);
+        let mut img = image::RgbaImage::new(w, h);
+        for (i, p) in texels.as_chunks::<4>().0.iter().enumerate() {
+            let c = |k: usize| (half(p[k]).clamp(0.0, 1.0) * 255.0) as u8;
+            img.put_pixel(i as u32 % w, i as u32 / w, image::Rgba([c(0), c(1), c(2), 255]));
+        }
+        img.save(std::env::var("VELO_ORBIT_SHOT").unwrap()).unwrap();
     }
 
     #[test]

@@ -2210,27 +2210,28 @@ impl App {
     }
 
     /// A Particles node's sprite: the picture each particle is (a still, a GIF, a movie), or
-    /// soft dots without one.
+    /// soft dots without one; or a 3D model (.obj, .ply) they are born on, shape Model.
     fn sprite_section(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str) {
         let path = self.session.active().and_then(|s| s.node(node)).and_then(|n| n.media.clone());
         let failed = path.as_ref().and_then(|_| self.live.as_ref()?.media(node)).and_then(|l| l.get()?.as_ref().err().cloned());
         let (mut pick, mut clear) = (false, false);
         kit::section(ui, t, icons::SPARKLE, tr!("SPRITE"), false, |ui| {
             let Some(path) = &path else {
-                pick = kit::drop_zone(ui, t, icons::IMAGE, tr!("Choose a picture"), tr!("Each particle becomes it, tinted by Tint")).clicked();
+                pick = kit::drop_zone(ui, t, icons::IMAGE, tr!("Choose a picture or a 3D model"), tr!("Each particle becomes a picture, tinted by Tint; a .obj or .ply is what they're born on")).clicked();
                 return;
             };
             file_row(ui, t, icons::IMAGE, path);
-            match &failed {
-                Some(e) => kit::warning(ui, t, e),
-                None => kit::hint(ui, t, tr!("Each particle draws it, tinted by Tint. Stills, GIFs and movies work.")),
+            match (&failed, velo_engine::model::is_model(std::path::Path::new(path))) {
+                (Some(e), _) => kit::warning(ui, t, e),
+                (None, true) => kit::hint(ui, t, tr!("The particles are born on its points: set Shape to Model, and View to Orbit to turn a camera round it.")),
+                (None, false) => kit::hint(ui, t, tr!("Each particle draws it, tinted by Tint. Stills, GIFs and movies work.")),
             };
             ui.add_space(t.gap);
             let shown = kit::actions(ui, t, &[(kit::Variant::Outline, Some(icons::ARROWS_CLOCKWISE), tr!("Replace…")), (kit::Variant::Ghost, Some(icons::SPARKLE), tr!("Soft dots"))]);
             pick = shown[0].clicked();
             clear = shown[1].clicked();
         });
-        if let Some(picked) = pick.then(|| rfd::FileDialog::new().add_filter(tr!("Images"), &velo_engine::media::EXTENSIONS).pick_file()).flatten() {
+        if let Some(picked) = pick.then(|| rfd::FileDialog::new().add_filter(tr!("Images"), &velo_engine::media::EXTENSIONS).add_filter(tr!("3D models"), &velo_engine::model::EXTENSIONS).pick_file()).flatten() {
             self.run("node.set_media", json!({ "node": node, "media": picked.to_string_lossy() }));
         }
         if clear {

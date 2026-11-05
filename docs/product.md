@@ -26,7 +26,7 @@ The first two set the defaults, the third the extension model.
 **Is:** a realtime 2D visual instrument (GPU textures in, textures out) with audio analysis built in, live control (MIDI, keyboard, OSC), scenes with musical transitions, and output to displays, Spout and NDI.
 
 **Is not:**
-- **A 3D engine.** No scene graph, cameras, PBR or model import. 3D looks come from shaders (raymarching). Notch and TouchDesigner own this space.
+- **A 3D engine.** No scene graph, solid meshes, lights, depth buffer or PBR. 3D looks come from shaders (raymarching), and from Particles: a camera turning round a sphere or the points of a model (.obj, .ply), every point a glowing sprite adding up. Notch and TouchDesigner own the rest of this space.
 - **A projection-mapping suite.** The output keeps the picture's shape on any display; mesh warping and edge blending are for MadMapper.
 - **A general programming environment.** No tables, no Python, no DATs. Logic beyond modulation goes to outside tools over OSC or MCP.
 - **A video editor or timeline sequencer.** Shows are played live (scenes, macros, variations), not rendered from a timeline.

@@ -320,7 +320,8 @@ fn build(
     // what the GPU refuses from here (out of video memory, a binding) is the build's error
     let (memory, valid) = (device.push_error_scope(wgpu::ErrorFilter::OutOfMemory), device.push_error_scope(wgpu::ErrorFilter::Validation));
     for n in 0..plan.nodes.len() {
-        if let Some(m) = file(n).filter(|m| m.movie.is_none() || bc) {
+        // a model has no picture to play: its points go up below
+        if let Some(m) = file(n).filter(|m| m.points.is_none() && (m.movie.is_none() || bc)) {
             let speed = crate::modulate::slot(&programs[specs[n].program].node, "speed").map(|s| s.0);
             let mut p = crate::media::Playing::new(device, queue, n, speed, m.clone());
             let node = &programs[specs[n].program].node;
@@ -328,6 +329,7 @@ fn build(
             playing.push(p);
         }
     }
+    let models: Vec<(usize, std::sync::Arc<crate::media::Media>)> = (0..plan.nodes.len()).filter_map(|n| file(n).filter(|m| m.points.is_some()).map(|m| (n, m.clone()))).collect();
     let media = plan.nodes.iter().zip(files).filter_map(|((id, _), l)| Some((id.clone(), l?))).collect();
     let views: Vec<(usize, wgpu::TextureView)> = playing.iter().map(|p| (p.node, p.texture.create_view(&Default::default()))).collect();
     let runner = Runner::new(device, &programs, &specs, &views, size, wave);
@@ -335,6 +337,12 @@ fn build(
         return Err(crate::gpu_error(&e));
     }
     let runner = runner?;
+    // a Particles node's model: its points up on the GPU
+    for (n, model) in &models {
+        if let Some(points) = &model.points {
+            runner.set_points(queue, *n, points);
+        }
+    }
     // the Probes' picture sides, each reading its node for its signal node
     let mut probes = Vec::new();
     for (id, node) in plan.probes.iter().filter_map(|(id, node)| Some((id, (*node)?))) {

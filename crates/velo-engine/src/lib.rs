@@ -10,6 +10,7 @@ pub mod input;
 pub mod isf;
 pub mod launch;
 pub mod media;
+pub mod model;
 pub mod modulate;
 pub mod presets;
 pub mod runtime;

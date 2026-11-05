@@ -20,6 +20,6 @@ The milestones that got it here, named in some code comments: M1 First Light (a 
 
 ## Later, maybe
 
-Projection warping and edge blending · recording to a file · DMX and Art-Net out · Pro DJ Link · a web remote · an installation mode (autostart, watchdog, scheduled scenes) · HDR outputs.
+Solid, lit meshes with a depth buffer (Particles do points only) · Projection warping and edge blending · recording to a file · DMX and Art-Net out · Pro DJ Link · a web remote · an installation mode (autostart, watchdog, scheduled scenes) · HDR outputs.
 
 Ideas and requests are welcome in the [issues](https://github.com/g1lg1l/velo/issues).

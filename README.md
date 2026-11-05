@@ -59,7 +59,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - 61 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Text, Image, Video, Live, Media List), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze, Time Machine, Key and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (Beat Kick, LFO, Envelope, Sequencer, Sample & Hold, Random, Probe, Speed, Delay, Spring and more).
 - 40 shader presets, from Plasma and Fire to Lasers, Fractal, Reaction and V Beams, and 25 effect presets, from Glitch and VHS to LED Wall and God Rays.
 - Your own WGSL or ISF shaders become nodes with knobs, rebuilt as you type or save. A broken shader keeps the last one that worked. A WGSL shader can keep buffers from frame to frame, each drawn by a pass of its own, for simulations like reaction diffusion.
-- Particles are born wherever a picture is lit (a logo, an edge map, a movie) and drawn as soft dots or a picture of your own.
+- Particles are born wherever a picture is lit (a logo, an edge map, a movie), in a sphere, or on the points of a 3D model (.obj, .ply), and drawn as soft dots or a picture of your own; its Orbit view turns a camera round them.
 - Stills, GIFs, image sequences, HAP, H.264 and HEVC movies.
 - Live pictures with the Live node: **NDI** sources on the network, and on Windows **Spout** senders on this computer and cameras or capture cards.
 
@@ -108,7 +108,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 </tr>
 </table>
 
-Not a 3D engine, a mapping suite or a timeline editor: see [what Velo is not](docs/product.md#3-what-it-is-what-it-is-not).
+Not a 3D engine (Particles fly a camera round the points of a model, nothing solid or lit), a mapping suite or a timeline editor: see [what Velo is not](docs/product.md#3-what-it-is-what-it-is-not).
 
 > **Making the beats too?** [Ravune](https://github.com/g1lg1l/ravune), from the same maker, is a modular DAW for deep sound design.
 

@@ -1,7 +1,7 @@
 /*{
   "name": "Particles",
   "category": "generator",
-  "description": "Soft round sprites, or a picture of your own (a still, a GIF, a movie, or anything wired into sprite), born from an emitter (a point, a line, a circle, or the lit parts of a picture wired into emit) at emission a second, sent off along direction (in turns: 0 right, a quarter down, three quarters up) within spread, pulled by gravity, slowed by drag, swirled by turbulence, fading and growing or shrinking over their life, turning by spin. Emission starts at 0: map Kick onto it for a burst on every kick",
+  "description": "Soft round sprites, or a picture of your own (a still, a GIF, a movie, or anything wired into sprite), born from an emitter (a point, a line, a circle, a ball, the points of a 3D model set as its file (.obj, .ply), or the lit parts of a picture wired into emit) at emission a second, sent off along direction (in turns: 0 right, a quarter down, three quarters up) within spread, pulled by gravity, slowed by drag, swirled by turbulence, fading and growing or shrinking over their life, turning by spin. Emission starts at 0: map Kick onto it for a burst on every kick. View Orbit looks at them in 3D from a camera turning round the middle: no solid surfaces, their light adds up",
   "particles": true,
   "inputs": [{ "id": "emit", "type": "texture" }, { "id": "sprite", "type": "texture" }],
   "params": [
@@ -18,12 +18,18 @@
     { "id": "end_size", "type": "float", "default": 1.0, "min": 0.0, "max": 3.0 },
     { "id": "tint", "type": "color", "default": [1.0, 0.8, 0.5, 1.0] },
     { "id": "fade_out", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 },
-    { "id": "shape", "type": "int", "default": 0, "names": ["Point", "Line", "Circle", "Picture"] },
+    { "id": "shape", "type": "int", "default": 0, "names": ["Point", "Line", "Circle", "Picture", "Sphere", "Model"] },
     { "id": "position", "type": "vec2", "default": [0.0, 0.0], "min": -1.0, "max": 1.0 },
     { "id": "width", "type": "float", "default": 0.5, "min": 0.0, "max": 2.0 },
     { "id": "count", "type": "int", "default": 16384, "min": 256, "max": 65536 },
     { "id": "spin", "type": "float", "default": 0.0, "min": -4.0, "max": 4.0 },
-    { "id": "opacity", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 }
+    { "id": "opacity", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 },
+    { "id": "view", "type": "int", "default": 0, "names": ["Flat", "Orbit"] },
+    { "id": "distance", "type": "float", "default": 1.6, "min": 0.4, "max": 6.0 },
+    { "id": "orbit", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
+    { "id": "tilt", "type": "float", "default": 0.0, "min": -0.25, "max": 0.25 },
+    { "id": "turn", "type": "float", "default": 0.05, "min": -1.0, "max": 1.0 },
+    { "id": "depth", "type": "float", "default": 0.0, "min": 0.0, "max": 2.0 }
   ]
 }*/
 
@@ -34,11 +40,19 @@
 // spin: turns a second. emit: with shape Picture, particles are born where it's lit (its
 // brightness times its alpha is the odds); a black one, or a few lit pixels in a big one, gives
 // few or none: position moves the whole picture of them.
+// Sphere and Model (the points of the node's .obj or .ply file, kept in -1..1, binding 16)
+// reach into depth, width their radius, and view Orbit looks at them from a camera turning round
+// the middle of the canvas (distance in canvas heights, orbit and tilt in turns, turn the turns
+// a second it goes round by itself, the music speeding it up): a pinhole camera, no depth test,
+// the light of every sprite adding up. depth thickens the flat shapes into a slab. Flat is the
+// canvas as it was, z ignored.
 
+// 48 bytes (gpu.rs's PARTICLE): position and age, velocity and life, seed and size. A flat
+// system keeps z at 0.
 struct Particle {
-    pos: vec2f,
-    vel: vec2f,
+    pos: vec3f,
     age: f32,
+    vel: vec3f,
     life: f32,
     seed: f32,
     size: f32,
@@ -56,6 +70,8 @@ struct Sim {
 
 // past the textures (the sprite is binding 3): the buffer of the particles
 @group(0) @binding(15) var<storage, read_write> sim: Sim;
+// a model's points, one vec4 each after a first that holds how many (gpu.rs)
+@group(0) @binding(16) var<storage, read> points: array<vec4f>;
 
 const TAU: f32 = 6.2831853;
 
@@ -129,13 +145,39 @@ fn lit_spot(s: ptr<function, u32>) -> vec3f {
     return vec3f(0.0);
 }
 
+// a point of the model (-1..1 round the middle, z is 1 when found), none without one
+fn model_spot(s: ptr<function, u32>) -> vec4f {
+    let n = u32(points[0].x);
+    if n == 0u {
+        return vec4f(0.0);
+    }
+    return vec4f(points[1u + u32(random(s) * f32(n)) % n].xyz, 1.0);
+}
+
 // the k-th born this frame, in slot i: the later ones younger, so a stream doesn't come in clumps
 fn born(i: u32, k: u32) -> Particle {
     var s = hash(i ^ hash(u32(g.frame) * 9781u + k));
     let d = direction * TAU;
     var at = (0.5 + position * 0.5) * vec2f(g.aspect, 1.0);
     var found = true;
-    if shape == 3 {
+    // the flat shapes sit on the canvas, a slab of `depth` thick
+    var z = 0.0;
+    if depth > 0.0 {
+        z = (random(&s) - 0.5) * depth;
+    }
+    if shape == 4 {
+        // a ball, filled
+        let h = random(&s) * 2.0 - 1.0;
+        let a = random(&s) * TAU;
+        let u = vec3f(sqrt(1.0 - h * h) * vec2f(cos(a), sin(a)), h) * width * pow(random(&s), 0.3333);
+        at += u.xy;
+        z = u.z;
+    } else if shape == 5 {
+        let spot = model_spot(&s);
+        at += spot.xy * width;
+        z = spot.z * width;
+        found = spot.w > 0.5;
+    } else if shape == 3 {
         let spot = lit_spot(&s);
         at = (spot.xy + position * 0.5) * vec2f(g.aspect, 1.0);
         found = spot.z > 0.5;
@@ -149,13 +191,13 @@ fn born(i: u32, k: u32) -> Particle {
     // 0 is right, a quarter turn down (y runs down), three quarters up
     let a = d + (random(&s) - 0.5) * spread * TAU;
     var p: Particle;
-    p.vel = vec2f(cos(a), sin(a)) * speed * mix(0.6, 1.0, random(&s));
+    p.vel = vec3f(vec2f(cos(a), sin(a)) * speed * mix(0.6, 1.0, random(&s)), 0.0);
     // one that found no place is dead at birth
     p.life = select(0.0, life * mix(0.75, 1.25, random(&s)), found);
     p.seed = random(&s);
     p.size = mix(0.5, 1.0, random(&s));
     p.age = dt() * (1.0 - (f32(k) + 0.5) / f32(sim.spawned));
-    p.pos = at + p.vel * p.age;
+    p.pos = vec3f(at, z) + p.vel * p.age;
     return p;
 }
 
@@ -177,7 +219,7 @@ fn velo_step(@builtin(global_invocation_id) id: vec3u) {
         let t = dt();
         p.vel.y += gravity * t;
         p.vel *= exp(-drag * t);
-        p.pos += (p.vel + curl(p.pos * 3.0 + p.seed * 0.3) * turbulence) * t;
+        p.pos += vec3f(p.vel.xy + curl(p.pos.xy * 3.0 + p.seed * 0.3) * turbulence, p.vel.z + noise(p.pos.xz * 3.0 + p.seed * 0.7) * turbulence) * t;
         p.age += t;
     }
     sim.p[i] = p;
@@ -191,19 +233,35 @@ struct Sprite {
     @location(2) turned: vec2f,
 }
 
-// a: position and velocity, b: age, life, seed, size
+// a: position and age, b: velocity and life, c: seed and size
 @vertex
-fn velo_vs(@builtin(vertex_index) v: u32, @location(0) a: vec4f, @location(1) b: vec4f) -> Sprite {
+fn velo_vs(@builtin(vertex_index) v: u32, @location(0) a: vec4f, @location(1) b: vec4f, @location(2) c: vec4f) -> Sprite {
     velo_load();
     let corner = vec2f(f32(v & 1u), f32(v >> 1u)) * 2.0 - 1.0;
-    let t = clamp(b.x / max(b.y, 0.0001), 0.0, 1.0);
+    let t = clamp(a.w / max(b.w, 0.0001), 0.0, 1.0);
     // a dead one has no area: nothing drawn
-    let r = select(0.0, size * b.w * mix(1.0, end_size, t), b.x < b.y);
-    let at = a.xy + corner * r;
+    let r = select(0.0, size * c.y * mix(1.0, end_size, t), a.w < b.w);
     var out: Sprite;
-    out.pos = vec4f(at.x / g.aspect * 2.0 - 1.0, 1.0 - at.y * 2.0, 0.0, 1.0);
+    if view == 1 {
+        // the camera, round the middle of the canvas: x right, y down, z toward it
+        let yaw = (orbit + turn * mix(g.time, g.bass_time, clamp(audio, 0.0, 1.0))) * TAU;
+        let pitch = tilt * TAU;
+        let p = vec3f(a.xy - 0.5 * vec2f(g.aspect, 1.0), a.z);
+        let x = p.x * cos(yaw) + p.z * sin(yaw);
+        let front = -p.x * sin(yaw) + p.z * cos(yaw);
+        let e = vec3f(x, p.y * cos(pitch) - front * sin(pitch), p.y * sin(pitch) + front * cos(pitch));
+        // a pinhole of 50 degrees: how far one canvas height reaches at this depth (none from behind it)
+        let ahead = distance - e.z;
+        let scale = select(0.0, 1.0 / (ahead * 0.4663), ahead > 0.1);
+        // a sprite never grows past a third of the picture, however near the camera
+        let k = min(r * scale, 0.3);
+        out.pos = vec4f((e.x * scale + corner.x * k) / g.aspect, -e.y * scale - corner.y * k, 0.0, 1.0);
+    } else {
+        let at = a.xy + corner * r;
+        out.pos = vec4f(at.x / g.aspect * 2.0 - 1.0, 1.0 - at.y * 2.0, 0.0, 1.0);
+    }
     out.corner = corner;
-    let turn = spin * b.x * 6.2831853;
+    let turn = spin * a.w * 6.2831853;
     out.turned = vec2f(corner.x * cos(turn) - corner.y * sin(turn), corner.x * sin(turn) + corner.y * cos(turn));
     // as every picture: its opacity, over black or what's under it
     out.color = vec4f(tint.rgb, 1.0) * tint.a * clamp(opacity, 0.0, 1.0) * (1.0 - fade_out * smoothstep(0.0, 1.0, t));
