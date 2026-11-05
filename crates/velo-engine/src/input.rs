@@ -126,6 +126,7 @@ pub fn sources() -> Vec<String> {
     if !last.1 && last.0.is_none_or(|at| at.elapsed() > Duration::from_secs(4)) {
         last.1 = true;
         let started = std::thread::Builder::new().name("velo live sources".into()).spawn(|| {
+            #[cfg_attr(not(windows), allow(unused_mut))]
             let mut all: Vec<String> = crate::share::ndi::sources(2).unwrap_or_default().into_iter().map(|n| format!("ndi:{n}")).collect();
             #[cfg(windows)]
             all.extend(crate::share::spout::senders().into_iter().map(|n| format!("spout:{n}")));
