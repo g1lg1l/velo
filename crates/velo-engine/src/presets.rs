@@ -3,7 +3,7 @@
 
 /// The presets as (slug, source), in the order a menu shows them: Tunnel (the new node's own
 /// code) first, then color fields, nature, lines and waves, radial, space, retro, patterns.
-pub const PRESETS: [(&str, &str); 38] = [
+pub const PRESETS: [(&str, &str); 39] = [
     ("tunnel", include_str!("../shaders/presets/tunnel.wgsl")),
     ("plasma", include_str!("../shaders/presets/plasma.wgsl")),
     ("liquid", include_str!("../shaders/presets/liquid.wgsl")),
@@ -33,6 +33,7 @@ pub const PRESETS: [(&str, &str); 38] = [
     ("liquid_chrome", include_str!("../shaders/presets/liquid_chrome.wgsl")),
     ("fluid_sphere", include_str!("../shaders/presets/fluid_sphere.wgsl")),
     ("lightning", include_str!("../shaders/presets/lightning.wgsl")),
+    ("traces", include_str!("../shaders/presets/traces.wgsl")),
     ("synthwave", include_str!("../shaders/presets/synthwave.wgsl")),
     ("code_rain", include_str!("../shaders/presets/code_rain.wgsl")),
     ("metaballs", include_str!("../shaders/presets/metaballs.wgsl")),

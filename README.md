@@ -57,7 +57,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 
 **Makes pictures**
 - 60 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Text, Image, Video, Media List), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze, Time Machine, Key and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (Beat Kick, LFO, Envelope, Sequencer, Sample & Hold, Random, Probe, Speed, Delay, Spring and more).
-- 38 shader presets, from Plasma and Fire to Lasers, Fractal and V Beams, and 25 effect presets, from Glitch and VHS to LED Wall and God Rays.
+- 39 shader presets, from Plasma and Fire to Lasers, Fractal and V Beams, and 25 effect presets, from Glitch and VHS to LED Wall and God Rays.
 - Your own WGSL or ISF shaders become nodes with knobs, rebuilt as you type or save. A broken shader keeps the last one that worked.
 - Stills, GIFs, image sequences, HAP, H.264 and HEVC movies.
 
