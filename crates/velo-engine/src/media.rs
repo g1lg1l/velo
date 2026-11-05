@@ -48,8 +48,9 @@ pub struct Media {
     /// A live source ([`crate::input`]): `frames` holds its first frame, BGRA; the rest come as
     /// they're sent.
     pub live: Option<Arc<crate::input::Feed>>,
-    /// A 3D model ([`crate::model`]) a Particles node is born on: no frames, just its points.
-    pub points: Option<Vec<[f32; 3]>>,
+    /// A 3D model ([`crate::model`]), for a Particles node to be born on or a Mesh node to draw:
+    /// no frames.
+    pub model: Option<crate::model::Model>,
 }
 
 impl std::fmt::Debug for Media {
@@ -66,7 +67,7 @@ impl Media {
             return sequence(path);
         }
         if crate::model::is_model(path) {
-            return crate::model::load(path).map(|points| Self { points: Some(points), ..Self::empty() });
+            return crate::model::load(path).map(|model| Self { model: Some(model), ..Self::empty() });
         }
         let name = || path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
         let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
@@ -74,7 +75,7 @@ impl Media {
             // HAP first (its frames go to the GPU as they are), else the system's decoder
             if ext == "mov" {
                 match crate::hap::open(path) {
-                    Ok((movie, size, ends)) => return Ok(Self { size, frames: Vec::new(), ends, movie: Some(movie), video: None, live: None, points: None }),
+                    Ok((movie, size, ends)) => return Ok(Self { size, frames: Vec::new(), ends, movie: Some(movie), video: None, live: None, model: None }),
                     Err(e) if !e.starts_with("not HAP") => return Err(format!("{}: {e}", name())),
                     Err(_) => {}
                 }
@@ -82,7 +83,7 @@ impl Media {
             #[cfg(any(target_os = "macos", windows))]
             {
                 let (clip, size, ends) = crate::video::open(path).map_err(|e| format!("{}: {e}", name()))?;
-                return Ok(Self { size, frames: Vec::new(), ends, movie: None, video: Some(clip), live: None, points: None });
+                return Ok(Self { size, frames: Vec::new(), ends, movie: None, video: Some(clip), live: None, model: None });
             }
             #[cfg(not(any(target_os = "macos", windows)))]
             return Err(format!("{}: only HAP movies play here for now (ffmpeg -i in.mov -c:v hap -format hap_q out.mov)", name()));
@@ -116,7 +117,7 @@ impl Media {
     }
 
     fn empty() -> Self {
-        Self { size: [0, 0], frames: Vec::new(), ends: Vec::new(), movie: None, video: None, live: None, points: None }
+        Self { size: [0, 0], frames: Vec::new(), ends: Vec::new(), movie: None, video: None, live: None, model: None }
     }
 
     /// How many frames it has.
@@ -184,7 +185,7 @@ pub struct Sampled {
 /// or, with none given, `count` spread evenly over it.
 pub fn sample(path: &Path, times: &[f64], count: usize) -> Result<Sampled, String> {
     let media = Media::load(path)?;
-    if media.points.is_some() {
+    if media.model.is_some() {
         return Err("a 3D model has no frames to look at".into());
     }
     let length = media.length();
@@ -576,7 +577,7 @@ mod tests {
         let path = folder.join("tri.obj");
         std::fs::write(&path, "v 0 0 0\nv 1 0 0\nv 0 1 0\n").unwrap();
         let media = Media::load(&path).unwrap();
-        assert_eq!((media.points.as_ref().map(Vec::len), media.count()), (Some(3), 0));
+        assert_eq!((media.model.as_ref().map(|m| m.points.len()), media.count()), (Some(3), 0));
         assert!(sample(&path, &[], 2).is_err_and(|e| e.contains("model")), "an agent isn't handed frames that aren't there");
         std::fs::write(&path, "nothing here\n").unwrap();
         assert!(Media::load(&path).unwrap_err().contains("no points"));
@@ -591,7 +592,7 @@ mod tests {
     #[test]
     fn a_part_of_the_clip_loops_on_its_own() {
         // ten frames a tenth of a second each
-        let media = Media { size: [1, 1], frames: vec![Vec::new(); 10], ends: (1..=10).map(|k| f64::from(k) / 10.0).collect(), movie: None, video: None, live: None, points: None };
+        let media = Media { size: [1, 1], frames: vec![Vec::new(); 10], ends: (1..=10).map(|k| f64::from(k) / 10.0).collect(), movie: None, video: None, live: None, model: None };
         assert_eq!((media.frame_at(0.05), media.frame_at(1.05)), (0, 0), "the whole clip loops");
         // from 0.4 to 0.6 of it: frames 4 and 5, again and again
         let shown: Vec<usize> = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25].iter().map(|&t| media.frame_in(t, 0.4, 0.6)).collect();

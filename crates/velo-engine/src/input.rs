@@ -67,7 +67,7 @@ pub fn open(source: &str) -> Result<Media, String> {
     let (tx, rx) = channel();
     std::thread::Builder::new().name("velo live".into()).spawn(move || read(&kind, &name, tx)).map_err(|e| e.to_string())?;
     let (feed, first) = rx.recv_timeout(FIRST_FRAME).map_err(|_| format!("nothing came from {source} in {} s", FIRST_FRAME.as_secs()))??;
-    Ok(Media { size: feed.size, frames: vec![first], ends: vec![1.0], movie: None, video: None, live: Some(feed), points: None })
+    Ok(Media { size: feed.size, frames: vec![first], ends: vec![1.0], movie: None, video: None, live: Some(feed), model: None })
 }
 
 type First = Result<(Arc<Feed>, Vec<u8>), String>;
