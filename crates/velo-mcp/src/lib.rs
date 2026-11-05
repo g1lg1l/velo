@@ -47,6 +47,8 @@ pub fn tools() -> Value {
         { "name": "run_operator", "description": "Run one operator with JSON props (see search_operators for examples). Answers the new node or scene's id, and for shader code whether it compiles. Edits until the next checkpoint undo together with one Ctrl+Z.",
           "inputSchema": object(json!({ "id": { "type": "string" }, "props": { "type": "object" } }), &["id"]) },
         { "name": "snapshot", "description": "Look at what the preview shows now (the selected scene, or the live one while it's selected): a PNG.", "inputSchema": none() },
+        { "name": "video_frames", "description": "Look at a video the user gave as a reference (or a GIF, an image sequence's folder, a picture): frames from it as JPEGs, with the video's size and length. HAP movies can't be looked at yet.",
+          "inputSchema": object(json!({ "path": { "type": "string", "description": "the file, as the user gave it" }, "count": { "type": "integer", "description": "frames spread evenly over it, 1..12 (default 6)" }, "times": { "type": "array", "items": { "type": "number" }, "description": "or: the seconds to look at (at most 12)" } }), &["path"]) },
         { "name": "shader_errors", "description": "Shader nodes whose code doesn't compile in the latest build, with the line and naga's message.", "inputSchema": none() },
         { "name": "listen", "description": "What the music is doing right now: each audio source (level, bass, mid, high, kick, snare, hat, beat, bar_phase) 0..1, and the input's name.", "inputSchema": none() },
         { "name": "checkpoint", "description": "Close the current undo step: later edits undo separately.", "inputSchema": none() },

@@ -23,7 +23,7 @@ scene (scene.add: it becomes the selected scene, which the preview shows) unless
 nodes whenever they can do the job: its generators, effects and signals, found with search_operators and list_nodes, wired together and \
 tuned. Write a Shader node's own WGSL only when nothing existing does it. Make it react to the music: mappings from kick, bass, hat and \
 the others, or the audio fields in a shader (g.kick, g.bass). Pictures the user attaches are references: take their colors, shapes, \
-motion and mood. Look at your work with snapshot before you answer. Don't call checkpoint: each of your replies undoes in one step. Use \
+motion and mood; a video the user names by its path is one too: look at it with video_frames. Look at your work with snapshot before you answer. Don't call checkpoint: each of your replies undoes in one step. Use \
 only the velo tools. Answer briefly, in the user's language: a sentence or two, short Markdown (bold, lists, `code`) when it helps. \
 Never write em dashes.";
 
@@ -691,11 +691,19 @@ fn local(prefs: &Prefs, prompt: &str, pictures: &[PathBuf], mut history: Vec<Val
             say(Event::Tool(id.clone(), label(&name, &args)));
             let result = velo.call(&name, args);
             say(Event::ToolDone(id.clone(), result.as_ref().err().cloned()));
-            let mut picture = None;
+            // data URLs of the pictures a tool answered: a snapshot, a video's frames
+            let mut pictures = Vec::new();
             let answer = match result {
                 Ok(v) if v["png_base64"].is_string() => {
-                    picture = Some(v["png_base64"].as_str().unwrap_or_default().to_string());
+                    pictures.push(format!("data:image/png;base64,{}", v["png_base64"].as_str().unwrap_or_default()));
                     if prefs.sees_images { "The snapshot follows.".to_string() } else { "Snapshot taken (this model can't look at pictures).".to_string() }
+                }
+                Ok(mut v) if v["frames"].is_array() => {
+                    let frames = v["frames"].as_array_mut().map(std::mem::take).unwrap_or_default();
+                    pictures.extend(frames.iter().filter_map(|f| f["jpeg_base64"].as_str()).map(|b| format!("data:image/jpeg;base64,{b}")));
+                    v["frames_at"] = json!(frames.iter().map(|f| f["time"].clone()).collect::<Vec<_>>());
+                    let what = if prefs.sees_images { "the frames follow, in order" } else { "this model can't look at pictures: only what's here" };
+                    format!("{v} ({what})")
                 }
                 Ok(v) => v.to_string(),
                 Err(e) => format!("error: {e}"),
@@ -705,8 +713,8 @@ fn local(prefs: &Prefs, prompt: &str, pictures: &[PathBuf], mut history: Vec<Val
             } else {
                 history.push(json!({ "role": "tool", "tool_call_id": id, "content": answer }));
             }
-            if let Some(png) = picture.filter(|_| prefs.sees_images) {
-                history.push(json!({ "role": "user", "content": [{ "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{png}") } }] }));
+            if prefs.sees_images && !pictures.is_empty() {
+                history.push(json!({ "role": "user", "content": pictures.iter().map(|url| json!({ "type": "image_url", "image_url": { "url": url } })).collect::<Vec<_>>() }));
             }
         }
         // calls written as text get their results as a message
@@ -792,7 +800,7 @@ mod tests {
     #[test]
     fn velos_tools_are_offered_as_functions() {
         let f = functions();
-        assert_eq!(f.len(), 10);
+        assert_eq!(f.len(), 11);
         assert!(f.iter().all(|t| t["type"] == "function" && t["function"]["parameters"]["type"] == "object"));
     }
 }

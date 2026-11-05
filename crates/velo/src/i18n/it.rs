@@ -882,6 +882,7 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("not a picture", "non è un'immagine"),
     ("the pasted picture", "l'immagine incollata"),
     ("Pictures", "Immagini"),
+    ("Videos", "Video"),
     ("ready", "pronto"),
     ("not set up", "da configurare"),
     ("trying…", "provo…"),

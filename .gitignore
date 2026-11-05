@@ -9,3 +9,4 @@ site/.vitepress/cache/
 
 # agents' working copies
 .claude/worktrees/
+graphify-out/

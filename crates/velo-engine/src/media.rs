@@ -163,6 +163,49 @@ impl Media {
     }
 }
 
+/// Frames picked out of a clip, for an agent to look at.
+pub struct Sampled {
+    pub size: [u32; 2],
+    /// Seconds (a still: 0).
+    pub length: f64,
+    /// When each frame starts, and its picture (RGBA, rows top first).
+    pub frames: Vec<(f64, image::RgbaImage)>,
+}
+
+/// The frames of a movie, GIF, image sequence or still at `times` (seconds, held inside the clip),
+/// or, with none given, `count` spread evenly over it.
+pub fn sample(path: &Path, times: &[f64], count: usize) -> Result<Sampled, String> {
+    let media = Media::load(path)?;
+    let length = media.length();
+    if media.movie.is_some() {
+        // shortcut: HAP frames are GPU-compressed (DXT) and would need a CPU decoder; add one if agents need HAP references
+        return Err("HAP movies can't be looked at yet: an H.264 or ProRes copy of it can".into());
+    }
+    let count = count.max(1);
+    let times: Vec<f64> = if times.is_empty() { (0..count).map(|k| (k as f64 + 0.5) / count as f64 * length).collect() } else { times.to_vec() };
+    // the frame showing at each time, from where it starts
+    let picks = times.iter().map(|&t| {
+        let i = media.frame_at(t.clamp(0.0, (length - 1e-6).max(0.0)));
+        (i, if i == 0 { 0.0 } else { media.ends[i - 1] })
+    });
+    let [w, h] = media.size;
+    let frames = match &media.video {
+        #[cfg(any(target_os = "macos", windows))]
+        Some(clip) => {
+            let mut bgra = Vec::new();
+            picks
+                .map(|(_, start)| {
+                    let at = crate::video::Decoder::new(clip, start)?.next(&mut bgra).ok_or("no frame there")?;
+                    let rgba = bgra.as_chunks::<4>().0.iter().flat_map(|&[b, g, r, a]| [r, g, b, a]).collect();
+                    image::RgbaImage::from_raw(w, h, rgba).map(|p| (at, p)).ok_or_else(|| "a frame came out another size than the movie".to_string())
+                })
+                .collect::<Result<_, String>>()?
+        }
+        _ => picks.map(|(i, start)| (start, image::RgbaImage::from_raw(w, h, media.frames[i].clone()).unwrap_or_default())).collect(),
+    };
+    Ok(Sampled { size: media.size, length, frames })
+}
+
 fn sequence(folder: &Path) -> Result<Media, String> {
     let read = std::fs::read_dir(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     let mut files: Vec<PathBuf> = read.filter_map(|e| Some(e.ok()?.path())).filter(|p| p.is_file() && p.extension().is_some_and(|e| PICTURES.iter().any(|x| e.eq_ignore_ascii_case(x)))).collect();
@@ -478,6 +521,30 @@ fn read_video(clip: &Clip, shared: &Reader) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The H.264 fixture: red | green over blue, then green, blue, white, at 10 fps (video.rs).
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn an_agent_gets_a_movies_frames_where_it_asks() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/h264.mp4");
+        let spread = sample(&path, &[], 4).unwrap();
+        assert_eq!((spread.size, spread.frames.len()), ([96, 48], 4));
+        assert!((spread.length - 0.4).abs() < 1e-6);
+        let starts: Vec<f64> = spread.frames.iter().map(|f| (f.0 * 10.0).round() / 10.0).collect();
+        assert_eq!(starts, [0.0, 0.1, 0.2, 0.3]);
+        // RGBA now: the third frame is blue, the second green
+        assert_eq!(spread.frames[2].1.get_pixel(48, 24).0[..3].iter().map(|&c| c > 128).collect::<Vec<_>>(), [false, false, true]);
+        assert_eq!(spread.frames[1].1.get_pixel(48, 24).0[..3].iter().map(|&c| c > 128).collect::<Vec<_>>(), [false, true, false]);
+        // times past the end hold the last frame
+        let asked = sample(&path, &[0.25, 99.0], 0).unwrap();
+        assert_eq!(asked.frames.iter().map(|f| (f.0 * 10.0).round() / 10.0).collect::<Vec<_>>(), [0.2, 0.3]);
+    }
+
+    #[test]
+    fn a_hap_movie_says_it_cant_be_looked_at() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/hap1.mov");
+        assert!(sample(&path, &[], 2).is_err_and(|e| e.contains("HAP")));
+    }
 
     #[test]
     fn a_part_of_the_clip_loops_on_its_own() {

@@ -243,6 +243,10 @@ fn is_picture(path: &Path) -> bool {
     path.extension().is_some_and(|e| PICTURES.iter().any(|x| e.eq_ignore_ascii_case(x)))
 }
 
+fn is_video(path: &Path) -> bool {
+    path.extension().is_some_and(|e| velo_engine::media::MOVIES.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
 /// Where the pointer is, also while files are dragged in from another app: Windows sends no
 /// pointer events then, the system says where it is.
 fn pointer(ctx: &egui::Context) -> Option<Pos2> {
@@ -553,9 +557,19 @@ impl App {
         self.chat.focus = true;
     }
 
-    /// Pictures from files go with the next message (shrunk, kept in Velo's data folder).
+    /// Pictures from files go with the next message (shrunk, kept in Velo's data folder); a video
+    /// goes as its path in the words, for the AI to look at with video_frames.
     pub fn chat_attach_files(&mut self, files: &[PathBuf]) {
         for file in files {
+            if is_video(file) {
+                let path = file.display().to_string();
+                if !self.chat.draft.contains(&path) {
+                    let gap = if self.chat.draft.is_empty() || self.chat.draft.ends_with('\n') { "" } else { "\n" };
+                    self.chat.draft.push_str(&format!("{gap}{path}\n"));
+                }
+                self.chat.focus = true;
+                continue;
+            }
             let name = file.file_name().map_or_else(|| file.display().to_string(), |n| n.to_string_lossy().to_string());
             self.chat_attach(image::open(file).map_err(|e| e.to_string()), &name);
         }
@@ -567,7 +581,7 @@ impl App {
         if dropped.is_empty() || !self.settings.panels.chat || !self.chat.rect.zip(pointer(ctx)).is_some_and(|(r, p)| r.contains(p)) {
             return dropped;
         }
-        let (pictures, rest): (Vec<PathBuf>, Vec<PathBuf>) = dropped.into_iter().partition(|p| is_picture(p));
+        let (pictures, rest): (Vec<PathBuf>, Vec<PathBuf>) = dropped.into_iter().partition(|p| is_picture(p) || is_video(p));
         self.chat_attach_files(&pictures);
         rest
     }
@@ -1285,7 +1299,7 @@ impl App {
             let picture = image::RgbaImage::from_raw(p.size[0] as u32, p.size[1] as u32, rgba).map(image::DynamicImage::ImageRgba8).ok_or_else(|| tr!("not a picture").to_string());
             self.chat_attach(picture, tr!("the pasted picture"));
         }
-        if attach && let Some(files) = rfd::FileDialog::new().add_filter(tr!("Pictures"), &PICTURES).pick_files() {
+        if attach && let Some(files) = rfd::FileDialog::new().add_filter(tr!("Pictures"), &PICTURES).add_filter(tr!("Videos"), &velo_engine::media::MOVIES).pick_files() {
             self.chat_attach_files(&files);
         }
         if running && clicked {

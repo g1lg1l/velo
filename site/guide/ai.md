@@ -19,6 +19,7 @@ In the AI panel, **How to connect an AI…** shows both with the paths of your o
 Press <kbd>Ctrl</kbd> <kbd>I</kbd> (<kbd>Cmd</kbd> <kbd>I</kbd> on a Mac) to open it, type what you want to see, and send.
 
 - **Pictures as references**: attach them with the button under the box, drop them on the panel, or paste them. Models that can't look at pictures say so instead of getting them.
+- **Videos as references**: attach or drop an `.mp4`, `.mov` or `.m4v` and its path goes into your message. The AI decides which frames to look at. HAP movies can't be looked at yet: give it an H.264 or ProRes copy.
 - **The model and how long it thinks**: under the box, from faster to smarter.
 - **Replies** read like a modern AI chat: Markdown with code you can copy, each command it ran folded into one row, and problems as cards with a retry.
 
@@ -84,7 +85,7 @@ Through `velo-mcp` an agent sees what you see and works the way you do:
 
 - **list_nodes** tells it every node kind, its parameters, the audio sources and how to write a shader;
 - **query_project** reads the project, **search_operators** and **run_operator** find and run any command;
-- **snapshot** shows it the picture, and **shader_errors** what a shader got wrong;
+- **snapshot** shows it the picture, **video_frames** the frames of a reference video, and **shader_errors** what a shader got wrong;
 - **checkpoint** closes its work as one step, and **undo** takes a step back.
 
 Everything an agent changes until its checkpoint is one undo step for you: <kbd>Ctrl</kbd> <kbd>Z</kbd> takes it all back.

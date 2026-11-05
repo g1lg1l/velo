@@ -157,19 +157,51 @@ fn serve(stream: TcpStream, token: &str, calls: Sender<Call>, stop: Arc<AtomicBo
                 continue;
             }
         };
-        let (reply, answer) = channel();
-        let call = Call { method: request["method"].as_str().unwrap_or("").to_string(), params: request["params"].clone(), panel, reply };
-        if calls.send(call).is_err() {
-            break;
-        }
-        ctx.request_repaint();
-        let result = answer.recv_timeout(Duration::from_secs(120)).unwrap_or_else(|_| Err("Velo didn't answer in time".into()));
+        let result = if request["method"] == "video_frames" {
+            // decoding takes a while and needs nothing of the app's: here, off the UI thread
+            video_frames(&request["params"])
+        } else {
+            let (reply, answer) = channel();
+            let call = Call { method: request["method"].as_str().unwrap_or("").to_string(), params: request["params"].clone(), panel, reply };
+            if calls.send(call).is_err() {
+                break;
+            }
+            ctx.request_repaint();
+            answer.recv_timeout(Duration::from_secs(120)).unwrap_or_else(|_| Err("Velo didn't answer in time".into()))
+        };
         if send(&mut out, &request["id"], result).is_err() {
             break;
         }
     }
     clients.fetch_sub(1, Relaxed);
     ctx.request_repaint();
+}
+
+/// A video's frames (or a GIF's, an image sequence's, a picture) for an agent to look at: at most
+/// 12, 768 px a side at most, as JPEG.
+fn video_frames(p: &Value) -> Result<Value, String> {
+    let path = std::path::Path::new(p["path"].as_str().filter(|s| !s.is_empty()).ok_or("path: the video's file")?);
+    // media only: an agent doesn't get to read any file it names
+    let media = path.is_dir() || path.extension().is_some_and(|e| velo_engine::media::EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)));
+    if !media {
+        return Err(format!("not a video or picture Velo reads ({})", velo_engine::media::EXTENSIONS.join(", ")));
+    }
+    let times: Vec<f64> = p["times"].as_array().map(|a| a.iter().filter_map(Value::as_f64).take(12).collect()).unwrap_or_default();
+    let count = p["count"].as_u64().unwrap_or(6).clamp(1, 12) as usize;
+    let sampled = velo_engine::media::sample(path, &times, count)?;
+    let round = |t: f64| (t * 100.0).round() / 100.0;
+    let frames = sampled
+        .frames
+        .into_iter()
+        .map(|(t, picture)| {
+            let picture = image::DynamicImage::ImageRgba8(picture);
+            let picture = if picture.width().max(picture.height()) > 768 { picture.resize(768, 768, image::imageops::FilterType::Triangle) } else { picture };
+            let mut jpeg = Vec::new();
+            picture.to_rgb8().write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)).map_err(|e| e.to_string())?;
+            Ok(json!({ "time": round(t), "jpeg_base64": base64(&jpeg) }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(json!({ "path": path, "width": sampled.size[0], "height": sampled.size[1], "length": round(sampled.length), "frames": frames }))
 }
 
 /// `velo-mcp`, next to Velo: the stdio bridge MCP clients start.

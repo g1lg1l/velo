@@ -62,6 +62,14 @@ impl Bridge {
                         ],
                         "isError": false,
                     }),
+                    // a video's frames: each a picture, then what they are
+                    Ok(v) if v["frames"].is_array() => {
+                        let frames = v["frames"].as_array().cloned().unwrap_or_default();
+                        let times: Vec<String> = frames.iter().map(|f| format!("{}s", f["time"])).collect();
+                        let mut content: Vec<Value> = frames.iter().map(|f| json!({ "type": "image", "data": f["jpeg_base64"], "mimeType": "image/jpeg" })).collect();
+                        content.push(json!({ "type": "text", "text": format!("{}: {}×{}, {}s long; frames at {}", v["path"].as_str().unwrap_or("the video"), v["width"], v["height"], v["length"], times.join(", ")) }));
+                        json!({ "content": content, "isError": false })
+                    }
                     Ok(v) => json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() }], "isError": false }),
                     Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
                 })
@@ -127,6 +135,7 @@ mod tests {
                     }
                     "undo" => json!({ "id": msg["id"], "error": "nothing to undo" }),
                     "snapshot" => json!({ "id": msg["id"], "result": { "png_base64": "iVBORw0K", "width": 640, "height": 360, "shows": "Tunnel" } }),
+                    "video_frames" => json!({ "id": msg["id"], "result": { "path": "ref.mp4", "width": 96, "height": 48, "length": 0.4, "frames": [{ "time": 0.0, "jpeg_base64": "/9j/" }, { "time": 0.2, "jpeg_base64": "/9j/" }] } }),
                     _ => json!({ "id": msg["id"], "result": { "method": msg["method"], "params": msg["params"] } }),
                 };
                 writeln!(out, "{reply}").unwrap();
@@ -137,7 +146,7 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
         assert!(b.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).is_none(), "no reply to a notification");
         let list = b.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 10);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 11);
         let call = b.handle(&json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "run_operator", "arguments": { "id": "scene.add" } } })).unwrap();
         assert_eq!(call["result"]["isError"], false);
         let text: Value = serde_json::from_str(call["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
@@ -145,6 +154,10 @@ mod tests {
         let picture = b.handle(&json!({ "jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": { "name": "snapshot" } })).unwrap();
         assert_eq!(picture["result"]["content"][0]["type"], "image");
         assert_eq!(picture["result"]["content"][0]["mimeType"], "image/png");
+        let video = b.handle(&json!({ "jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": { "name": "video_frames", "arguments": { "path": "ref.mp4" } } })).unwrap();
+        let content = video["result"]["content"].as_array().unwrap();
+        assert_eq!(content.iter().filter(|c| c["mimeType"] == "image/jpeg").count(), 2, "one picture a frame");
+        assert!(content[2]["text"].as_str().unwrap().contains("0.2s"), "{content:?}");
         let failed = b.handle(&json!({ "jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": { "name": "undo" } })).unwrap();
         assert_eq!((failed["result"]["isError"].as_bool(), failed["result"]["content"][0]["text"].as_str()), (Some(true), Some("nothing to undo")));
         let unknown = b.handle(&json!({ "jsonrpc": "2.0", "id": 6, "method": "resources/list" })).unwrap();
