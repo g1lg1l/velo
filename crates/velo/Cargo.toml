@@ -25,6 +25,8 @@ ron = "0.12.2"
 png = "0.18.1"
 # pictures attached to AI messages (read, shrunk, kept as JPEG): already in the tree through velo-engine
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# files copied in a file manager and pasted on the AI panel: already in the tree through eframe
+arboard = { version = "3.7.0", default-features = false }
 # updates (as in Ravune): GitHub's release feed over plain blocking HTTPS on a worker thread
 # (rustls + ring), the feed is Atom XML, Windows updates come as a zip
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }

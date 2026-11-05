@@ -148,6 +148,8 @@ pub struct Chat {
     pub pictures: Vec<PathBuf>,
     /// Put the cursor in the box next frame (it was opened from the keyboard).
     pub focus: bool,
+    /// V held down, as egui saw it: a paste's press never reaches it.
+    v_down: bool,
     /// Send the draft next frame (`VELO_DEMO_CHAT`).
     pub send_now: bool,
     loaded: bool,
@@ -1194,7 +1196,8 @@ impl App {
     /// The prompt bar (AI Elements' Prompt Input): a rounded field that lights up while you
     /// type and grows with the text, the pictures going with it above, then a button to attach
     /// more, which AI answers, and one round button that sends or stops. Enter sends,
-    /// Shift+Enter starts a new line; a picture pasted into it is attached.
+    /// Shift+Enter starts a new line; a picture, or pictures and videos copied as files, pasted
+    /// into it are attached.
     fn prompt_bar(&mut self, ui: &mut Ui, t: &Theme) {
         let running = self.busy();
         let id = egui::Id::unique("chat-prompt");
@@ -1202,6 +1205,17 @@ impl App {
         let glow = ui.ctx().animate_bool_with_time(id.with("glow"), focused, t.motion);
         let stroke = Stroke::new(1.0, Theme::mix(t.line, t.accent, glow));
         let pasted: Vec<std::sync::Arc<egui::ColorImage>> = if focused { ui.input(|i| i.events.iter().filter_map(|e| if let egui::Event::PasteImage(p) = e { Some(p.clone()) } else { None }).collect()) } else { Vec::new() };
+        // egui-winit pastes only text or a picture and keeps the key press, so a V let go of with
+        // no press seen was a paste: files copied in a file manager are read here
+        let mut paste_files = false;
+        ui.input(|i| {
+            for e in &i.events {
+                if let egui::Event::Key { key: Key::V, pressed, .. } = e {
+                    paste_files |= focused && !*pressed && !self.chat.v_down;
+                    self.chat.v_down = *pressed;
+                }
+            }
+        });
         let ctx = ui.ctx().clone();
         if self.chat.codex_models.is_empty() {
             self.chat.codex_models = ai::codex_models(); // their names, for the button under the box
@@ -1298,6 +1312,11 @@ impl App {
             let rgba: Vec<u8> = p.pixels.iter().flat_map(|c| c.to_srgba_unmultiplied()).collect();
             let picture = image::RgbaImage::from_raw(p.size[0] as u32, p.size[1] as u32, rgba).map(image::DynamicImage::ImageRgba8).ok_or_else(|| tr!("not a picture").to_string());
             self.chat_attach(picture, tr!("the pasted picture"));
+        }
+        // no files on the clipboard (text, a picture): nothing more to do
+        if paste_files && let Ok(files) = arboard::Clipboard::new().and_then(|mut c| c.get().file_list()) {
+            let files: Vec<PathBuf> = files.into_iter().filter(|p| is_picture(p) || is_video(p)).collect();
+            self.chat_attach_files(&files);
         }
         if attach && let Some(files) = rfd::FileDialog::new().add_filter(tr!("Pictures"), &PICTURES).add_filter(tr!("Videos"), &velo_engine::media::MOVIES).pick_files() {
             self.chat_attach_files(&files);
