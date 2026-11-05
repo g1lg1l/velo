@@ -13,7 +13,7 @@ The milestones that got it here, named in some code comments: M1 First Light (a 
 - **A stage theme:** a dimmed UI that doesn't light up the performer's face.
 - **Show control:** a setlist or cue list; more than one output, each with crop and rotation.
 - **Controllers:** profiles for common controllers, MIDI out and LED feedback; OSC out.
-- **Inputs:** one app's sound on Windows (macOS has it), several audio inputs at once, a channel pair from a multichannel interface; camera and capture input.
+- **Inputs:** one app's sound on Windows (macOS has it), several audio inputs at once, a channel pair from a multichannel interface; cameras on macOS, and screen capture.
 - **Shaders:** shaders and scenes shared as packages.
 - **Syphon** on macOS, Spout's counterpart there.
 - **Linux:** one app's sound, and video through the system's decoders.

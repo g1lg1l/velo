@@ -61,7 +61,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - Your own WGSL or ISF shaders become nodes with knobs, rebuilt as you type or save. A broken shader keeps the last one that worked. A WGSL shader can keep buffers from frame to frame, each drawn by a pass of its own, for simulations like reaction diffusion.
 - Particles are born wherever a picture is lit (a logo, an edge map, a movie) and drawn as soft dots or a picture of your own.
 - Stills, GIFs, image sequences, HAP, H.264 and HEVC movies.
-- Live pictures from other apps with the Live node: **NDI** sources on the network, and **Spout** senders on this computer (Windows).
+- Live pictures with the Live node: **NDI** sources on the network, and on Windows **Spout** senders on this computer and cameras or capture cards.
 
 **Patches by hand**
 - One graph per scene, TouchDesigner's way: every node shows its picture and what it costs the GPU.

@@ -739,7 +739,7 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "node.set_media",
         label: "Set Image",
-        description: "Set what an Image or Video node shows: an image file (PNG, JPEG, WebP…), an animated GIF, a movie (.mov or .mp4: HAP, and on macOS H.264, HEVC or ProRes), or a folder of numbered frames played as an image sequence, by absolute path. On a Particles node, the picture each particle is; on a Media List, its files, a path a line; on a Text or Text List node, its own font (.ttf or .otf), which its Font set to File shows; on a Live node, its source, ndi:<name> or spout:<name> (Spout on Windows). Empty clears it.",
+        description: "Set what an Image or Video node shows: an image file (PNG, JPEG, WebP…), an animated GIF, a movie (.mov or .mp4: HAP, and on macOS H.264, HEVC or ProRes), or a folder of numbered frames played as an image sequence, by absolute path. On a Particles node, the picture each particle is; on a Media List, its files, a path a line; on a Text or Text List node, its own font (.ttf or .otf), which its Font set to File shows; on a Live node, its source, ndi:<name>, spout:<name> or camera:<name> (the last two on Windows). Empty clears it.",
         example: r#"{"node": "n_ab12", "media": "/Users/me/Loops/tunnel.gif"}"#,
         undo: true,
         poll: has_scenes,

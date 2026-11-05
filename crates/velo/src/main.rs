@@ -2193,7 +2193,7 @@ impl App {
             match (&failed, sources.is_empty()) {
                 (Some(e), _) => kit::warning(ui, t, e),
                 (None, true) => kit::hint(ui, t, tr!("Looking for sources…")),
-                (None, false) => kit::hint(ui, t, tr!("Pick an NDI source or a Spout sender: what another app sends, as it sends it.")),
+                (None, false) => kit::hint(ui, t, tr!("Pick an NDI source, a Spout sender or a camera: what it sends, as it sends it.")),
             };
             ui.add_space(t.gap);
             for source in &sources {

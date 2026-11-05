@@ -8,9 +8,9 @@ use std::sync::OnceLock;
 
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
-use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx};
+use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree};
 use windows::Win32::System::Variant::VT_I8;
-use windows::core::{Error, GUID, HSTRING, Interface};
+use windows::core::{Error, GUID, HSTRING, Interface, PWSTR};
 
 /// A movie Media Foundation plays: where it is, its frame rate, its picture's size.
 #[derive(Debug)]
@@ -180,6 +180,77 @@ impl Decoder {
     }
 }
 
+/// The cameras Windows has, each with its name, as Media Foundation lists them.
+fn devices() -> Result<Vec<(String, IMFActivate)>, String> {
+    start()?;
+    // SAFETY: Media Foundation's own calls; the array it allocates holds activation objects we
+    // take (each slot left empty) and is freed once, as are the names it allocates
+    unsafe {
+        let mut attributes = None;
+        MFCreateAttributes(&mut attributes, 1).map_err(why)?;
+        let attributes = attributes.ok_or("Media Foundation: no attributes")?;
+        attributes.SetGUID(&MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID).map_err(why)?;
+        let (mut all, mut count) = (std::ptr::null_mut(), 0u32);
+        MFEnumDeviceSources(&attributes, &mut all, &mut count).map_err(why)?;
+        let mut found = Vec::new();
+        for i in 0..count as usize {
+            let Some(activate) = (*all.add(i)).take() else { continue };
+            let (mut text, mut len) = (PWSTR::null(), 0u32);
+            let name = match activate.GetAllocatedString(&MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &mut text, &mut len) {
+                Ok(()) => {
+                    let name = text.to_string().unwrap_or_default();
+                    CoTaskMemFree(Some(text.0.cast()));
+                    name
+                }
+                Err(_) => String::new(),
+            };
+            found.push((name, activate));
+        }
+        CoTaskMemFree(Some(all.cast()));
+        Ok(found)
+    }
+}
+
+/// The cameras Windows has, by name.
+pub fn cameras() -> Vec<String> {
+    devices().map(|d| d.into_iter().map(|c| c.0).collect()).unwrap_or_default()
+}
+
+/// The camera called `name` (or whose name holds it), read until `stop` says so, each frame's
+/// size, BGRA rows and bytes a row to `each`. Err when there's none by that name, or Windows
+/// won't open it (its camera privacy settings may say no to desktop apps).
+pub fn camera(name: &str, stop: impl Fn() -> bool, mut each: impl FnMut([u32; 2], &[u8], usize)) -> Result<(), String> {
+    let all = devices()?;
+    let (_, activate) = all.iter().find(|d| d.0 == name).or_else(|| all.iter().find(|d| d.0.contains(name))).ok_or_else(|| format!("no camera called {name:?}"))?;
+    // SAFETY: Media Foundation's own calls on objects made here; the camera is shut down after
+    unsafe {
+        let source: IMFMediaSource = activate.ActivateObject().map_err(|e| format!("{name}: {} (Windows' camera privacy settings may say no)", why(e)))?;
+        let mut attributes = None;
+        MFCreateAttributes(&mut attributes, 1).map_err(why)?;
+        let attributes = attributes.ok_or("Media Foundation: no attributes")?;
+        // what the camera sends (YUY2, NV12, MJPEG) converted to RGB32 by the video processor
+        attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1).map_err(why)?;
+        let reader = MFCreateSourceReaderFromMediaSource(&source, &attributes).map_err(why)?;
+        reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false).map_err(why)?;
+        reader.SetStreamSelection(VIDEO, true).map_err(why)?;
+        let rgb = MFCreateMediaType().map_err(why)?;
+        rgb.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video).map_err(why)?;
+        rgb.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32).map_err(why)?;
+        reader.SetCurrentMediaType(VIDEO, None, &rgb).map_err(why)?;
+        let size = frame(&reader).map_err(why)?;
+        let mut decoder = Decoder { reader, size, frame: size, from: f64::MIN, offset: 0.0, ended: false };
+        let mut out = Vec::new();
+        // a camera has no end: a frame that doesn't come is the camera gone
+        while !stop() && decoder.next(&mut out).is_some() {
+            if !out.is_empty() {
+                each(size, &out, size[0] as usize * 4);
+            }
+        }
+        let _ = source.Shutdown();
+    }
+    Ok(())
+}
+
 /// The size of the frames the reader hands out now.
 fn frame(reader: &IMFSourceReader) -> windows::core::Result<[u32; 2]> {
     unsafe { Ok(pair(reader.GetCurrentMediaType(VIDEO)?.GetUINT64(&MF_MT_FRAME_SIZE)?)) }
@@ -249,6 +320,31 @@ mod tests {
         assert_eq!(out, [12, 13, 14, 255, 16, 17, 18, 255, 0, 1, 2, 255, 4, 5, 6, 255]);
         rows(&mut out, &bytes, 12, 12, [2, 2]);
         assert!(out.is_empty(), "a row past the end: nothing");
+    }
+
+    #[test]
+    fn cameras_are_listed_without_opening_any() {
+        // whatever this computer has, by name; none is fine
+        let names = cameras();
+        assert!(names.iter().all(|n| !n.is_empty()), "{names:?}");
+        assert!(camera("no such camera", || true, |_, _, _| {}).is_err());
+    }
+
+    /// The first camera for a second: frames of its size come. Lights the camera up, so run by
+    /// hand (`--ignored`) where one is allowed.
+    #[test]
+    #[ignore]
+    fn a_camera_gives_frames() {
+        let Some(first) = cameras().into_iter().next() else {
+            return eprintln!("no camera here: skipped");
+        };
+        let (seen, start) = (std::cell::Cell::new(0), std::time::Instant::now());
+        camera(&first, || seen.get() >= 10 || start.elapsed().as_secs() > 5, |size, bytes, stride| {
+            assert_eq!(bytes.len(), stride * size[1] as usize);
+            seen.set(seen.get() + 1);
+        })
+        .unwrap();
+        assert!(seen.get() > 0, "{first}: no frames in 5 s");
     }
 
     #[test]

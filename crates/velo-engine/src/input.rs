@@ -1,7 +1,8 @@
-//! Live pictures from outside, for the Live node: an NDI source, or (Windows) a Spout sender.
-//! A reader thread of its own per source keeps the newest frame, BGRA at the size of the first,
-//! in a mailbox the render thread takes from without waiting; the thread ends when nobody holds
-//! the feed any more. A source is named `ndi:<name>` or `spout:<name>`.
+//! Live pictures from outside, for the Live node: an NDI source, or (Windows) a Spout sender or
+//! a camera (a capture card too). A reader thread of its own per source keeps the newest frame,
+//! BGRA at the size of the first, in a mailbox the render thread takes from without waiting;
+//! the thread ends when nobody holds the feed any more. A source is named `ndi:<name>`,
+//! `spout:<name>` or `camera:<name>`.
 
 use crate::media::Media;
 use std::cell::{Cell, RefCell};
@@ -58,7 +59,7 @@ fn fit(frame: &[u8], stride: usize, from: [u32; 2], to: [u32; 2], out: &mut Vec<
     }
 }
 
-/// A source named `ndi:<name>` or `spout:<name>`: waits for its first frame, which makes the
+/// A source named `ndi:<name>`, `spout:<name>` or `camera:<name>`: waits for its first frame, which makes the
 /// texture's size, then leaves its reader running while the returned media is held.
 pub fn open(source: &str) -> Result<Media, String> {
     let (kind, name) = source.split_once(':').ok_or("a live source is ndi:<name> or spout:<name>")?;
@@ -107,6 +108,8 @@ fn read(kind: &str, name: &str, first: Sender<First>) {
         "ndi" => crate::share::ndi::receive(name, stop, each),
         #[cfg(windows)]
         "spout" => crate::share::spout::receive(name, stop, each),
+        #[cfg(windows)]
+        "camera" => crate::video::camera(name, stop, each),
         other => Err(format!("{other}: no live source of that kind here")),
     };
     // a failure before the first frame is what `open` tells
@@ -126,6 +129,8 @@ pub fn sources() -> Vec<String> {
             let mut all: Vec<String> = crate::share::ndi::sources(2).unwrap_or_default().into_iter().map(|n| format!("ndi:{n}")).collect();
             #[cfg(windows)]
             all.extend(crate::share::spout::senders().into_iter().map(|n| format!("spout:{n}")));
+            #[cfg(windows)]
+            all.extend(crate::video::cameras().into_iter().map(|n| format!("camera:{n}")));
             if let Ok(mut last) = LAST.lock() {
                 *last = (Some(Instant::now()), false, all);
             }
@@ -230,6 +235,6 @@ mod tests {
     #[test]
     fn a_source_with_no_kind_is_an_error_and_a_missing_one_says_so() {
         assert!(open("nothing").is_err());
-        assert!(open("camera:x").unwrap_err().contains("no live source"));
+        assert!(open("projector:x").unwrap_err().contains("no live source"));
     }
 }
