@@ -1,6 +1,6 @@
 # Shaders
 
-A **Shader** node is a picture written in WGSL. It comes with 39 presets, from Plasma to Liquid Chrome, Fire, Lasers, Fractal, Code Rain, Traces and V Beams, and it runs your own code just as well. Its parameters become knobs in the inspector, mappable like any other value, and the music is already in it to read.
+A **Shader** node is a picture written in WGSL. It comes with 40 presets, from Plasma to Liquid Chrome, Fire, Lasers, Fractal, Code Rain, Traces, Reaction and V Beams, and it runs your own code just as well. Its parameters become knobs in the inspector, mappable like any other value, and the music is already in it to read.
 
 **Shader FX** is the same for effects: it takes a picture in and changes it, with 25 presets from Glitch and VHS to LED Wall, God Rays and Shake.
 
@@ -88,6 +88,7 @@ Two more, asked for in the header:
 
 - `"feedback": true` gives the shader its own last frame as `prev`, for trails and echoes.
 - `"audio": true` gives it the sound itself as the texture `wave`: row 0 the last 512 analysis steps of level, low, mid and high, row 1 the waveform, row 2 the spectrum from 30 Hz to 16 kHz.
+- `"buffers": [{ "id": "a", "scale": 0.5 }]` keeps up to four pictures from frame to frame, for simulations. Each is drawn by its own function, `fn buffer_a(uv: vec2f, px: vec2f) -> vec4f`, in order, before `main_image`, at `scale` of the canvas each way (1 if you leave it out). Every function reads every buffer by its id (`textureSampleLevel(a, smp, uv, 0.0)`): what an earlier one drew this frame, and what itself and the later ones drew last frame; `main_image` sees them all as of this frame. A buffer nothing has drawn in yet is zeros, so write your simulation to start from that. The Reaction preset is four buffers stepping reaction diffusion.
 
 ### Effects
 

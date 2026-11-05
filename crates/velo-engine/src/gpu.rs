@@ -37,6 +37,8 @@ const EMITTER: u64 = 16;
 pub struct Program {
     pub node: ShaderNode,
     pipeline: wgpu::RenderPipeline,
+    /// The passes of a node's buffers, drawn before the picture itself.
+    passes: Vec<wgpu::RenderPipeline>,
     layout: wgpu::BindGroupLayout,
     /// A particle node's compute steps.
     sim: Option<Sim>,
@@ -92,13 +94,13 @@ impl Program {
         // their light adds up; their alpha covers
         let add = |dst_factor| wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor, operation: wgpu::BlendOperation::Add };
         let blend = node.particles.then(|| wgpu::BlendState { color: add(wgpu::BlendFactor::One), alpha: add(wgpu::BlendFactor::OneMinusSrcAlpha) });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let render = |fragment: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&node.name),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState { module: &module, entry_point: Some("velo_vs"), compilation_options: Default::default(), buffers: if node.particles { &sprites } else { &[] } },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
-                entry_point: Some("velo_fs"),
+                entry_point: Some(fragment),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })],
             }),
@@ -108,6 +110,8 @@ impl Program {
             multiview_mask: None,
             cache: None,
         });
+        let pipeline = render("velo_fs");
+        let passes = node.buffers.iter().map(|b| render(&format!("velo_fs_{}", b.id))).collect();
         let sim = node.particles.then(|| {
             let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::COMPUTE, ty, count: None };
             let storage = wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: false, min_binding_size: None };
@@ -128,13 +132,13 @@ impl Program {
             };
             Sim { emit: compute("velo_emit"), step: compute("velo_step"), layout }
         });
-        Self { node, pipeline, layout, sim }
+        Self { node, pipeline, passes, layout, sim }
     }
 }
 
-/// Texture bindings a node takes: inputs, then `prev`, then `wave` when requested.
+/// Texture bindings a node takes: inputs, buffers, then `prev`, then `wave` when requested.
 fn textures(node: &ShaderNode) -> usize {
-    node.inputs.len() + usize::from(node.feedback) + usize::from(node.audio)
+    node.inputs.len() + node.buffers.len() + usize::from(node.feedback) + usize::from(node.audio)
 }
 
 /// A node that reads only some of its inputs, as its values say (by parameter index): what lets
@@ -192,8 +196,12 @@ struct RunNode {
     params: wgpu::Buffer,
     /// One texture, or two for feedback (written alternately).
     targets: Vec<wgpu::TextureView>,
-    /// Per frame parity: the textures it reads change when an input (or it) has feedback.
-    groups: [wgpu::BindGroup; 2],
+    /// Each buffer's two pictures, drawn in turn: what it drew this frame and the frame before.
+    buffers: Vec<[wgpu::TextureView; 2]>,
+    /// A group for each pass (the buffers' first, the picture's last) and frame parity: the
+    /// textures it reads change when an input (or it) has feedback, and a pass reads what an
+    /// earlier one drew this frame and what a later one drew the frame before.
+    groups: Vec<[wgpu::BindGroup; 2]>,
     /// A particle node's particles (zeroed, so none, in a new graph) and their compute binding,
     /// by frame parity (the picture it emits from may come from a node with feedback).
     sim: Option<(wgpu::Buffer, [wgpu::BindGroup; 2])>,
@@ -291,8 +299,19 @@ impl Runner {
                     })
                     .collect()
             };
-            let group = |p: usize| {
+            let buffers: Vec<[wgpu::TextureView; 2]> = program
+                .node
+                .buffers
+                .iter()
+                .map(|b| {
+                    let at = [((size[0] as f32 * b.scale).round() as u32).max(1), ((size[1] as f32 * b.scale).round() as u32).max(1)];
+                    [texture(device, at), texture(device, at)]
+                })
+                .collect();
+            let group = |pass: usize, p: usize| {
                 let mut views = inputs_of(p);
+                // buffers drawn before this pass show this frame's picture, the rest last frame's
+                views.extend(buffers.iter().enumerate().map(|(j, b)| &b[if j < pass { p } else { 1 - p }]));
                 if program.node.feedback {
                     views.push(shown(n, p + 1));
                 }
@@ -312,7 +331,7 @@ impl Runner {
                 }
                 device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(&program.node.name), layout: &program.layout, entries: &entries })
             };
-            let groups = [group(0), group(1)];
+            let groups: Vec<[wgpu::BindGroup; 2]> = (0..=buffers.len()).map(|pass| [group(pass, 0), group(pass, 1)]).collect();
             let sim = program.sim.as_ref().map(|sim| {
                 let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX;
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("particles"), size: EMITTER + u64::from(PARTICLES) * PARTICLE, usage, mapped_at_creation: false });
@@ -329,7 +348,7 @@ impl Runner {
                 let groups = [group(0), group(1)];
                 (buffer, groups)
             });
-            run.push(RunNode { program: spec.program, params, targets: Vec::new(), groups, sim, past: past.map(|p| p.0) });
+            run.push(RunNode { program: spec.program, params, targets: Vec::new(), buffers, groups, sim, past: past.map(|p| p.0) });
         }
         for (node, views) in run.iter_mut().zip(targets) {
             node.targets = views;
@@ -405,18 +424,36 @@ impl Runner {
                 pass.set_pipeline(&sim.step);
                 pass.dispatch_workgroups(PARTICLES.div_ceil(64), 1, 1);
             }
+            // the node's cost: from its first pass's start to its last pass's end
+            let stamps = |first: bool, last: bool| {
+                timing.filter(|_| n < MAX_TIMED && (first || last)).map(|query_set| wgpu::RenderPassTimestampWrites { query_set, beginning_of_pass_write_index: first.then_some(2 * n as u32), end_of_pass_write_index: last.then_some(2 * n as u32 + 1) })
+            };
+            // each buffer is drawn into its own picture of the frame, in order, before the picture
+            for (k, pipeline) in program.passes.iter().enumerate() {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(&program.node.name),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &node.buffers[k][parity], resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store }, depth_slice: None })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: stamps(k == 0, false),
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &node.groups[k][parity], &[]);
+                pass.draw(0..3, 0..1);
+            }
             // particles add up over nothing
             let clear = if node.sim.is_some() { wgpu::Color::TRANSPARENT } else { wgpu::Color::BLACK };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(&program.node.name),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store }, depth_slice: None })],
                 depth_stencil_attachment: None,
-                timestamp_writes: timing.filter(|_| n < MAX_TIMED).map(|query_set| wgpu::RenderPassTimestampWrites { query_set, beginning_of_pass_write_index: Some(2 * n as u32), end_of_pass_write_index: Some(2 * n as u32 + 1) }),
+                timestamp_writes: stamps(program.passes.is_empty(), true),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_pipeline(&program.pipeline);
-            pass.set_bind_group(0, &node.groups[parity], &[]);
+            pass.set_bind_group(0, &node.groups[program.passes.len()][parity], &[]);
             match &node.sim {
                 Some((buffer, _)) => {
                     pass.set_vertex_buffer(0, buffer.slice(EMITTER..));
@@ -1300,6 +1337,39 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     }
 
     #[test]
+    fn buffers_keep_their_pictures_and_read_each_other_in_order() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // a counts up from its own last frame and shows what b held the frame before; b (half
+        // size) copies what a drew this frame; the picture shows a's, a's second and b's
+        let source = r#"/*{ "name": "Buffers", "buffers": [{ "id": "a" }, { "id": "b", "scale": 0.5 }] }*/
+fn buffer_a(uv: vec2f, px: vec2f) -> vec4f {
+    return vec4f(textureSampleLevel(a, smp, uv, 0.0).x + 0.25, textureSampleLevel(b, smp, uv, 0.0).x, 0.0, 1.0);
+}
+fn buffer_b(uv: vec2f, px: vec2f) -> vec4f {
+    return textureSampleLevel(a, smp, uv, 0.0);
+}
+fn main_image(uv: vec2f, px: vec2f) -> vec4f {
+    let now = textureSampleLevel(a, smp, uv, 0.0);
+    return vec4f(now.x, now.y, textureSampleLevel(b, smp, uv, 0.0).x, 1.0);
+}"#;
+        let programs = [Program::new(&device, ShaderNode::parse(source).unwrap()).unwrap()];
+        let mut runner = Runner::new(&device, &programs, &[NodeSpec { program: 0, inputs: vec![] }], &[], [32, 8], &wave_texture(&device)).unwrap();
+        runner.set_params(&queue, &programs, 0, &[]);
+        for (frame, want) in [[0.25, 0.0, 0.25], [0.5, 0.25, 0.5], [0.75, 0.5, 0.75]].into_iter().enumerate() {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runner.render(&queue, &mut encoder, &programs, &[frame as f32 / 60.0, 1.0 / 60.0, frame as f32, 1.0]);
+            queue.submit([encoder.finish()]);
+            let texels = read(&device, &queue, &runner, 0);
+            let got = [half(texels[0]), half(texels[1]), half(texels[2])];
+            assert!(got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-3), "frame {frame}: {got:?}, wanted {want:?}");
+        }
+    }
+
+    #[test]
     fn every_preset_draws_a_picture() {
         let _gpu = crate::gpu_lock();
         let Some((device, queue)) = gpu() else {
@@ -1566,6 +1636,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
                 vec![t, 1.0 / 30.0, t * 30.0, 16.0 / 9.0, 120.0, (t * 2.0).fract(), (t * 0.5).fract(), 0.8 * a, 0.9 * a, 0.6 * a, 0.5 * a, a, 0.5 * a, 0.7 * a, t * 0.5, t * 0.4, t * 0.3, t * 0.45, 0.6 * a, (t * 2.0).floor()]
             };
             let scale: u32 = std::env::var("VELO_SHOTS_SCALE").ok().and_then(|s| s.parse().ok()).unwrap_or(1);
+            let warm: u32 = std::env::var("VELO_SHOTS_WARM").ok().and_then(|s| s.parse().ok()).unwrap_or(30).max(1);
             let (tw, th) = (384 * scale, 216 * scale);
             let mut sheet = image::RgbaImage::new(tw * 2, th * 2);
             for (tile, (t, loud)) in [(1.0, false), (4.0, false), (4.0, true), (9.0, false)].into_iter().enumerate() {
@@ -1573,10 +1644,11 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
                 runner.set_params(&queue, &programs, 0, &[]);
                 runner.set_params(&queue, &programs, 1, &programs[1].node.values(|_| None));
                 runner.set_params(&queue, &programs, 2, &programs[2].node.values(|id| (loud && (id == "audio" || id == "music")).then_some([1.0, 0.0, 0.0, 0.0])));
-                // a second of frames before, for what feeds back; the music only on the last
-                for f in 0..30 {
+                // a second of frames before (`VELO_SHOTS_WARM` of them), for what feeds back or
+                // grows; the music only on the last
+                for f in 0..warm {
                     let mut encoder = device.create_command_encoder(&Default::default());
-                    runner.render(&queue, &mut encoder, &programs, &globals(t - 1.0 + f as f32 / 30.0, loud && f == 29));
+                    runner.render(&queue, &mut encoder, &programs, &globals(t + (f as f32 - warm as f32) / 30.0, loud && f == warm - 1));
                     queue.submit([encoder.finish()]);
                 }
                 let texels = read(&device, &queue, &runner, 2);

@@ -125,6 +125,9 @@ pub struct ShaderNode {
     pub audio: bool,
     /// Keeps its first input's last [`crate::gpu::HISTORY`] frames, read with `past_frame`.
     pub history: bool,
+    /// Pictures it keeps from frame to frame, each drawn by a pass of its own (`buffer_<id>`)
+    /// before the picture itself, and read by its id in every pass.
+    pub buffers: Vec<Buffer>,
     /// A particle system ([`crate::gpu`]): instead of `main_image`, the file has the entry points
     /// `velo_emit` and `velo_step` (compute) and `velo_vs`, `velo_fs` (a sprite per particle), and
     /// calls `velo_load()` to read its parameters.
@@ -134,6 +137,16 @@ pub struct ShaderNode {
     /// Lines before the file's own first line, to report errors at the author's line numbers.
     preamble_lines: usize,
 }
+
+/// A picture a node keeps: `scale` of the canvas each way, drawn again each frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Buffer {
+    pub id: String,
+    pub scale: f32,
+}
+
+/// The most buffers a node keeps.
+pub const MAX_BUFFERS: usize = 4;
 
 /// What went wrong, at the line of the author's file when there is one.
 #[derive(Clone, Debug, PartialEq)]
@@ -175,6 +188,8 @@ struct Header {
     history: bool,
     #[serde(default)]
     particles: bool,
+    #[serde(default)]
+    buffers: Vec<HeaderBuffer>,
     /// "manual": the shader honours `amount` itself instead of Velo mixing with the input;
     /// "none": an effect with no amount knob (Opacity: its own knob is the amount).
     #[serde(default)]
@@ -196,6 +211,15 @@ struct HeaderParam {
     /// An int's values by name, from 0.
     #[serde(default)]
     names: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HeaderBuffer {
+    id: String,
+    /// Of the canvas each way, 0.0625 to 1 (1 when missing).
+    #[serde(default)]
+    scale: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -278,6 +302,26 @@ impl ShaderNode {
             }
         }
         let mix_input = (amount && header.amount.as_deref() != Some("manual")).then(|| inputs[0].clone());
+        if header.particles && !header.buffers.is_empty() {
+            return Err(error("a particle system has no buffers"));
+        }
+        if header.buffers.len() > MAX_BUFFERS {
+            return Err(error(format!("a node keeps at most {MAX_BUFFERS} buffers")));
+        }
+        let mut buffers: Vec<Buffer> = Vec::new();
+        for b in header.buffers {
+            let scale = b.scale.unwrap_or(1.0);
+            if !(0.0625..=1.0).contains(&scale) {
+                return Err(error(format!("buffer {:?}: scale runs from 0.0625 to 1", b.id)));
+            }
+            if RESERVED.contains(&b.id.as_str()) || b.id.starts_with("velo_") || params.iter().any(|p| p.id == b.id) || inputs.contains(&b.id) || buffers.iter().any(|o| o.id == b.id) {
+                return Err(error(format!("buffer id {:?} is reserved or taken", b.id)));
+            }
+            if !source.contains(&format!("fn buffer_{}", b.id)) {
+                return Err(error(format!("the file must define fn buffer_{}(uv: vec2f, px: vec2f) -> vec4f", b.id)));
+            }
+            buffers.push(Buffer { id: b.id, scale });
+        }
 
         let mut pre = String::from("// Velo: globals, parameters and bindings (docs/plugins.md)\nstruct VeloGlobals {\n    resolution: vec2<f32>,\n");
         for name in &GLOBALS[1..] {
@@ -286,8 +330,8 @@ impl ShaderNode {
         pre += "}\n";
         pre += &format!("struct VeloParams {{\n    v: array<vec4<f32>, {}>,\n}}\n", params.len().max(1));
         pre += "@group(0) @binding(0) var<uniform> g: VeloGlobals;\n@group(0) @binding(1) var<uniform> velo_params: VeloParams;\n@group(0) @binding(2) var smp: sampler;\n";
-        // textures from binding 3 on: inputs, previous frame, audio; then a history's frames and where it is
-        let textures: Vec<&str> = inputs.iter().map(String::as_str).chain(header.feedback.then_some("prev")).chain(header.audio.then_some("wave")).collect();
+        // textures from binding 3 on: inputs, buffers, previous frame, audio; then a history's frames and where it is
+        let textures: Vec<&str> = inputs.iter().map(String::as_str).chain(buffers.iter().map(|b| b.id.as_str())).chain(header.feedback.then_some("prev")).chain(header.audio.then_some("wave")).collect();
         for (binding, id) in (3..).zip(&textures) {
             pre += &format!("@group(0) @binding({binding}) var {id}: texture_2d<f32>;\n");
         }
@@ -303,7 +347,7 @@ impl ShaderNode {
         let load: String = params.iter().enumerate().map(|(slot, p)| format!("    {} = {};\n", p.id, p.ty.read(slot))).collect();
         if header.particles {
             let wgsl = format!("{pre}{source}\n// Velo: the parameters\nfn velo_load() {{\n{load}}}\n");
-            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, history: false, particles: true, wgsl, preamble_lines });
+            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: true, wgsl, preamble_lines });
         }
 
         let mut post = String::from("\n// Velo: entry points\nstruct VeloVertex {\n    @builtin(position) pos: vec4<f32>,\n    @location(0) uv: vec2<f32>,\n}\n");
@@ -316,14 +360,18 @@ impl ShaderNode {
             None if fade => post += "    return c * clamp(opacity, 0.0, 1.0);\n}\n",
             None => post += "    return c;\n}\n",
         }
+        // a buffer's pass: its function, with the parameters loaded as in the picture's
+        for b in &buffers {
+            post += &format!("@fragment\nfn velo_fs_{id}(v: VeloVertex) -> @location(0) vec4<f32> {{\n{load}    return buffer_{id}(v.uv, v.uv * g.resolution);\n}}\n", id = b.id);
+        }
         let wgsl = format!("{pre}{source}{post}");
-        Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: header.feedback, audio: header.audio, history, particles: false, wgsl, preamble_lines })
+        Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: header.feedback, audio: header.audio, history, buffers, particles: false, wgsl, preamble_lines })
     }
 
     /// A node whose whole module was written elsewhere (an ISF shader, translated by naga):
     /// it has Velo's bindings and entry points already.
     pub(crate) fn assembled(name: String, category: String, description: String, params: Vec<Param>, inputs: Vec<String>, wgsl: String) -> Self {
-        ShaderNode { name, category, description, params, inputs, feedback: false, audio: false, history: false, particles: false, wgsl, preamble_lines: 0 }
+        ShaderNode { name, category, description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: false, wgsl, preamble_lines: 0 }
     }
 
     /// Compiles the module with naga, as wgpu will: syntax, types, uniformity. Errors come back at
@@ -384,6 +432,27 @@ mod tests {
         }
         let node = ShaderNode::parse("/*{ \"name\": \"No audio\" }*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f { return vec4f(0.0); }").unwrap();
         assert!(!node.audio);
+    }
+
+    #[test]
+    fn buffers_become_passes_and_bindings_and_are_checked() {
+        let one = |id: &str| format!("fn buffer_{id}(uv: vec2f, px: vec2f) -> vec4f {{ return textureSampleLevel(b, smp, uv, 0.0); }}\n");
+        let file = |header: &str, ids: &[&str]| ShaderNode::parse(&format!("/*{header}*/\n{}fn main_image(uv: vec2f, px: vec2f) -> vec4f {{ return vec4f(0.0); }}", ids.iter().map(|id| one(id)).collect::<String>()));
+        let node = file(r#"{ "name": "B", "inputs": [{ "id": "src" }], "buffers": [{ "id": "a" }, { "id": "b", "scale": 0.5 }] }"#, &["a", "b"]).unwrap();
+        assert_eq!(node.buffers, [Buffer { id: "a".into(), scale: 1.0 }, Buffer { id: "b".into(), scale: 0.5 }]);
+        let module = node.validate().unwrap();
+        // textures after the inputs, in order; an entry point a buffer
+        let binding = |name: &str| module.global_variables.iter().find(|(_, v)| v.name.as_deref() == Some(name)).and_then(|(_, v)| v.binding.as_ref()).map(|b| b.binding);
+        assert_eq!((binding("src"), binding("a"), binding("b")), (Some(3), Some(4), Some(5)));
+        assert!(node.wgsl.contains("fn velo_fs_a") && node.wgsl.contains("fn velo_fs_b"));
+        // mistakes are named
+        let bad = |header: &str, ids: &[&str]| file(header, ids).unwrap_err().message;
+        assert!(bad(r#"{ "name": "B", "buffers": [{ "id": "a" }] }"#, &[]).contains("fn buffer_a"));
+        assert!(bad(r#"{ "name": "B", "buffers": [{ "id": "a" }, { "id": "a" }] }"#, &["a"]).contains("taken"));
+        assert!(bad(r#"{ "name": "B", "buffers": [{ "id": "prev" }] }"#, &["prev"]).contains("reserved"));
+        assert!(bad(r#"{ "name": "B", "buffers": [{ "id": "a", "scale": 2.0 }] }"#, &["a"]).contains("scale"));
+        let five = r#"{ "name": "B", "buffers": [{ "id": "a" }, { "id": "b" }, { "id": "c" }, { "id": "d" }, { "id": "e" }] }"#;
+        assert!(bad(five, &["a", "b", "c", "d", "e"]).contains("at most"));
     }
 
     #[test]

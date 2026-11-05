@@ -82,6 +82,7 @@ Not yet: Syphon on macOS, several outputs, crop and rotation.
 
 - Most nodes are **one fullscreen-triangle pass** with a generated pipeline ([plugins.md](plugins.md) §2), into a texture of their own. An input with nothing wired reads black.
 - **Feedback** keeps two textures and reads the one it wrote last frame.
+- A shader with **buffers** keeps two textures a buffer (at the buffer's scale of the canvas) and draws one pass a buffer into the one of this frame's parity, in order, before its picture; each pass reads the buffers before it as drawn this frame and itself and the ones after as drawn last frame. The scene's memory budget counts them (`live.rs`), and the node's cost on the graph is its first pass to its last.
 - **Particles** keep 65,536 particles in a buffer of their own: a compute pass emits, one thread moves each particle, then a sprite each is added up over a clear picture. `count` caps them without a rebuild. With shape Picture they are born where the picture wired into `emit` is lit (its brightness times its alpha is the odds, guessed up to 512 times each, in the compute pass through `textureLoad`), so a lit logo, an edge map or a movie is where they come from; a picture lit on under a hundredth of it spawns fewer, a black one none. A file, or what is wired into `sprite`, is what each particle looks like.
 - **GPU cost**: where the GPU has timestamp queries, each pass of the edited graph is timed and shown on its node.
 - A **Probe** reads a node's picture back as a color, a signal like any other.

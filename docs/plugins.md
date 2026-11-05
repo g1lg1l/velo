@@ -53,6 +53,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
 | `inputs` | Textures, each `{ "id": "src", "type": "texture" }`, in binding order |
 | `feedback` | `true`: the node reads its own previous frame as `prev` |
 | `audio` | `true`: the node reads the audio texture as `wave` |
+| `buffers` | Up to four pictures the node keeps from frame to frame, `[{ "id": "a", "scale": 0.5 }]` (`scale` of the canvas each way, 0.0625 to 1, 1 when missing). Each is drawn by a pass of its own, `fn buffer_a(uv: vec2f, px: vec2f) -> vec4f`, in the order written, before `main_image`. Every pass reads every buffer by its id: the ones before it as drawn this frame, itself and the ones after as drawn last frame; `main_image` reads all as of this frame. One nothing has drawn in yet is zeros |
 | `history` | `true`: Velo keeps the first input's last 32 frames (at half the canvas each way) for `past_frame` |
 | `amount` | For effects: `"manual"` (the shader uses `amount` itself) or `"none"` (no amount knob) |
 
@@ -67,6 +68,7 @@ Unknown keys are an error, so a typo doesn't pass silently.
 | `g` | The globals: `resolution` (vec2), `time`, `delta`, `frame`, `aspect`, `bpm`, `beat_phase`, `bar_phase`, `level`, `bass`, `mid`, `high`, `kick`, `snare`, `hat` (0..1, the hits as envelopes), `bass_time`, `mid_time`, `high_time`, `level_time` (clocks that run faster when a band is busy), `melody`, `beats` (beats counted so far) |
 | `<param id>` | Each parameter as a plain variable named by its id: write `speed`, not `params.speed` |
 | `<input id>` | One `texture_2d<f32>` per input |
+| `<buffer id>` | One `texture_2d<f32>` per buffer, after the inputs. In a buffer's pass `px` still counts the canvas's pixels: use `textureDimensions(id)` for the buffer's own |
 | `smp` | The sampler: `textureSample(src, smp, uv)` |
 | `prev` | The node's previous frame, with `"feedback": true` |
 | `wave` | The audio texture, with `"audio": true` |
@@ -87,7 +89,7 @@ The Waveform node draws all three (Spectrum, Radial, Scope, Rings).
 ### Particles
 A file whose header says `"particles": true` has no `main_image`: it defines `velo_emit` and `velo_step` (compute) and `velo_vs`, `velo_fs` (a sprite per particle), and calls `velo_load()` to read its parameters. Only the built-in Particles node uses it for now (`crates/velo-engine/shaders/particles.wgsl`; [rendering.md](rendering.md) §6). An input called `emit` is also bound to the compute steps, to read with `textureLoad` (Particles' shape Picture is born where it's lit); an input called `sprite` takes the node's file in place of the first input.
 
-Not yet: several passes with named targets, shaders as scene transitions, compute nodes of your own.
+Not yet: shaders as scene transitions, compute nodes of your own.
 
 ## 3. ISF shaders
 
