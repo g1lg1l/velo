@@ -384,7 +384,9 @@ impl Live {
         let texture = u64::from(size[0]) * u64::from(size[1]) * 8;
         let quarters = |s: &velo_engine::ShaderNode| {
             let buffers: u64 = s.buffers.iter().map(|b| (8.0 * b.scale * b.scale).ceil() as u64).sum();
-            4 * (1 + u64::from(s.feedback)) + if s.history { u64::from(velo_engine::gpu::HISTORY) } else { 0 } + buffers
+            // a mesh's samples (a texture's worth each) and its depth (half a texture's a sample); its triangles aren't counted
+            let mesh = if s.mesh { u64::from(velo_engine::gpu::MSAA) * 6 } else { 0 };
+            4 * (1 + u64::from(s.feedback)) + if s.history { u64::from(velo_engine::gpu::HISTORY) } else { 0 } + buffers + mesh
         };
         let bytes = |s: &Slot| s.installed.iter().map(|(_, shader)| quarters(shader)).sum::<u64>() * texture / 4;
         let held: Vec<(u64, bool, u64)> = self.slots.iter().map(|s| (s.key, project.scene(&s.scene).is_some(), bytes(s))).collect();

@@ -1363,6 +1363,9 @@ impl App {
         if kind_id == velo_core::PARTICLES {
             self.sprite_section(ui, t, &node_id);
         }
+        if kind_id == velo_core::MESH {
+            self.mesh_section(ui, t, &node_id);
+        }
         if kind_id == velo_core::LIVE {
             self.live_section(ui, t, &node_id);
         }
@@ -2175,6 +2178,35 @@ impl App {
         }
         if list != files {
             self.run("node.set_media", json!({ "node": node, "media": list.join("\n") }));
+        }
+    }
+
+    /// A Mesh node's model: the .obj or .ply it draws, and why it can't draw it (no faces, or
+    /// more triangles than it takes).
+    fn mesh_section(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str) {
+        let path = self.session.active().and_then(|s| s.node(node)).and_then(|n| n.media.clone());
+        let loading = path.as_ref().and_then(|_| self.live.as_ref()?.media(node));
+        let failed = loading.as_ref().and_then(|l| l.get()?.as_ref().err().cloned());
+        // how many triangles the file has, and how many corners the mesh got of them
+        let faces = loading.as_ref().and_then(|l| l.get()?.as_ref().ok()?.model.as_ref().map(|m| (m.faces, m.mesh.len())));
+        let mut pick = false;
+        kit::section(ui, t, icons::POLYGON, tr!("MODEL"), false, |ui| {
+            let Some(path) = &path else {
+                pick = kit::drop_zone(ui, t, icons::POLYGON, tr!("Choose a 3D model"), tr!("An .obj or .ply with faces")).clicked();
+                return;
+            };
+            file_row(ui, t, icons::POLYGON, path);
+            match (&failed, faces) {
+                (Some(e), _) => kit::warning(ui, t, e),
+                (None, Some((0, _))) => kit::warning(ui, t, tr!("It has no faces, only points: a Particles node can be born on them.")),
+                (None, Some((n, 0))) => kit::warning(ui, t, &tr!("{} triangles: a Mesh draws {} at most.", n, velo_engine::model::MAX_TRIANGLES)),
+                (None, _) => kit::hint(ui, t, tr!("Drawn solid and lit by a light; the camera settings turn it round. One mesh: no textures, shadows or animation.")),
+            };
+            ui.add_space(t.gap);
+            pick = kit::actions(ui, t, &[(kit::Variant::Outline, Some(icons::ARROWS_CLOCKWISE), tr!("Replace…"))])[0].clicked();
+        });
+        if let Some(picked) = pick.then(|| rfd::FileDialog::new().add_filter(tr!("3D models"), &velo_engine::model::EXTENSIONS).pick_file()).flatten() {
+            self.run("node.set_media", json!({ "node": node, "media": picked.to_string_lossy() }));
         }
     }
 

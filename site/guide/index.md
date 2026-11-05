@@ -40,7 +40,7 @@ Each panel hides with a key, and <kbd>&#92;</kbd> hides them all (see [Shortcuts
 
 ## What it is not
 
-Velo is a 2D instrument: pictures in, pictures out, moved live. It is not a 3D engine (Particles can fly a camera round the points of a model, nothing solid or lit), a projection-mapping suite, a timeline editor or a lighting controller. Shaders cover the other 3D looks; tools like MadMapper are better at mapping.
+Velo is a 2D instrument: pictures in, pictures out, moved live. It is not a 3D engine (a Mesh node draws one model solid and lit and Particles fly a camera round points, with no scene graph, shadows or textures), a projection-mapping suite, a timeline editor or a lighting controller. Shaders cover the other 3D looks; tools like MadMapper are better at mapping.
 
 ## Next
 

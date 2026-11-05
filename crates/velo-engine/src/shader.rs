@@ -18,7 +18,7 @@ pub const GLOBALS: [&str; 21] =
 pub const GLOBAL_FLOATS: usize = 24;
 
 /// The built-in nodes, written in the same format as anyone's (dogfooding the format).
-pub const BUILTINS: [(&str, &str); 35] = [
+pub const BUILTINS: [(&str, &str); 36] = [
     ("noise", include_str!("../shaders/noise.wgsl")),
     ("gradient", include_str!("../shaders/gradient.wgsl")),
     ("shapes", include_str!("../shaders/shapes.wgsl")),
@@ -39,6 +39,7 @@ pub const BUILTINS: [(&str, &str); 35] = [
     ("grid", include_str!("../shaders/grid.wgsl")),
     ("switch", include_str!("../shaders/switch.wgsl")),
     ("particles", include_str!("../shaders/particles.wgsl")),
+    ("mesh", include_str!("../shaders/mesh.wgsl")),
     ("opacity", include_str!("../shaders/opacity.wgsl")),
     ("medialist", include_str!("../shaders/medialist.wgsl")),
     // math on pictures, layout and time (docs/graph.md §4)
@@ -132,6 +133,10 @@ pub struct ShaderNode {
     /// `velo_emit` and `velo_step` (compute) and `velo_vs`, `velo_fs` (a sprite per particle), and
     /// calls `velo_load()` to read its parameters.
     pub particles: bool,
+    /// A mesh ([`crate::gpu`]): instead of `main_image`, the file has the entry points `velo_vs`
+    /// (a vertex of position and normal in, drawn with a depth test) and `velo_fs`, and calls
+    /// `velo_load()` in each to read its parameters.
+    pub mesh: bool,
     /// The whole module: preamble, the file as written, entry points.
     pub wgsl: String,
     /// Lines before the file's own first line, to report errors at the author's line numbers.
@@ -188,6 +193,8 @@ struct Header {
     history: bool,
     #[serde(default)]
     particles: bool,
+    #[serde(default)]
+    mesh: bool,
     #[serde(default)]
     buffers: Vec<HeaderBuffer>,
     /// "manual": the shader honours `amount` itself instead of Velo mixing with the input;
@@ -253,7 +260,10 @@ impl ShaderNode {
         let body = source.trim_start();
         let json = body.strip_prefix("/*").and_then(|rest| rest.split_once("*/")).map(|(json, _)| json).ok_or_else(|| error("the file must start with a /*{ … }*/ JSON header"))?;
         let header: Header = serde_json::from_str(json.trim()).map_err(|e| error(format!("header: {e}")))?;
-        if !header.particles && !source.contains("fn main_image") {
+        if header.particles && header.mesh {
+            return Err(error("a node is a particle system or a mesh, not both"));
+        }
+        if !header.particles && !header.mesh && !source.contains("fn main_image") {
             return Err(error("the file must define fn main_image(uv: vec2f, px: vec2f) -> vec4f"));
         }
         let mut params = Vec::new();
@@ -288,7 +298,7 @@ impl ShaderNode {
         }
         // and pictures an opacity: how much of them shows (over black on their own, over what's
         // under them in a Blend); one that has its own (Text's) keeps it
-        let fade = header.category == "generator" && !header.particles && !params.iter().any(|p| p.id == "opacity");
+        let fade = header.category == "generator" && !header.particles && !header.mesh && !params.iter().any(|p| p.id == "opacity");
         if fade {
             params.push(Param { id: "opacity".into(), ty: ParamType::Float, default: [1.0, 0.0, 0.0, 0.0], min: 0.0, max: 1.0, names: Vec::new() });
         }
@@ -302,8 +312,8 @@ impl ShaderNode {
             }
         }
         let mix_input = (amount && header.amount.as_deref() != Some("manual")).then(|| inputs[0].clone());
-        if header.particles && !header.buffers.is_empty() {
-            return Err(error("a particle system has no buffers"));
+        if (header.particles || header.mesh) && !header.buffers.is_empty() {
+            return Err(error("a particle system or a mesh has no buffers"));
         }
         if header.buffers.len() > MAX_BUFFERS {
             return Err(error(format!("a node keeps at most {MAX_BUFFERS} buffers")));
@@ -335,7 +345,7 @@ impl ShaderNode {
         for (binding, id) in (3..).zip(&textures) {
             pre += &format!("@group(0) @binding({binding}) var {id}: texture_2d<f32>;\n");
         }
-        let history = header.history && !header.particles && !inputs.is_empty();
+        let history = header.history && !header.particles && !header.mesh && !inputs.is_empty();
         if history {
             let at = 3 + textures.len();
             pre += &format!("@group(0) @binding({at}) var velo_history: texture_2d_array<f32>;\n@group(0) @binding({}) var<uniform> velo_past: vec4<f32>;\n{PAST_FRAME}", at + 1);
@@ -345,9 +355,13 @@ impl ShaderNode {
         }
         let preamble_lines = pre.lines().count();
         let load: String = params.iter().enumerate().map(|(slot, p)| format!("    {} = {};\n", p.id, p.ty.read(slot))).collect();
+        if header.mesh {
+            let wgsl = format!("{pre}{source}\n// Velo: the parameters\nfn velo_load() {{\n{load}}}\n");
+            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: false, mesh: true, wgsl, preamble_lines });
+        }
         if header.particles {
             let wgsl = format!("{pre}{source}\n// Velo: the parameters\nfn velo_load() {{\n{load}}}\n");
-            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: true, wgsl, preamble_lines });
+            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: true, mesh: false, wgsl, preamble_lines });
         }
 
         let mut post = String::from("\n// Velo: entry points\nstruct VeloVertex {\n    @builtin(position) pos: vec4<f32>,\n    @location(0) uv: vec2<f32>,\n}\n");
@@ -365,13 +379,13 @@ impl ShaderNode {
             post += &format!("@fragment\nfn velo_fs_{id}(v: VeloVertex) -> @location(0) vec4<f32> {{\n{load}    return buffer_{id}(v.uv, v.uv * g.resolution);\n}}\n", id = b.id);
         }
         let wgsl = format!("{pre}{source}{post}");
-        Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: header.feedback, audio: header.audio, history, buffers, particles: false, wgsl, preamble_lines })
+        Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: header.feedback, audio: header.audio, history, buffers, particles: false, mesh: false, wgsl, preamble_lines })
     }
 
     /// A node whose whole module was written elsewhere (an ISF shader, translated by naga):
     /// it has Velo's bindings and entry points already.
     pub(crate) fn assembled(name: String, category: String, description: String, params: Vec<Param>, inputs: Vec<String>, wgsl: String) -> Self {
-        ShaderNode { name, category, description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: false, wgsl, preamble_lines: 0 }
+        ShaderNode { name, category, description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: false, mesh: false, wgsl, preamble_lines: 0 }
     }
 
     /// Compiles the module with naga, as wgpu will: syntax, types, uniformity. Errors come back at

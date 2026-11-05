@@ -8,7 +8,7 @@ use std::sync::mpsc;
 
 use std::borrow::Cow;
 
-use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, MEDIA_LIST, MEDIA_LIST_FILES, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
+use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, MEDIA_LIST, MEDIA_LIST_FILES, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
 
 use crate::gpu::{Lazy, topological};
 use crate::{BUILTINS, Graph, Macros, Modulator, NodeSpec, Program, Runner, ShaderError, ShaderNode, macro_routes, routes};
@@ -74,8 +74,8 @@ pub fn own(code: &str) -> Result<ShaderNode, ShaderError> {
     if node.inputs.len() > 1 {
         return Err(ShaderError { line: None, message: "a Shader node has one input for now: declare at most one texture (src)".into() });
     }
-    if node.particles {
-        return Err(ShaderError { line: None, message: "particles are the Particles node's: a Shader node draws main_image".into() });
+    if node.particles || node.mesh {
+        return Err(ShaderError { line: None, message: "particles and meshes are the Particles and Mesh nodes': a Shader node draws main_image".into() });
     }
     Ok(node)
 }
@@ -276,7 +276,7 @@ fn build(
                 return n.media.as_deref().map(|source| library.live(source));
             }
             // a Particles node's file is its sprite
-            n.media.as_deref().filter(|_| shows_media(&n.kind) || n.kind == PARTICLES).map(|path| library.get(path))
+            n.media.as_deref().filter(|_| shows_media(&n.kind) || n.kind == PARTICLES || n.kind == MESH).map(|path| library.get(path))
         })
         .collect();
     let file = |n: usize| files[n].as_ref().and_then(|l| l.get()).and_then(|r| r.as_ref().ok());
@@ -336,11 +336,12 @@ fn build(
     if let Some(e) = [pollster::block_on(valid.pop()), pollster::block_on(memory.pop())].into_iter().flatten().next() {
         return Err(crate::gpu_error(&e));
     }
-    let runner = runner?;
-    // a Particles node's model: its points up on the GPU
+    let mut runner = runner?;
+    // a model's points up for a Particles node, its triangles for a Mesh node (the other does nothing)
     for (n, media) in &models {
         if let Some(model) = &media.model {
             runner.set_points(queue, *n, &model.points);
+            runner.set_mesh(device, *n, &model.mesh);
         }
     }
     // the Probes' picture sides, each reading its node for its signal node
@@ -593,6 +594,49 @@ mod tests {
         assert_eq!(built.graph.mods.iter().map(Modulator::active).collect::<Vec<_>>(), [true, false], "the noise is driven");
         assert_eq!(built.graph.macros.values(0.0)[3], 0.5);
         assert_eq!(built.graph.macros.routes.len(), 1);
+    }
+
+    #[test]
+    fn a_mesh_node_draws_the_model_its_file_holds() {
+        use crate::signal::{Kind, Probe};
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok().and_then(|a| pollster::block_on(a.request_device(&wgpu::DeviceDescriptor::default())).ok()) else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("velo-mesh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("quad.obj");
+        std::fs::write(&path, "v -1 -1 0\nv 1 -1 0\nv 1 1 0\nv -1 1 0\nf 1 2 3 4\n").unwrap();
+        let compiler = Compiler::new(device.clone(), queue.clone(), crate::gpu::wave_texture(&device));
+        let mut s = scene(&[velo_core::MESH, PROBE], &[(0, 1, 0)]);
+        s.nodes[0].media = Some(path.to_string_lossy().into_owned());
+        // the file loads on a thread of its own: the graph built before it's in draws nothing, the next one the model
+        compiler.build(1, s.clone(), [64, 36]);
+        // held, as the app holds its graph: the library drops a file nobody holds
+        let _first = compiler.built.recv_timeout(std::time::Duration::from_secs(20)).expect("a build").1.expect("it compiles");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        compiler.build(2, s, [64, 36]);
+        let mut built = compiler.built.recv_timeout(std::time::Duration::from_secs(20)).expect("a build").1.expect("it compiles");
+        let g = &mut built.graph;
+        let (signal, slot) = (g.probes[0].signal, g.signals[g.probes[0].signal].slot);
+        let mut read = |position: [f32; 2], size: f32| {
+            g.signals[signal].kind = Kind::Probe(Probe { measure: 0, position, size });
+            let mut encoder = device.create_command_encoder(&Default::default());
+            g.runner.render(&queue, &mut encoder, &g.programs, &[0.0, 1.0 / 60.0, 0.0, 16.0 / 9.0]);
+            g.probes[0].encode(&queue, &mut encoder, &g.runner, position, size);
+            queue.submit([encoder.finish()]);
+            g.probes[0].read();
+            device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+            g.signals[signal].feed(g.probes[0].color());
+            let mut sources = [0.0f32; velo_core::SOURCES.len() + crate::signal::MAX_SIGNALS];
+            crate::signal::run(&mut g.signals, &mut sources, 0.0, 1.0 / 60.0);
+            sources[slot]
+        };
+        assert!(read([0.0, 0.0], 0.2) > 0.1, "the model lit in the middle");
+        assert!(read([-0.95, 0.9], 0.05) < 0.01, "nothing in the corner");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

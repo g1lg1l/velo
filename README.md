@@ -56,10 +56,11 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - Any source onto any value, with its amount, attack, release and invert. Every generator and effect also has an **Automagic** knob that plays along by itself.
 
 **Makes pictures**
-- 61 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Text, Image, Video, Live, Media List), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze, Time Machine, Key and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (Beat Kick, LFO, Envelope, Sequencer, Sample & Hold, Random, Probe, Speed, Delay, Spring and more).
+- 62 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Mesh, Text, Image, Video, Live, Media List), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze, Time Machine, Key and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (Beat Kick, LFO, Envelope, Sequencer, Sample & Hold, Random, Probe, Speed, Delay, Spring and more).
 - 40 shader presets, from Plasma and Fire to Lasers, Fractal, Reaction and V Beams, and 25 effect presets, from Glitch and VHS to LED Wall and God Rays.
 - Your own WGSL or ISF shaders become nodes with knobs, rebuilt as you type or save. A broken shader keeps the last one that worked. A WGSL shader can keep buffers from frame to frame, each drawn by a pass of its own, for simulations like reaction diffusion.
 - Particles are born wherever a picture is lit (a logo, an edge map, a movie), in a sphere, or on the points of a 3D model (.obj, .ply), and drawn as soft dots or a picture of your own; its Orbit view turns a camera round them.
+- A **Mesh** node draws a 3D model (.obj, .ply) solid, with a depth test and 4x antialiasing, lit by a light with a shine, a studio reflection and a rim, from a camera that turns round it; the surface breathes with the bass and the kick flashes it.
 - Stills, GIFs, image sequences, HAP, H.264 and HEVC movies.
 - Live pictures with the Live node: **NDI** sources on the network, and on Windows **Spout** senders on this computer and cameras or capture cards.
 
@@ -97,7 +98,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 <table>
 <tr>
 <td width="50%"><img src="docs/screenshots/patch.png" alt="The Audio In card: a cassette whose reels turn with the level, the test loop at 128 BPM, and graphs of level, bass, mid and high; the mid and high cables plug into jacks on the Velo shader card, beside the live preview"><br><sub><b>The patch.</b> Audio In's mid and high plug into the shader's jacks.</sub></td>
-<td width="50%"><img src="docs/screenshots/node-menu.png" alt="The node menu: a search box, a tab per group (All, Generators, Effects, Composite, Control, Output, Signals, Logic) and each node with its icon and a line on what it does"><br><sub><b>The node menu.</b> 61 nodes, one key away.</sub></td>
+<td width="50%"><img src="docs/screenshots/node-menu.png" alt="The node menu: a search box, a tab per group (All, Generators, Effects, Composite, Control, Output, Signals, Logic) and each node with its icon and a line on what it does"><br><sub><b>The node menu.</b> 62 nodes, one key away.</sub></td>
 </tr>
 <tr>
 <td width="50%"><img src="docs/screenshots/mapping.png" alt="A mapping's popover: Audio In's kick moving Kaleido's zoom, with its amount, an envelope drawing the attack and release, and an invert key"><br><sub><b>A mapping.</b> The kick moves Kaleido's zoom, with its own envelope.</sub></td>
@@ -108,7 +109,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 </tr>
 </table>
 
-Not a 3D engine (Particles fly a camera round the points of a model, nothing solid or lit), a mapping suite or a timeline editor: see [what Velo is not](docs/product.md#3-what-it-is-what-it-is-not).
+Not a 3D engine (a Mesh draws one model solid and lit and Particles fly a camera round points, with no scene graph, shadows, textures or animation), a mapping suite or a timeline editor: see [what Velo is not](docs/product.md#3-what-it-is-what-it-is-not).
 
 > **Making the beats too?** [Ravune](https://github.com/g1lg1l/ravune), from the same maker, is a modular DAW for deep sound design.
 

@@ -31,6 +31,10 @@ const SIM_BINDING: u32 = 15;
 const POINTS_BINDING: u32 = 16;
 /// The most points a model gives a particle node (a bigger one is thinned out as it loads).
 pub const MAX_POINTS: usize = 131_072;
+/// The samples a pixel of a mesh node has: 4 is guaranteed for `Rgba16Float` and `Depth32Float`
+/// (wgpu's format table), resolved into the node's picture. Pipelines and textures both read this.
+pub const MSAA: u32 = 4;
+const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Bytes a particle takes (particles.wgsl's `Particle`), after the emitter's 16.
 const PARTICLE: u64 = 48;
 const EMITTER: u64 = 16;
@@ -95,13 +99,16 @@ impl Program {
         // a particle node draws a quad a particle, read from its buffer: position and age, velocity and life, seed and size
         let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
         let sprites = [Some(wgpu::VertexBufferLayout { array_stride: PARTICLE, step_mode: wgpu::VertexStepMode::Instance, attributes: &attributes })];
+        // a mesh node draws its triangles from a vertex buffer: a position, then a normal
+        let corner = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
+        let corners = [Some(wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex, attributes: &corner })];
         // their light adds up; their alpha covers
         let add = |dst_factor| wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor, operation: wgpu::BlendOperation::Add };
         let blend = node.particles.then(|| wgpu::BlendState { color: add(wgpu::BlendFactor::One), alpha: add(wgpu::BlendFactor::OneMinusSrcAlpha) });
         let render = |fragment: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some(&node.name),
             layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("velo_vs"), compilation_options: Default::default(), buffers: if node.particles { &sprites } else { &[] } },
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("velo_vs"), compilation_options: Default::default(), buffers: if node.particles { &sprites } else if node.mesh { &corners } else { &[] } },
             fragment: Some(wgpu::FragmentState {
                 module: &module,
                 entry_point: Some(fragment),
@@ -109,8 +116,9 @@ impl Program {
                 targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })],
             }),
             primitive: wgpu::PrimitiveState { topology: if node.particles { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList }, ..Default::default() },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
+            // a mesh is solid: the nearer triangle wins, whichever comes first; seen from either side
+            depth_stencil: node.mesh.then(|| wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(), bias: Default::default() }),
+            multisample: wgpu::MultisampleState { count: if node.mesh { MSAA } else { 1 }, ..Default::default() },
             multiview_mask: None,
             cache: None,
         });
@@ -211,7 +219,17 @@ struct RunNode {
     /// until [`Runner::set_points`]) and their compute binding, by frame parity (the picture it
     /// emits from may come from a node with feedback).
     sim: Option<(wgpu::Buffer, wgpu::Buffer, [wgpu::BindGroup; 2])>,
+    /// A mesh node's samples and depth, and its triangles.
+    mesh: Option<MeshState>,
     past: Option<Past>,
+}
+
+/// A mesh node's pass: what it draws into ([`MSAA`] samples, resolved into the node's picture),
+/// its depth, and its triangles, none until [`Runner::set_mesh`].
+struct MeshState {
+    color: wgpu::TextureView,
+    depth: wgpu::TextureView,
+    vertices: Option<(wgpu::Buffer, u32)>,
 }
 
 /// A node's history: its first input drawn into a frame of a ring each frame, before it runs.
@@ -356,7 +374,8 @@ impl Runner {
                 let groups = [group(0), group(1)];
                 (buffer, points, groups)
             });
-            run.push(RunNode { program: spec.program, params, targets: Vec::new(), buffers, groups, sim, past: past.map(|p| p.0) });
+            let mesh = program.node.mesh.then(|| MeshState { color: multisampled(device, size, FORMAT), depth: multisampled(device, size, DEPTH), vertices: None });
+            run.push(RunNode { program: spec.program, params, targets: Vec::new(), buffers, groups, sim, mesh, past: past.map(|p| p.0) });
         }
         for (node, views) in run.iter_mut().zip(targets) {
             node.targets = views;
@@ -382,6 +401,22 @@ impl Runner {
             bytes.extend(p.iter().flat_map(|c| c.to_ne_bytes()).chain([0u8; 4]));
         }
         queue.write_buffer(buffer, 0, &bytes);
+    }
+
+    /// A mesh node's triangles, each corner a position and a normal (a corner short of a whole
+    /// triangle is left out); none draws nothing. Nothing for a node that isn't a mesh.
+    pub fn set_mesh(&mut self, device: &wgpu::Device, node: usize, corners: &[[f32; 6]]) {
+        let Some(mesh) = &mut self.nodes[node].mesh else { return };
+        let corners = &corners[..corners.len() / 3 * 3];
+        mesh.vertices = (!corners.is_empty()).then(|| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh"), size: (corners.len() * 24) as u64, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: true });
+            if let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() {
+                let bytes: Vec<u8> = corners.iter().flatten().flat_map(|c| c.to_ne_bytes()).collect();
+                view.slice(..).copy_from_slice(&bytes);
+            }
+            buffer.unmap();
+            (buffer, corners.len() as u32)
+        });
     }
 
     /// Writes a node's parameter buffer as it is (what [`crate::Modulator`] computed).
@@ -464,24 +499,34 @@ impl Runner {
                 pass.set_bind_group(0, &node.groups[k][parity], &[]);
                 pass.draw(0..3, 0..1);
             }
-            // particles add up over nothing
-            let clear = if node.sim.is_some() { wgpu::Color::TRANSPARENT } else { wgpu::Color::BLACK };
+            // particles add up over nothing, and so does a mesh, drawn into its samples and its
+            // depth and resolved into the picture, neither kept
+            let clear = if node.sim.is_some() || node.mesh.is_some() { wgpu::Color::TRANSPARENT } else { wgpu::Color::BLACK };
+            let mesh = node.mesh.as_ref();
+            let depth = mesh.map(|m| wgpu::RenderPassDepthStencilAttachment { view: &m.depth, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }), stencil_ops: None });
+            let store = if mesh.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(&program.node.name),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: target, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store }, depth_slice: None })],
-                depth_stencil_attachment: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: mesh.map_or(target, |m| &m.color), resolve_target: mesh.map(|_| target), ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store }, depth_slice: None })],
+                depth_stencil_attachment: depth,
                 timestamp_writes: stamps(program.passes.is_empty(), true),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
             pass.set_pipeline(&program.pipeline);
             pass.set_bind_group(0, &node.groups[program.passes.len()][parity], &[]);
-            match &node.sim {
-                Some((buffer, ..)) => {
+            match (&node.sim, mesh) {
+                (Some((buffer, ..)), _) => {
                     pass.set_vertex_buffer(0, buffer.slice(EMITTER..));
                     pass.draw(0..4, 0..PARTICLES);
                 }
-                None => pass.draw(0..3, 0..1),
+                (None, Some(m)) => {
+                    if let Some((buffer, count)) = &m.vertices {
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        pass.draw(0..*count, 0..1);
+                    }
+                }
+                (None, None) => pass.draw(0..3, 0..1),
             }
         }
         self.frame += 1;
@@ -662,6 +707,22 @@ pub(crate) fn wave_texture(device: &wgpu::Device) -> wgpu::TextureView {
             view_formats: &[],
         })
         .create_view(&Default::default())
+}
+
+/// A target of [`MSAA`] samples to draw into and resolve from (or a depth buffer of as many).
+fn multisampled(device: &wgpu::Device, [width, height]: [u32; 2], format: wgpu::TextureFormat) -> wgpu::TextureView {
+    device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("mesh"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: MSAA,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 pub(crate) fn texture(device: &wgpu::Device, [width, height]: [u32; 2]) -> wgpu::TextureView {
@@ -1375,6 +1436,131 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         assert!(ball.iter().any(|p| p.0 < 28) && ball.iter().any(|p| p.0 > 36) && ball.iter().any(|p| p.1 < 28) && ball.iter().any(|p| p.1 > 36), "round the middle");
     }
 
+    /// A mesh node's picture on a 64 × 64 canvas: `set` over a plain look (size 1, no tilt or
+    /// turn, no ambient, shine or rim, a white light straight on, white tint) and the mesh `corners`.
+    fn mesh_picture(device: &wgpu::Device, queue: &wgpu::Queue, set: &[(&str, [f32; 4])], corners: &[[f32; 6]]) -> Vec<[f32; 4]> {
+        let programs = [program(device, "mesh")];
+        let mut runner = Runner::new(device, &programs, &[NodeSpec { program: 0, inputs: vec![] }], &[], [64, 64], &wave_texture(device)).unwrap();
+        runner.set_mesh(device, 0, corners);
+        let v = |x: f32| [x, 0.0, 0.0, 0.0];
+        let base = [("size", v(1.0)), ("tilt", v(0.0)), ("turn", v(0.0)), ("ambient", v(0.0)), ("shine", v(0.0)), ("rim", v(0.0)), ("light", v(1.0)), ("tint", [1.0; 4]), ("light_color", [1.0; 4]), ("light_at", v(0.0))];
+        runner.set_params(queue, &programs, 0, &programs[0].node.values(|p| set.iter().chain(&base).find(|s| s.0 == p).map(|s| s.1)));
+        let mut encoder = device.create_command_encoder(&Default::default());
+        runner.render(queue, &mut encoder, &programs, &[0.0, 1.0 / 60.0, 0.0, 1.0]);
+        queue.submit([encoder.finish()]);
+        read(device, queue, &runner, 0).as_chunks::<4>().0.iter().map(|p| p.map(half)).collect()
+    }
+
+    /// Two triangles in the plane at depth `z`, `h` either side of the middle, every corner's normal `n`.
+    fn quad(z: f32, h: f32, n: [f32; 3]) -> Vec<[f32; 6]> {
+        let c = |x: f32, y: f32| [x, y, z, n[0], n[1], n[2]];
+        vec![c(-h, -h), c(h, -h), c(h, h), c(-h, -h), c(h, h), c(-h, h)]
+    }
+
+    #[test]
+    fn a_mesh_is_solid_the_nearer_triangle_wins_whatever_the_order() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // a big quad facing us (lit 1) and a small one nearer, tilted from the light (lit 0.6)
+        let (far, near) = (quad(0.0, 0.5, [0.0, 0.0, 1.0]), quad(0.4, 0.15, [0.8, 0.0, 0.6]));
+        for order in [[far.clone(), near.clone()].concat(), [near, far].concat()] {
+            let picture = mesh_picture(&device, &queue, &[], &order);
+            let (middle, side, corner) = (picture[32 * 64 + 32], picture[32 * 64 + 16], picture[2 * 64 + 2]);
+            assert!((middle[0] - 0.6).abs() < 0.02 && middle[3] == 1.0, "the near one on top, either order: {middle:?}");
+            assert!((side[0] - 1.0).abs() < 0.02, "the far one beside it: {side:?}");
+            assert_eq!(corner, [0.0; 4], "see-through where there's nothing");
+        }
+    }
+
+    #[test]
+    fn a_mesh_is_lit_from_where_the_light_is_and_edges_are_smoothed() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let wall = quad(0.0, 0.5, [0.0, 0.0, 1.0]);
+        let at = |set: &[(&str, [f32; 4])]| mesh_picture(&device, &queue, set, &wall)[32 * 64 + 32][0];
+        let v = |x: f32| [x, 0.0, 0.0, 0.0];
+        assert!((at(&[]) - 1.0).abs() < 0.02, "the light straight on");
+        // a light 0.95 across: its z is √(1 - 0.95²) = 0.31, so a face toward us gets that much
+        let grazing = at(&[("light_at", [0.95, 0.0, 0.0, 0.0])]);
+        assert!((grazing - 0.31).abs() < 0.03, "{grazing}");
+        assert_eq!(at(&[("light", v(0.0))]), 0.0, "no light, no ambient: black");
+        // MSAA: the diagonal edge of a triangle has pixels part covered, resolved to part opaque
+        let triangle = vec![[-0.5, -0.5, 0.0, 0.0, 0.0, 1.0], [0.5, -0.5, 0.0, 0.0, 0.0, 1.0], [0.5, 0.5, 0.0, 0.0, 0.0, 1.0]];
+        let edge = mesh_picture(&device, &queue, &[], &triangle);
+        assert!(edge.iter().any(|p| p[3] > 0.05 && p[3] < 0.95), "an edge that's smoothed, not stepped");
+    }
+
+    #[test]
+    fn a_mesh_without_triangles_or_with_bad_ones_draws_numbers() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        assert!(mesh_picture(&device, &queue, &[], &[]).iter().all(|p| *p == [0.0; 4]), "no mesh, nothing");
+        // a triangle with no area, one with no normals, a stray pair of corners (no triangle), and a huge one
+        let bad = [
+            [0.1, 0.1, 0.0, 0.0, 0.0, 1.0], [0.1, 0.1, 0.0, 0.0, 0.0, 1.0], [0.1, 0.1, 0.0, 0.0, 0.0, 1.0],
+            [-0.4, -0.4, 0.0, 0.0, 0.0, 0.0], [0.4, -0.4, 0.0, 0.0, 0.0, 0.0], [0.0, 0.4, 0.0, 0.0, 0.0, 0.0],
+            [9e3, 9e3, -9e3, 0.0, 1.0, 0.0], [-9e3, 9e3, 9e3, 1.0, 0.0, 0.0], [0.0, -9e3, 1e5, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0], [0.1, 0.0, 0.0, 0.0, 0.0, 1.0],
+        ];
+        // every look at its most (the hardest light and shine, a mirror, a bulge, a facets)
+        let loud = [("light", [3.0; 4]), ("shine", [2.0; 4]), ("mirror", [1.0; 4]), ("rim", [2.0; 4]), ("bulge", [1.0; 4]), ("facets", [1.0; 4]), ("audio", [2.0; 4])];
+        for set in [&[][..], &loud[..]] {
+            let picture = mesh_picture(&device, &queue, set, &bad);
+            assert!(picture.iter().all(|p| p.iter().all(|c| c.is_finite() && *c >= 0.0)), "no number that isn't one");
+            assert!(picture.iter().any(|p| p[3] > 0.0), "the triangle with no normals is still drawn");
+        }
+    }
+
+    /// Not a check: `VELO_MESH_SHOT=<file.png> cargo test -p velo-engine mesh_shot -- --ignored`
+    /// draws a Mesh node on a torus (a mesh of 9,000 triangles), chrome and rim light, 640 × 360.
+    #[test]
+    #[ignore]
+    fn mesh_shot() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else { return };
+        let programs = [program(&device, "mesh")];
+        let (w, h) = (640u32, 360u32);
+        let mut runner = Runner::new(&device, &programs, &[NodeSpec { program: 0, inputs: vec![] }], &[], [w, h], &wave_texture(&device)).unwrap();
+        let (nu, nv) = (96, 48);
+        let at = |i: usize, j: usize| {
+            let (u, v) = (i as f32 / nu as f32 * std::f32::consts::TAU, j as f32 / nv as f32 * std::f32::consts::TAU);
+            let ring = 0.7 + 0.3 * v.cos();
+            [ring * u.cos(), ring * u.sin(), 0.3 * v.sin(), v.cos() * u.cos(), v.cos() * u.sin(), v.sin()]
+        };
+        let mut corners = Vec::new();
+        for i in 0..nu {
+            for j in 0..nv {
+                let (a, b, c, d) = (at(i, j), at(i + 1, j), at(i + 1, j + 1), at(i, j + 1));
+                corners.extend([a, b, c, a, c, d]);
+            }
+        }
+        runner.set_mesh(&device, 0, &corners);
+        let v = |x: f32| [x, 0.0, 0.0, 0.0];
+        let set = [("mirror", v(0.55)), ("shine", v(1.0)), ("rim", v(0.8)), ("orbit", v(0.08)), ("tilt", v(0.1)), ("turn", v(0.0)), ("tint", [0.55, 0.7, 1.0, 1.0]), ("distance", v(1.9)), ("size", v(0.9))];
+        runner.set_params(&queue, &programs, 0, &programs[0].node.values(|p| set.iter().find(|s| s.0 == p).map(|s| s.1)));
+        let mut encoder = device.create_command_encoder(&Default::default());
+        runner.render(&queue, &mut encoder, &programs, &[1.0, 1.0 / 60.0, 60.0, 16.0 / 9.0]);
+        queue.submit([encoder.finish()]);
+        let texels = read(&device, &queue, &runner, 0);
+        let mut img = image::RgbaImage::new(w, h);
+        for (i, p) in texels.as_chunks::<4>().0.iter().enumerate() {
+            // over a dark grey, as a Blend would show it
+            let (a, back) = (half(p[3]), 0.12);
+            let c = |k: usize| ((half(p[k]) + back * (1.0 - a)).clamp(0.0, 1.0) * 255.0) as u8;
+            img.put_pixel(i as u32 % w, i as u32 / w, image::Rgba([c(0), c(1), c(2), 255]));
+        }
+        img.save(std::env::var("VELO_MESH_SHOT").unwrap()).unwrap();
+    }
+
     /// Not a check: `VELO_ORBIT_SHOT=<file.png> cargo test -p velo-engine orbit_shot -- --ignored`
     /// draws a Particles node's Orbit view, as it looks after ten seconds, of a torus of points
     /// with a ball in it (a model of 40,000), 640 × 360.
@@ -1741,7 +1927,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             .collect();
         let bytes: Vec<u8> = pixels.iter().flat_map(|v| v.to_ne_bytes()).collect();
         queue.write_texture(wave.texture().as_image_copy(), &bytes, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(columns as u32 * 16), rows_per_image: None }, wgpu::Extent3d { width: columns as u32, height: 3, depth_or_array_layers: 1 });
-        let skip = ["image", "text", "textlist", "medialist", "particles"];
+        let skip = ["image", "text", "textlist", "medialist", "particles", "mesh"];
         let all = BUILTINS.iter().filter(|b| !skip.contains(&b.0)).chain(&crate::PRESETS).chain(&crate::EFFECT_PRESETS);
         for (slug, code) in all.filter(|(slug, _)| only.is_empty() || only.split(',').any(|o| o == *slug)) {
             let node = ShaderNode::parse(code).unwrap();
