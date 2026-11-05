@@ -74,6 +74,7 @@ Signal wires never mix with picture wires. Signal nodes run on the render thread
 |---|---|---|
 | Audio In (`velo.audio`) | level, bass, mid, high, kick, snare, hat, melody | what the audio input hears |
 | Beat (`velo.clock`) | beat, bar | a hit on every beat, the ramp through the bar |
+| Beat Kick (`velo.beatkick`) | out | on each hit of `trigger` (the beat while nothing's wired) a 5 ms rise and a fall over `release` (20 ms to 2 s, dropping fast then tailing off), times `in` (the bass while nothing's wired); 0 while `in` is under `threshold` |
 | LFO (`velo.lfo`) | out | sine, triangle, saw, square or random on the beat clock, 1/4 to 64 beats, phase offset |
 | Time (`velo.time`) | out | 0 to 1 over 0.5 to 600 seconds, again and again: a ramp, back and forth or a wave |
 | Random (`velo.random`) | out | a new value every 1/4 to 64 beats, or on each hit of `trigger`; `glide` eases there |
@@ -98,11 +99,11 @@ A card with several outputs (Audio In, Beat) lists them as rows, each with its m
 
 **Probe.** After the frame is drawn, `probe.wgsl` draws the region (`size` of the picture round `position`; the whole picture by default, a point at size 0) into 32 x 16 cells of 4 x 4 taps each, which are read back and averaged; the next signal pass measures that color (brightness, red, green, blue or alpha; see-through counts as dark). One read is in flight at a time, so it lags the picture by a frame or two.
 
-Recipes: Noise into Threshold into a Mask is a moving stencil; an LFO through Quantize into a Switch's value steps through its pictures; a Kick through Smooth is a slow swell; Bass into Speed onto a Transform's rotate (set to -1, amount 1: a whole turn) turns faster with the bass and never jumps back; a Kick through a Delay of half a beat is its echo; a Video into a Time Machine with a Gradient as its map is a slit-scan; a Video into a Probe onto a Blur's radius.
+Recipes: Noise into Threshold into a Mask is a moving stencil; an LFO through Quantize into a Switch's value steps through its pictures; a Kick through Smooth is a slow swell; a Beat Kick onto a Transform's scale pumps on the grid through the drop and rests in the breakdown; Bass into Speed onto a Transform's rotate (set to -1, amount 1: a whole turn) turns faster with the bass and never jumps back; a Kick through a Delay of half a beat is its echo; a Video into a Time Machine with a Gradient as its map is a slit-scan; a Video into a Probe onto a Blur's radius.
 
 ## 4. Node kinds
 
-Every picture node is a shader file in `crates/velo-engine/shaders/`; signal nodes are Rust (`velo-engine/src/signal.rs`). The node menu (`Tab`) groups them as below, with the signal nodes split into Signals (Audio In, Beat, LFO, Time, Random, Probe) and Logic (the rest).
+Every picture node is a shader file in `crates/velo-engine/shaders/`; signal nodes are Rust (`velo-engine/src/signal.rs`). The node menu (`Tab`) groups them as below, with the signal nodes split into Signals (Audio In, Beat, Beat Kick, LFO, Time, Random, Probe) and Logic (the rest).
 
 | Group | Nodes |
 |---|---|
@@ -111,7 +112,7 @@ Every picture node is a shader file in `crates/velo-engine/shaders/`; signal nod
 | Composite | **Blend** (up to 16 inputs, 14 modes, intensity, a key) · **Mask** (keep, cut or multiply) · **Merge** (up to four pictures as one picture's channels) |
 | Control | **Switch** (one of up to sixteen inputs as `value` picks, cut, crossfaded, dissolved, wiped or through a circle; only what it shows renders) · **Grid** (up to 4 x 4 cells of eight inputs) · **Layer Stack** (up to eight inputs with blend mode, opacity and order; a signal on a layer's order lifts it) |
 | Output | **Output**: what goes out, through its grade (exposure, contrast, saturation, hue, colorize, invert, vignette, fade to black), on the preview, the displays and the shares alike. With several, the last one something is wired into goes out; at its defaults the picture passes unchanged. |
-| Signals, Logic | the 21 signal nodes in §3 |
+| Signals, Logic | the 22 signal nodes in §3 |
 
 Several pictures or movies dropped on the canvas at once become one Media List (a new one every 4 beats), wired into an Output nothing feeds yet, in one undo step. Freeze and Feedback read their own last frame. A Shader node starts from the first preset (Tunnel), a Shader FX from Glitch; Custom, the template to start code of your own from, heads their preset menus. Saved Shader and Shader FX nodes keep their code; a built-in node changes with its shader.
 

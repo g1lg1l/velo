@@ -579,7 +579,7 @@ impl NodeKind {
     /// other signals (remap, count, hold, compare…) sit apart, as Logic, from the ones that
     /// make them (audio, the beat, LFOs, time, random values, a picture read).
     pub fn group(&self) -> &'static str {
-        if self.category == Category::Signal && ![AUDIO, CLOCK, LFO, TIME, RANDOM, PROBE].contains(&self.id) { "Logic" } else { self.category.label() }
+        if self.category == Category::Signal && ![AUDIO, CLOCK, BEAT_KICK, LFO, TIME, RANDOM, PROBE].contains(&self.id) { "Logic" } else { self.category.label() }
     }
 }
 
@@ -632,6 +632,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind("velo.output", "Output", Category::Output, IN, &[]),
     kind(AUDIO, "Audio In", Category::Signal, &[], &["level", "bass", "mid", "high", "kick", "snare", "hat", "melody"]),
     kind(CLOCK, "Beat", Category::Signal, &[], &["beat", "bar"]),
+    kind(BEAT_KICK, "Beat Kick", Category::Signal, &["in", "trigger"], OUT),
     kind(LFO, "LFO", Category::Signal, &[], OUT),
     kind(TIME, "Time", Category::Signal, &[], OUT),
     kind(RANDOM, "Random", Category::Signal, &["trigger"], OUT),
@@ -759,6 +760,9 @@ pub const LFO: &str = "velo.lfo";
 pub const AUDIO: &str = "velo.audio";
 /// The beat clock as a signal node: a hit on every beat, the ramp through the bar.
 pub const CLOCK: &str = "velo.clock";
+/// A kick on the beat clock (or its trigger), as strong as the bass (or its input), none while
+/// that's under a threshold: steady where a heard kick misses or doubles.
+pub const BEAT_KICK: &str = "velo.beatkick";
 /// Time going on: 0 to 1 over a number of seconds, again and again (colors that drift).
 pub const TIME: &str = "velo.time";
 /// A signal brought into the range you want: auto range, curve, smoothing, gate, invert.

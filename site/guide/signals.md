@@ -96,6 +96,7 @@ A signal's cable comes out of its jack like a wire:
 
 Signals and logic nodes turn numbers into other numbers. A few to start with:
 
+- **Beat Kick**: a kick on every beat, as strong as the bass, and none while the bass is under its threshold. It stays on the grid where a heard kick misses or doubles, and goes quiet in a breakdown. Wire a Sequencer into its trigger for another rhythm, or another signal into `in` for another strength.
 - **LFO**: a shape that repeats over a number of beats.
 - **Time**: a ramp or a wave over a number of seconds.
 - **Sequencer**: a value a step on each beat.

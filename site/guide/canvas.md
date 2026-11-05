@@ -33,7 +33,7 @@ The groups in the node menu:
 | **Composite** | Blend, Mask, Merge |
 | **Control** | Switch, Grid, Layer Stack |
 | **Output** | Output |
-| **Signals** | Audio In, Beat, LFO, Time, Random, Probe |
+| **Signals** | Audio In, Beat, Beat Kick, LFO, Time, Random, Probe |
 | **Logic** | Remap, Math, Envelope, Counter, Sequencer, Sample & Hold, Toggle, Compare, Timer, Smooth, Quantize, Speed, Delay, Spring, Slope |
 
 Each node's line in the menu says what it does, and the inspector shows its values once it's selected. Generators, effects and composites make pictures; signals and logic make numbers, which move values (see [Signals and jacks](./signals)).

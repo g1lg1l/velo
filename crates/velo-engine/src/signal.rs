@@ -1,6 +1,7 @@
 //! Signal nodes (docs/graph.md §3): numbers, not images, computed on the render thread each
 //! frame and handed to mappings as sources, like Kick or Bass. An Audio In puts what the input
-//! hears on the canvas, a Beat the clock; an LFO is a shape over a number of beats; a Remap
+//! hears on the canvas, a Beat the clock; a Beat Kick hits on the beat as hard as the bass, not
+//! at all while the bass is low; an LFO is a shape over a number of beats; a Remap
 //! brings a signal into the range wanted; a Math puts two together; an Envelope plays a shape
 //! on each hit; a Counter steps on each hit; a Random picks a value on the beat; a Smooth
 //! follows its input slowly; a Quantize snaps it to steps; a Speed goes round a cycle as fast
@@ -11,7 +12,7 @@
 use std::collections::VecDeque;
 use std::f64::consts::TAU;
 
-use velo_core::{AUDIO, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind};
+use velo_core::{AUDIO, BEAT_KICK, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind};
 
 use crate::shader::{Param, ParamType};
 
@@ -42,6 +43,8 @@ pub fn params(kind: &str) -> Option<Vec<Param>> {
         AUDIO => {
             [Param { default: [1.0, 0.0, 0.0, 0.0], ..named("mode", &DETECT_MODES) }, p("gate", float, -60.0, -90.0, -20.0)].into_iter().chain(hit("kick", 3.0, 70.0, 300.0, 100.0, 0.45)).chain(hit("snare", 8.0, 1000.0, 8000.0, 80.0, 0.35)).chain(hit("hat", 4.0, 8000.0, 20_000.0, 50.0, 0.55)).collect()
         }
+        // no kick while the bass is under a third; a quarter second to fall
+        BEAT_KICK => vec![p("threshold", float, 0.3, 0.0, 1.0), p("release_ms", float, 250.0, 20.0, 2000.0)],
         LFO => vec![named("shape", &SHAPES), p("beats", float, 4.0, 0.25, 64.0), p("phase", float, 0.0, 0.0, 1.0)],
         REMAP => vec![
             p("auto", ParamType::Bool, 1.0, 0.0, 1.0),
@@ -538,6 +541,8 @@ pub enum Kind {
     Lfo(Lfo),
     /// Its cycle in seconds and its shape ([`TIME_SHAPES`]).
     Time(f32, u8),
+    /// Its kick's shape, and how strong its input must be for any.
+    BeatKick(Envelope, f32),
     Remap(Remap),
     Math(Math),
     Envelope(Envelope),
@@ -573,6 +578,8 @@ impl Kind {
         Some(match node.kind.as_str() {
             AUDIO => Kind::Audio,
             CLOCK => Kind::Clock,
+            // a sharp rise and a fall that drops fast, then tails off
+            BEAT_KICK => Kind::BeatKick(Envelope { threshold: 0.5, attack: 0.005, release: v("release_ms", 250.0).clamp(20.0, 2000.0) / 1000.0, curve: 1 }, v("threshold", 0.3)),
             LFO => Kind::Lfo(Lfo::from_params(get)),
             TIME => Kind::Time(v("seconds", 10.0).clamp(0.5, 600.0), index("shape", TIME_SHAPES.len() - 1)),
             REMAP => Kind::Remap(Remap::from_params(get)),
@@ -681,6 +688,13 @@ pub fn run(signals: &mut [Signal], sources: &mut [f32], beats: f64, dt: f32) {
             Kind::Clock => {
                 sources[s.slot] = sources[7];
                 sources[s.slot + 1] = sources[8];
+            }
+            // the trigger's hits (the beat while nothing's wired) as strong as `in` (the bass),
+            // none while that's under the threshold
+            Kind::BeatKick(envelope, threshold) => {
+                let strength = sources[s.inputs[0].unwrap_or(1)];
+                let kick = envelope.step(sources[s.inputs[1].unwrap_or(7)], dt, &mut s.state);
+                sources[s.slot] = if strength < threshold { 0.0 } else { kick * strength };
             }
             Kind::Lfo(lfo) => sources[s.slot] = lfo.at(beats),
             // where it is in its cycle, kept between frames
@@ -1100,5 +1114,30 @@ mod tests {
         assert!((outputs(&mut s, &[(0.65, 0.0, 0.0)])[0] - 0.3).abs() < 1e-3, "falling counts");
         s.kind = Kind::Slope(Slope { direction: 2, time: 0.1 });
         assert!((outputs(&mut s, &[(0.7, 0.0, 0.0)])[0] - 0.3).abs() < 1e-3, "either way");
+    }
+
+    #[test]
+    fn a_beat_kick_hits_on_the_beat_as_hard_as_the_bass_and_not_while_it_is_low() {
+        let kick = |n: &velo_core::Node| Kind::of(n).unwrap();
+        let defaults =
+            velo_core::Node { id: "n".into(), kind: BEAT_KICK.into(), name: String::new(), off: false, pos: [0.0; 2], params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() };
+        // in (the bass), trigger (the beat): a beat with a loud bass, then a quiet one
+        let mut s = node(kick(&defaults), [true, true]);
+        let v = outputs(&mut s, &[(0.8, 0.0, 0.0), (0.8, 1.0, 0.0), (0.8, 0.9, 0.0), (0.8, 0.8, 0.0)]);
+        assert_eq!(v[0], 0.0, "no beat yet");
+        assert!(v[1] > 0.7 && v[1] <= 0.8 + 1e-6, "the kick as strong as the bass: {v:?}");
+        assert!(v[3] < v[1], "falling: {v:?}");
+        let quiet = outputs(&mut s, &[(0.8, 0.0, 0.0), (0.2, 1.0, 0.0), (0.2, 0.5, 0.0)]);
+        assert_eq!(quiet[1..], [0.0, 0.0], "the bass under the threshold: no kick");
+        // nothing wired: the shared bass and beat
+        let mut s = Signal { slot: SOURCES.len(), ..node(kick(&defaults), [false, false]) };
+        let mut sources = [0.0; SOURCES.len() + 1];
+        let mut frame = |bass: f32, beat: f32| {
+            (sources[1], sources[7]) = (bass, beat);
+            run(std::slice::from_mut(&mut s), &mut sources, 0.0, 1.0 / 60.0);
+            sources[SOURCES.len()]
+        };
+        assert_eq!(frame(0.9, 0.1), 0.0);
+        assert!(frame(0.9, 1.0) > 0.8, "on the beat, the bass loud");
     }
 }

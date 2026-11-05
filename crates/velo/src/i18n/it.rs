@@ -1418,6 +1418,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Delay", "Ritardo"),
     ("Spring", "Molla"),
     ("Slope", "Pendenza"),
+    ("Beat Kick", "Cassa a tempo"),
+    ("A kick on every beat, as strong as the bass, none while the bass is low.", "Una cassa a ogni beat, forte quanto il basso, nessuna quando il basso è debole."),
     ("Time Machine", "Macchina del tempo"),
     ("Luma Blur", "Sfocatura per luminanza"),
     ("Bounce", "Rimbalzo"),
