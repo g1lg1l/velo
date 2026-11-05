@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-velo-core = { version = "0.9.1-beta", path = "../velo-core" }
+velo-core = { version = "0.9.2-beta", path = "../velo-core" }
 # the WGSL front end and validator wgpu 30 uses itself
 naga = { version = "30.0.1", features = ["wgsl-in", "glsl-in", "wgsl-out"] }
 serde = { version = "1.0.229", features = ["derive"] }
