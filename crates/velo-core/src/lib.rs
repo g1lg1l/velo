@@ -599,6 +599,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(SHADER, "Shader", Category::Generator, &[], OUT),
     kind(IMAGE, "Image", Category::Generator, &[], OUT),
     kind(VIDEO, "Video", Category::Generator, &[], OUT),
+    kind(LIVE, "Live", Category::Generator, &[], OUT),
     kind(MEDIA_LIST, "Media List", Category::Generator, &[], OUT),
     kind(TEXT, "Text", Category::Generator, &[], OUT),
     kind(TEXT_LIST, "Text List", Category::Generator, &[], OUT),
@@ -686,6 +687,10 @@ pub const FEEDBACK: &str = "velo.feedback";
 pub const IMAGE: &str = "velo.image";
 /// A movie from a file ([`Node::media`]): HAP, or (macOS) H.264, HEVC, ProRes.
 pub const VIDEO: &str = "velo.video";
+/// A live picture from outside, named in [`Node::media`] as `ndi:<source>`, `spout:<sender>` or
+/// `camera:<device>`: the Image shader on frames as they arrive. Not a file, so nothing is
+/// exported or warned about missing.
+pub const LIVE: &str = "velo.live";
 
 /// Up to 4 × 4 cells of eight inputs, one picture out (it was an output node until format 3).
 pub const GRID: &str = "velo.grid";

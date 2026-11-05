@@ -739,7 +739,7 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "node.set_media",
         label: "Set Image",
-        description: "Set what an Image or Video node shows: an image file (PNG, JPEG, WebP…), an animated GIF, a movie (.mov or .mp4: HAP, and on macOS H.264, HEVC or ProRes), or a folder of numbered frames played as an image sequence, by absolute path. On a Particles node, the picture each particle is; on a Media List, its files, a path a line; on a Text or Text List node, its own font (.ttf or .otf), which its Font set to File shows. Empty clears it.",
+        description: "Set what an Image or Video node shows: an image file (PNG, JPEG, WebP…), an animated GIF, a movie (.mov or .mp4: HAP, and on macOS H.264, HEVC or ProRes), or a folder of numbered frames played as an image sequence, by absolute path. On a Particles node, the picture each particle is; on a Media List, its files, a path a line; on a Text or Text List node, its own font (.ttf or .otf), which its Font set to File shows; on a Live node, its source, ndi:<name> or spout:<name> (Spout on Windows). Empty clears it.",
         example: r#"{"node": "n_ab12", "media": "/Users/me/Loops/tunnel.gif"}"#,
         undo: true,
         poll: has_scenes,
@@ -747,8 +747,8 @@ pub static OPERATORS: &[Operator] = &[
             let SetMedia { node, media, scene } = props(v)?;
             let scene = s.scene_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
-            if !shows_media(&scene.nodes[i].kind) && !sets_text(&scene.nodes[i].kind) && ![MEDIA_LIST, PARTICLES].contains(&scene.nodes[i].kind.as_str()) {
-                return Err(format!("{node} isn't an Image, Video, Media List, Particles, Text or Text List node"));
+            if !shows_media(&scene.nodes[i].kind) && !sets_text(&scene.nodes[i].kind) && ![MEDIA_LIST, PARTICLES, LIVE].contains(&scene.nodes[i].kind.as_str()) {
+                return Err(format!("{node} isn't an Image, Video, Live, Media List, Particles, Text or Text List node"));
             }
             scene.nodes[i].media = Some(media.trim().to_string()).filter(|m| !m.is_empty());
             Ok(())

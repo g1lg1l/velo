@@ -45,6 +45,9 @@ pub struct Media {
     pub movie: Option<Movie>,
     /// Any other movie, which the system decodes; its frames stay in the file too.
     pub video: Option<Clip>,
+    /// A live source ([`crate::input`]): `frames` holds its first frame, BGRA; the rest come as
+    /// they're sent.
+    pub live: Option<Arc<crate::input::Feed>>,
 }
 
 impl std::fmt::Debug for Media {
@@ -66,7 +69,7 @@ impl Media {
             // HAP first (its frames go to the GPU as they are), else the system's decoder
             if ext == "mov" {
                 match crate::hap::open(path) {
-                    Ok((movie, size, ends)) => return Ok(Self { size, frames: Vec::new(), ends, movie: Some(movie), video: None }),
+                    Ok((movie, size, ends)) => return Ok(Self { size, frames: Vec::new(), ends, movie: Some(movie), video: None, live: None }),
                     Err(e) if !e.starts_with("not HAP") => return Err(format!("{}: {e}", name())),
                     Err(_) => {}
                 }
@@ -74,7 +77,7 @@ impl Media {
             #[cfg(any(target_os = "macos", windows))]
             {
                 let (clip, size, ends) = crate::video::open(path).map_err(|e| format!("{}: {e}", name()))?;
-                return Ok(Self { size, frames: Vec::new(), ends, movie: None, video: Some(clip) });
+                return Ok(Self { size, frames: Vec::new(), ends, movie: None, video: Some(clip), live: None });
             }
             #[cfg(not(any(target_os = "macos", windows)))]
             return Err(format!("{}: only HAP movies play here for now (ffmpeg -i in.mov -c:v hap -format hap_q out.mov)", name()));
@@ -108,7 +111,7 @@ impl Media {
     }
 
     fn empty() -> Self {
-        Self { size: [0, 0], frames: Vec::new(), ends: Vec::new(), movie: None, video: None }
+        Self { size: [0, 0], frames: Vec::new(), ends: Vec::new(), movie: None, video: None, live: None }
     }
 
     /// How many frames it has.
@@ -267,6 +270,14 @@ impl Library {
         self.load(format!("\0{}\0{text}", font.unwrap_or_default()), move || crate::text::set(&words, file.as_deref()).and_then(Media::still))
     }
 
+    /// A Live node's source (`ndi:<name>`, `spout:<name>`): connected on a thread of its own;
+    /// the media is its first frame, and its reader runs while anyone holds it.
+    pub fn live(&mut self, source: &str) -> Loading {
+        let source = source.to_string();
+        // apart from every path: none starts with a nul
+        self.load(format!("\0live\0{source}"), move || crate::input::open(&source))
+    }
+
     fn load(&mut self, key: String, make: impl FnOnce() -> Result<Media, String> + Send + 'static) -> Loading {
         // what nobody holds any more goes
         self.files.retain(|_, l| Arc::strong_count(l) > 1);
@@ -299,6 +310,8 @@ pub struct Playing {
     at: f64,
     /// A movie's reader, on its own thread.
     reader: Option<(Arc<Reader>, std::thread::Thread)>,
+    /// A live source's frame, swapped out of its mailbox.
+    scratch: Vec<u8>,
 }
 
 /// What a movie's reader and the render thread share: the frame wanted next, the last one
@@ -321,6 +334,8 @@ impl Playing {
             (Some(m), _) => (m.format.texture(), Movie::blocks(media.size)),
             // the system's frames come in BGRA
             (None, Some(_)) => (wgpu::TextureFormat::Bgra8Unorm, media.size),
+            // so do a live source's
+            (None, None) if media.live.is_some() => (wgpu::TextureFormat::Bgra8Unorm, media.size),
             (None, None) => (wgpu::TextureFormat::Rgba8Unorm, media.size),
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -333,7 +348,7 @@ impl Playing {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let mut playing = Self { node, speed, range: None, media, texture, shown: 0, at: 0.0, reader: None };
+        let mut playing = Self { node, speed, range: None, media, texture, shown: 0, at: 0.0, reader: None, scratch: Vec::new() };
         // a movie's first frame now, the rest on the reader's thread as they come due
         let mut first = Vec::new();
         match (&playing.media.movie, &playing.media.video) {
@@ -372,6 +387,13 @@ impl Playing {
     /// to: fractions of the clip): the frame due, if it changed. A movie's frame is read ahead,
     /// for the next frame; one that isn't read yet waits a frame.
     pub fn step(&mut self, queue: &wgpu::Queue, dt: f32, speed: f32, window: (f32, f32)) {
+        // a live source's newest frame, if one came since the last: never waited for
+        if let Some(feed) = self.media.live.clone() {
+            if feed.take(&mut self.scratch) {
+                self.upload(queue, &self.scratch);
+            }
+            return;
+        }
         let (from, to) = (f64::from(window.0), f64::from(window.1));
         if self.media.count() < 2 {
             return;
@@ -549,7 +571,7 @@ mod tests {
     #[test]
     fn a_part_of_the_clip_loops_on_its_own() {
         // ten frames a tenth of a second each
-        let media = Media { size: [1, 1], frames: vec![Vec::new(); 10], ends: (1..=10).map(|k| f64::from(k) / 10.0).collect(), movie: None, video: None };
+        let media = Media { size: [1, 1], frames: vec![Vec::new(); 10], ends: (1..=10).map(|k| f64::from(k) / 10.0).collect(), movie: None, video: None, live: None };
         assert_eq!((media.frame_at(0.05), media.frame_at(1.05)), (0, 0), "the whole clip loops");
         // from 0.4 to 0.6 of it: frames 4 and 5, again and again
         let shown: Vec<usize> = [0.0, 0.05, 0.1, 0.15, 0.2, 0.25].iter().map(|&t| media.frame_in(t, 0.4, 0.6)).collect();

@@ -850,7 +850,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         // two frames of 2×1 pixels: red | green, then blue | blue; half a second each
         let px = |c: [[u8; 3]; 2]| c.iter().flat_map(|c| [c[0], c[1], c[2], 255]).collect::<Vec<u8>>();
         let frames = vec![px([[255, 0, 0], [0, 255, 0]]), px([[0, 0, 255], [0, 0, 255]])];
-        let media = std::sync::Arc::new(crate::media::Media { size: [2, 1], frames, ends: vec![0.5, 1.0], movie: None, video: None });
+        let media = std::sync::Arc::new(crate::media::Media { size: [2, 1], frames, ends: vec![0.5, 1.0], movie: None, video: None, live: None });
         let programs = [program(&device, "image")];
         let nodes = [NodeSpec { program: 0, inputs: vec![] }];
         let mut playing = crate::media::Playing::new(&device, &queue, 0, Some(1), media);
@@ -1282,7 +1282,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             return;
         };
         // a 2×2 picture, all green: the sprites take it, tinted white, instead of soft dots
-        let media = std::sync::Arc::new(crate::media::Media { size: [2, 2], frames: vec![[0u8, 255, 0, 255].repeat(4)], ends: vec![1.0], movie: None, video: None });
+        let media = std::sync::Arc::new(crate::media::Media { size: [2, 2], frames: vec![[0u8, 255, 0, 255].repeat(4)], ends: vec![1.0], movie: None, video: None, live: None });
         let programs = [program(&device, "particles")];
         let nodes = [NodeSpec { program: 0, inputs: vec![None, None] }];
         let playing = crate::media::Playing::new(&device, &queue, 0, None, media);

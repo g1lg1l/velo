@@ -58,9 +58,10 @@ Pictures from files feed Image, Video, Media List, Text and Particles nodes. Eac
 | Stills, animated GIFs, image sequences | Decoded into RGBA frames in memory (2 GB at most). GIFs play at their own delays (under 20 ms plays at 100 ms, as browsers do); a folder of numbered images is a sequence at 30 fps. The render thread uploads a frame when it's due (`media.rs`) |
 | HAP movies in `.mov` (Hap, Hap Alpha, Hap Q, Hap R) | Velo's own MOV reader and HAP unpacker (stored, Snappy, chunked). A reader thread per movie reads the frame due next; it goes to the GPU as a BC texture, with no CPU decoding. Hap Q's YCoCg turns to RGB in the Image shader (`hap.rs`) |
 | Other movies: H.264, HEVC, ProRes on macOS | The system decodes them to BGRA on the movie's reader thread: AVFoundation on macOS (`video.rs`), Media Foundation on Windows (`video_windows.rs`). A `.mov` is tried as HAP first |
+| Live (NDI, Spout) | A Live node's `media` is `ndi:<name>` or `spout:<name>`, not a file: the library opens it on a thread of its own and waits up to 10 s for a first frame, which makes the texture's size (BGRA8; later frames of another size are fitted to it, nearest pixel). A reader thread per source (`input.rs`) keeps the newest frame in a mailbox the render thread swaps out and uploads without waiting; it ends when nobody holds the feed. NDI: `share::ndi::receive` from the installed runtime, its frames asked for as BGRA. Spout (Windows): the sender's texture opened by its shared handle on a DX11 device of our own, copied to a staging texture and read about every 4 ms, BGRA or RGBA, with no frame counter in Spout's protocol (a frame can come twice); one CPU copy a frame (about 8 MB at 1080p) |
 | Text | Every glyph the words need, in Inter, JetBrains Mono or the node's own font file, as a signed distance field in an atlas made on the media thread; the shader lays out and draws the words (`text.rs`) |
 
-Not yet: system video on Linux (HAP only there), camera and capture inputs.
+Not yet: system video on Linux (HAP only there), camera and capture inputs, Syphon in on macOS. A source that goes away keeps its last frame on the Live node.
 
 ## 5. Canvas and outputs
 

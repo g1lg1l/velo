@@ -8,7 +8,7 @@ use std::sync::mpsc;
 
 use std::borrow::Cow;
 
-use velo_core::{Category, Edge, FEEDBACK, IMAGE, MEDIA_LIST, MEDIA_LIST_FILES, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
+use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, MEDIA_LIST, MEDIA_LIST_FILES, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
 
 use crate::gpu::{Lazy, topological};
 use crate::{BUILTINS, Graph, Macros, Modulator, NodeSpec, Program, Runner, ShaderError, ShaderNode, macro_routes, routes};
@@ -38,8 +38,8 @@ pub(crate) static IMAGE_YCOCG: std::sync::LazyLock<String> = std::sync::LazyLock
 /// A Shader node runs its own code.
 pub fn builtin(kind: &str) -> Option<&'static str> {
     let name = kind.strip_prefix("velo.")?;
-    // a Video node runs the Image shader: the same picture, from a movie
-    let name = if name == "video" { "image" } else { name };
+    // a Video node runs the Image shader: the same picture, from a movie; a Live node too, from a feed
+    let name = if name == "video" || name == "live" { "image" } else { name };
     BUILTINS.iter().find(|b| b.0 == name).map(|b| b.0)
 }
 
@@ -270,6 +270,10 @@ fn build(
             let n = scene.node(id)?;
             if velo_core::sets_text(&n.kind) {
                 return Some(library.text(n.text.as_deref().unwrap_or_default(), n.media.as_deref()));
+            }
+            // a Live node's name is a feed, found by the library on a thread of its own
+            if n.kind == LIVE {
+                return n.media.as_deref().map(|source| library.live(source));
             }
             // a Particles node's file is its sprite
             n.media.as_deref().filter(|_| shows_media(&n.kind) || n.kind == PARTICLES).map(|path| library.get(path))

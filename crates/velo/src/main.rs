@@ -1363,6 +1363,9 @@ impl App {
         if kind_id == velo_core::PARTICLES {
             self.sprite_section(ui, t, &node_id);
         }
+        if kind_id == velo_core::LIVE {
+            self.live_section(ui, t, &node_id);
+        }
         if kind_id == "velo.grid" {
             self.grid_section(ui, t, &node_id, false);
         } else {
@@ -2173,6 +2176,37 @@ impl App {
         if list != files {
             self.run("node.set_media", json!({ "node": node, "media": list.join("\n") }));
         }
+    }
+
+    /// A Live node's source: the NDI sources and Spout senders there are right now, to pick from
+    /// (the list looks again by itself every few seconds), and why one can't be reached.
+    fn live_section(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str) {
+        let current = self.session.active().and_then(|s| s.node(node)).and_then(|n| n.media.clone());
+        let failed = current.as_ref().and_then(|_| self.live.as_ref()?.media(node)).and_then(|l| l.get()?.as_ref().err().cloned());
+        let mut sources = velo_engine::input::sources();
+        // the one chosen stays in the list, found or not
+        if let Some(chosen) = current.as_ref().filter(|c| !sources.contains(c)) {
+            sources.insert(0, chosen.clone());
+        }
+        let mut pick = None;
+        kit::section(ui, t, icons::BROADCAST, tr!("LIVE SOURCE"), false, |ui| {
+            match (&failed, sources.is_empty()) {
+                (Some(e), _) => kit::warning(ui, t, e),
+                (None, true) => kit::hint(ui, t, tr!("Looking for sources…")),
+                (None, false) => kit::hint(ui, t, tr!("Pick an NDI source or a Spout sender: what another app sends, as it sends it.")),
+            };
+            ui.add_space(t.gap);
+            for source in &sources {
+                if kit::button(ui, t, Some(icons::BROADCAST), source, current.as_deref() == Some(source.as_str())).clicked() {
+                    pick = Some(source.clone());
+                }
+            }
+        });
+        if let Some(source) = pick {
+            self.run("node.set_media", json!({ "node": node, "media": source }));
+        }
+        // the list fills in as the look finishes
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
     }
 
     /// A Particles node's sprite: the picture each particle is (a still, a GIF, a movie), or

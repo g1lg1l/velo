@@ -271,6 +271,88 @@ pub mod spout {
         }
     }
 
+    /// The senders Spout lists, by name.
+    pub fn senders() -> Vec<String> {
+        Map::new("SpoutSenderNames", SENDERS * NAME).ok().and_then(|m| m.with(|b| names(b))).unwrap_or_default()
+    }
+
+    /// The sender called `name` (or whose name holds it), received: its texture opened on a
+    /// device of our own, its pixels (BGRA, bytes a row) handed to `each` every few
+    /// milliseconds until `stop` says so. Spout's protocol has no frame counter, so a frame
+    /// comes again when the sender hasn't drawn a new one. Err when it isn't running, or draws
+    /// in a format other than BGRA or RGBA.
+    pub fn receive(name: &str, stop: impl Fn() -> bool, mut each: impl FnMut([u32; 2], &[u8], usize)) -> Result<(), String> {
+        use windows::Win32::Graphics::Direct3D11::{D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_USAGE_STAGING};
+        use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT;
+        let all = senders();
+        let name = all.iter().find(|n| *n == name).or_else(|| all.iter().find(|n| n.contains(name))).cloned().ok_or_else(|| format!("no Spout sender called {name:?} is running"))?;
+        let info = Map::new(&name, INFO)?;
+        let (mut device, mut context) = (None, None);
+        // SAFETY: out pointers to locals
+        unsafe { D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, HMODULE::default(), D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, Some(&mut context)) }.map_err(|e| format!("DirectX 11: {e}"))?;
+        let (device, context) = device.zip(context).ok_or("DirectX 11: no device")?;
+        // what's open: the handle, size and format it was opened at, the sender's texture, and a
+        // staging copy of it to read
+        let mut open: Option<([u32; 4], ID3D11Texture2D, ID3D11Texture2D)> = None;
+        let mut swapped = Vec::new();
+        while !stop() {
+            let fields: Option<[u32; 4]> = info.with(|b| (b.len() >= 16).then(|| std::array::from_fn(|i| u32::from_le_bytes([b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]])))).flatten();
+            if let Some(f) = fields.filter(|f| f[1] > 0 && f[2] > 0) {
+                if open.as_ref().is_none_or(|o| o.0 != f) {
+                    open = None;
+                    // the format: 87 is B8G8R8A8, 28 R8G8B8A8
+                    if ![87, 28].contains(&f[3]) {
+                        return Err(format!("Spout sender {name:?} draws in DXGI format {}: only BGRA and RGBA are read", f[3]));
+                    }
+                    let mut shared: Option<ID3D11Texture2D> = None;
+                    // SAFETY: a handle the sender published, opened on our own device
+                    if unsafe { device.OpenSharedResource(HANDLE(f[0] as usize as *mut std::ffi::c_void), &mut shared) }.is_ok() {
+                        let desc = D3D11_TEXTURE2D_DESC {
+                            Width: f[1],
+                            Height: f[2],
+                            MipLevels: 1,
+                            ArraySize: 1,
+                            Format: DXGI_FORMAT(f[3] as i32),
+                            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                            Usage: D3D11_USAGE_STAGING,
+                            BindFlags: 0,
+                            CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                            MiscFlags: 0,
+                        };
+                        let mut staging = None;
+                        // SAFETY: a described texture, no initial data
+                        if unsafe { device.CreateTexture2D(&desc, None, Some(&mut staging)) }.is_ok() {
+                            open = shared.zip(staging).map(|(shared, staging)| (f, shared, staging));
+                        }
+                    }
+                }
+                if let Some((f, shared, staging)) = &open {
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    // SAFETY: the copy and the map are on our device's context, and the rows are
+                    // read, within the mapped pitch, before the unmap
+                    unsafe {
+                        context.CopyResource(staging, shared);
+                        if context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped)).is_ok() {
+                            let (w, h, pitch) = (f[1] as usize, f[2] as usize, mapped.RowPitch as usize);
+                            let bytes = std::slice::from_raw_parts(mapped.pData.cast::<u8>(), pitch * (h - 1) + w * 4);
+                            if f[3] == 28 {
+                                // RGBA turned to BGRA
+                                swapped.clear();
+                                swapped.extend(bytes.chunks(pitch).flat_map(|row| row[..(w * 4).min(row.len())].as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0], p[3]])));
+                                each([f[1], f[2]], &swapped, w * 4);
+                            } else {
+                                each([f[1], f[2]], bytes, pitch);
+                            }
+                            context.Unmap(staging, 0);
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(4));
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -519,6 +601,157 @@ pub mod ndi {
             // SAFETY: made in new, destroyed once
             unsafe { (self.destroy)(self.instance) };
         }
+    }
+
+    #[repr(C)]
+    struct FindCreate {
+        show_local_sources: bool,
+        groups: *const c_char,
+        extra_ips: *const c_char,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct Source {
+        name: *const c_char,
+        address: *const c_char,
+    }
+
+    #[repr(C)]
+    struct RecvCreate {
+        source: Source,
+        color_format: i32,
+        bandwidth: i32,
+        allow_video_fields: bool,
+        recv_name: *const c_char,
+    }
+
+    /// Color as BGRA (alpha when the sender has it), at the highest bandwidth, a video frame back.
+    const BGRX_BGRA: i32 = 0;
+    const HIGHEST: i32 = 100;
+    const VIDEO: i32 = 1;
+
+    /// The receiving half of the runtime, by the signatures of its headers.
+    struct Api {
+        find_create: unsafe extern "C" fn(*const FindCreate) -> *mut c_void,
+        wait: unsafe extern "C" fn(*mut c_void, u32) -> bool,
+        current: unsafe extern "C" fn(*mut c_void, *mut u32) -> *const Source,
+        find_destroy: unsafe extern "C" fn(*mut c_void),
+        recv_create: unsafe extern "C" fn(*const RecvCreate) -> *mut c_void,
+        capture: unsafe extern "C" fn(*mut c_void, *mut VideoFrame, *mut c_void, *mut c_void, u32) -> i32,
+        free: unsafe extern "C" fn(*mut c_void, *const VideoFrame),
+        recv_destroy: unsafe extern "C" fn(*mut c_void),
+    }
+
+    /// A function of the runtime, a pointer of the type the caller wants.
+    ///
+    /// # Safety
+    /// `T` is the function's signature.
+    unsafe fn symbol<T: Copy>(lib: &libloading::Library, name: &'static [u8]) -> Result<T, String> {
+        // SAFETY: as the caller says
+        unsafe { lib.get::<T>(name).map(|s| *s) }.map_err(|_| format!("{}: not in the NDI runtime", String::from_utf8_lossy(&name[..name.len() - 1])))
+    }
+
+    fn api() -> Result<Api, String> {
+        let lib = library()?;
+        // SAFETY: the NDI runtime's own functions, with the signatures of its headers
+        unsafe {
+            let initialize: unsafe extern "C" fn() -> bool = symbol(lib, b"NDIlib_initialize\0")?;
+            if !initialize() {
+                return Err("NDI can't run on this processor".into());
+            }
+            Ok(Api {
+                find_create: symbol(lib, b"NDIlib_find_create_v2\0")?,
+                wait: symbol(lib, b"NDIlib_find_wait_for_sources\0")?,
+                current: symbol(lib, b"NDIlib_find_get_current_sources\0")?,
+                find_destroy: symbol(lib, b"NDIlib_find_destroy\0")?,
+                recv_create: symbol(lib, b"NDIlib_recv_create_v3\0")?,
+                capture: symbol(lib, b"NDIlib_recv_capture_v2\0")?,
+                free: symbol(lib, b"NDIlib_recv_free_video_v2\0")?,
+                recv_destroy: symbol(lib, b"NDIlib_recv_destroy\0")?,
+            })
+        }
+    }
+
+    /// The sources a finder has right now, with their names (valid until the finder waits again).
+    ///
+    /// # Safety
+    /// `finder` is a live finder of this runtime.
+    unsafe fn found(api: &Api, finder: *mut c_void) -> Vec<(Source, String)> {
+        let mut count = 0;
+        // SAFETY: as the caller says
+        let all = unsafe { (api.current)(finder, &mut count) };
+        if all.is_null() {
+            return Vec::new();
+        }
+        // SAFETY: the runtime returns `count` sources, their names nul ended
+        unsafe { std::slice::from_raw_parts(all, count as usize).iter().map(|s| (*s, std::ffi::CStr::from_ptr(s.name).to_string_lossy().into_owned())).collect() }
+    }
+
+    /// The sources on the network (this computer's too), by name, after waiting up to `rounds`
+    /// seconds for some to answer.
+    pub fn sources(rounds: u32) -> Result<Vec<String>, String> {
+        let api = api()?;
+        // SAFETY: the runtime's finder, made and destroyed here
+        unsafe {
+            let finder = (api.find_create)(&FindCreate { show_local_sources: true, groups: std::ptr::null(), extra_ips: std::ptr::null() });
+            if finder.is_null() {
+                return Err("NDI didn't make a finder".into());
+            }
+            let mut names = Vec::new();
+            for _ in 0..rounds.max(1) {
+                (api.wait)(finder, 1000);
+                names = found(&api, finder).into_iter().map(|s| s.1).collect();
+                if !names.is_empty() {
+                    break;
+                }
+            }
+            (api.find_destroy)(finder);
+            Ok(names)
+        }
+    }
+
+    /// Receives the source called `name` (as [`sources`] names it, or any whose name holds it):
+    /// each frame's size, BGRA pixels and bytes a row go to `each` on this thread, until `stop`
+    /// says so. Err when the runtime isn't there or the source doesn't answer in 8 s.
+    pub fn receive(name: &str, stop: impl Fn() -> bool, mut each: impl FnMut([u32; 2], &[u8], usize)) -> Result<(), String> {
+        let api = api()?;
+        // SAFETY: the runtime's finder and receiver, made and destroyed here; a frame's pixels
+        // are the runtime's until freed, and `each` sees them only meanwhile
+        unsafe {
+            let finder = (api.find_create)(&FindCreate { show_local_sources: true, groups: std::ptr::null(), extra_ips: std::ptr::null() });
+            if finder.is_null() {
+                return Err("NDI didn't make a finder".into());
+            }
+            let mut source = None;
+            for _ in 0..8 {
+                if stop() {
+                    break;
+                }
+                (api.wait)(finder, 1000);
+                let all = found(&api, finder);
+                source = all.iter().find(|s| s.1 == name).or_else(|| all.iter().find(|s| s.1.contains(name))).map(|s| s.0);
+                if source.is_some() {
+                    break;
+                }
+            }
+            // the receiver keeps a copy of the source; the finder that owns it can go after
+            let receiver = source.map(|source| (api.recv_create)(&RecvCreate { source, color_format: BGRX_BGRA, bandwidth: HIGHEST, allow_video_fields: false, recv_name: std::ptr::null() }));
+            (api.find_destroy)(finder);
+            let Some(receiver) = receiver.filter(|r| !r.is_null()) else { return Err(format!("no NDI source called {name:?} answers (is it running, on this network?)")) };
+            while !stop() {
+                let mut frame: VideoFrame = std::mem::zeroed();
+                if (api.capture)(receiver, &mut frame, std::ptr::null_mut(), std::ptr::null_mut(), 250) == VIDEO {
+                    let (size, stride) = ([frame.xres.max(0) as u32, frame.yres.max(0) as u32], frame.line_stride_in_bytes.max(0) as usize);
+                    if !frame.data.is_null() && stride >= size[0] as usize * 4 {
+                        each(size, std::slice::from_raw_parts(frame.data, stride * size[1] as usize), stride);
+                    }
+                    (api.free)(receiver, &frame);
+                }
+            }
+            (api.recv_destroy)(receiver);
+        }
+        Ok(())
     }
 
     #[cfg(test)]

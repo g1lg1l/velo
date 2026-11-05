@@ -28,7 +28,7 @@ The groups in the node menu:
 
 | Group | Nodes |
 |---|---|
-| **Generators** | Noise, Gradient, Shapes, Waveform, Shader (with 40 presets), Image, Video, Media List, Text, Text List, Particles |
+| **Generators** | Noise, Gradient, Shapes, Waveform, Shader (with 40 presets), Image, Video, Live (NDI and Spout in), Media List, Text, Text List, Particles |
 | **Effects** | Transform, Kaleido, Color, Blur, Feedback, Displace, Opacity, Levels, Threshold, Edges, Channels, Crop, Polar, UV Map, Lookup, Freeze, Time Machine, Key, Luma Blur, Shader FX (with 25 presets, from Glitch and VHS to LED Wall, God Rays and Shake) |
 | **Composite** | Blend, Mask, Merge |
 | **Control** | Switch, Grid, Layer Stack |

@@ -6,6 +6,7 @@ pub mod compile;
 pub mod effects;
 pub mod gpu;
 pub mod hap;
+pub mod input;
 pub mod isf;
 pub mod launch;
 pub mod media;
