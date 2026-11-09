@@ -3192,6 +3192,46 @@ impl App {
         self.say(Tone::Done, tr!("{} files in a Media List, a new one every 4 beats", paths.len()));
     }
 
+    /// A .txt, .csv or .tsv dropped: a Text List of its items, right of the scene's nodes, into
+    /// an Output with nothing in yet, selected; one undo step.
+    pub fn import_text_list(&mut self, path: &std::path::Path) {
+        const KEY: &str = "text list";
+        let (items, said) = match read_items(path) {
+            Ok(read) => read,
+            Err(e) => return self.say(Tone::Error, tr!("Can't read {}: {}", path.display(), e)),
+        };
+        if self.session.active().is_none() {
+            self.run("scene.add", json!({}));
+        }
+        let Some(scene) = self.session.active() else { return };
+        let right = scene.nodes.iter().map(|n| n.pos[0]).fold(f32::MIN, f32::max);
+        let x = if right == f32::MIN { 0.0 } else { right + NODE_W + SPACING };
+        let output = scene.nodes.iter().find(|n| n.kind == velo_core::OUTPUT && scene.wire_into(&n.id, 0).is_none()).map(|n| n.id.clone());
+        let name = path.file_stem().map_or_else(|| "Text List".to_string(), |s| s.to_string_lossy().into_owned());
+        self.run_merge("node.add", json!({ "kind": velo_core::TEXT_LIST, "pos": [x, 0.0], "name": name, "text": velo_core::join_items(&items) }), KEY);
+        let Some(list) = self.session.active().and_then(|s| s.nodes.last()).map(|n| n.id.clone()) else { return };
+        if let Some(out) = output {
+            self.run_merge("edge.connect", json!({ "from": [list, 0], "to": [out, 0] }), KEY);
+        }
+        self.session.close_merge();
+        self.canvas.selected = vec![list.clone()];
+        self.canvas.reveal = Some(list);
+        self.say(Tone::Done, said);
+    }
+
+    /// A Text List's items replaced by a file's, picked in a dialog; one undo step.
+    pub fn import_items_dialog(&mut self, node: &str) {
+        let Some(path) = rfd::FileDialog::new().add_filter(tr!("Text or table"), &velo_core::TEXT_FILES).pick_file() else { return };
+        match read_items(&path) {
+            Ok((items, said)) => {
+                self.session.close_merge();
+                self.run("node.set_text", json!({ "node": node, "text": velo_core::join_items(&items) }));
+                self.say(Tone::Done, said);
+            }
+            Err(e) => self.say(Tone::Error, tr!("Can't read {}: {}", path.display(), e)),
+        }
+    }
+
     pub fn import_isf_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new().add_filter(tr!("ISF shader"), &["fs", "frag", "glsl"]).pick_file() {
             self.import_isf(&path);
@@ -3258,6 +3298,25 @@ impl App {
         self.canvas.selected = self.session.active().map(|s| s.nodes.iter().map(|n| n.id.clone()).collect()).unwrap_or_default();
         self.canvas.wire = None;
     }
+}
+
+/// A .txt, .csv or .tsv's items for a Text List (a megabyte of text, [`velo_core::TEXT_LIST_ITEMS`]
+/// items at most) and what to say about them, or why not.
+fn read_items(path: &std::path::Path) -> Result<(Vec<String>, String), String> {
+    match std::fs::metadata(path).map(|m| m.len()) {
+        Ok(n) if n <= 1 << 20 => {}
+        Ok(_) => return Err(tr!("more than a megabyte of text").to_string()),
+        Err(e) => return Err(e.to_string()),
+    }
+    let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    let mut items = velo_core::file_items(&bytes, &path.extension().unwrap_or_default().to_string_lossy());
+    if items.is_empty() {
+        return Err(tr!("there are no words in it").to_string());
+    }
+    let (name, found, max) = (path.file_name().unwrap_or_default().to_string_lossy(), items.len(), velo_core::TEXT_LIST_ITEMS);
+    items.truncate(max);
+    let said = if found > max { tr!("The first {} of {} items from {}: a Text List takes {} at most", max, found, name, max) } else { tr!("{} items from {}", found, name) };
+    Ok((items, said))
 }
 
 /// The output a new node gets wired from: a dropped wire's, else the one selected node's first.
@@ -4011,6 +4070,30 @@ mod tests {
         assert_eq!(maps(&h)[0].2, 0.5);
         h.app.run("edit.undo", json!({}));
         assert!(maps(&h).is_empty());
+    }
+
+    #[test]
+    fn a_dropped_csv_becomes_a_text_list_into_the_free_output_in_one_step() {
+        let mut h = Harness::new();
+        let path = std::env::temp_dir().join(format!("velo-credits-{}.csv", std::process::id()));
+        std::fs::write(&path, "Nome;Ruolo\nAda;DJ\n").unwrap();
+        h.app.import_text_list(&path);
+        std::fs::remove_file(&path).unwrap();
+        let s = h.scene();
+        let list = s.nodes.iter().find(|n| n.kind == velo_core::TEXT_LIST).expect("a Text List");
+        assert_eq!(velo_core::text_items(list.text.as_deref().unwrap()), ["Nome\nRuolo", "Ada\nDJ"]);
+        assert!(list.name.starts_with("velo-credits"));
+        let out = s.nodes.iter().find(|n| n.kind == velo_core::OUTPUT).unwrap();
+        assert_eq!(s.wire_into(&out.id, 0).map(|e| e.from.0.as_str()), Some(list.id.as_str()));
+        h.app.run("edit.undo", json!({}));
+        assert!(h.scene().nodes.iter().all(|n| n.kind != velo_core::TEXT_LIST), "one step to undo the drop");
+        // a longer file: its first items
+        let path = path.with_extension("txt");
+        std::fs::write(&path, (1..=300).map(|i| format!("Line {i}\n")).collect::<String>()).unwrap();
+        h.app.import_text_list(&path);
+        std::fs::remove_file(&path).unwrap();
+        let words = h.scene().nodes.iter().find(|n| n.kind == velo_core::TEXT_LIST).and_then(|n| n.text.clone()).unwrap();
+        assert_eq!(velo_core::text_items(&words).len(), velo_core::TEXT_LIST_ITEMS);
     }
 
     #[test]

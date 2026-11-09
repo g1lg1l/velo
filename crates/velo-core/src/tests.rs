@@ -106,6 +106,16 @@ fn scenes_keep_their_ids_through_add_select_rename_remove() {
 }
 
 #[test]
+fn text_files_become_text_list_items() {
+    assert_eq!(file_items(b"One\r\n  Two\n\n", "txt"), ["One", "Two"], "a line an item");
+    assert_eq!(file_items(b"Intro\nfirst line\n\n\nDrop\n", "TXT"), ["Intro\nfirst line", "Drop"], "empty lines part blocks");
+    // Excel's Italian CSV: semicolons, quotes, a newline in a cell, Windows-1252
+    let csv = b"Nome;Ruolo\n\"Rossi; Mario\";\"DJ \"\"set\"\"\nlive\"\n\xC8 l\x92ora;\n";
+    assert_eq!(file_items(csv, "csv"), ["Nome\nRuolo", "Rossi; Mario\nDJ \"set\"\nlive", "È l’ora"]);
+    assert_eq!(file_items("\u{FEFF}a,b\tc\r\n".as_bytes(), "tsv"), ["a,b\nc"]);
+}
+
+#[test]
 fn scenes_move_in_one_undo_step() {
     let mut s = Session::default();
     for name in ["A", "B", "C"] {

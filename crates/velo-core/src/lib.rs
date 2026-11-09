@@ -734,6 +734,87 @@ pub fn join_items<S: AsRef<str>>(items: &[S]) -> String {
     items.iter().map(|i| format!("{ITEM}{}", i.as_ref())).collect()
 }
 
+/// The files a Text List takes its items from.
+pub const TEXT_FILES: [&str; 3] = ["txt", "csv", "tsv"];
+/// How many items a Text List takes from a file: the inspector has a field for each, and the
+/// engine lays out all of them in one picture.
+pub const TEXT_LIST_ITEMS: usize = 256;
+
+/// A text file's items for a Text List. A table (`ext` csv or tsv) gives a row an item, its cells
+/// on lines of their own; any other file a line an item, or a block an item when empty lines
+/// part it. UTF-8, UTF-16 with its mark, or else Windows' Western code page (Excel's CSV).
+pub fn file_items(bytes: &[u8], ext: &str) -> Vec<String> {
+    let text = decode(bytes).replace("\r\n", "\n").replace(ITEM, "");
+    let ext = ext.to_ascii_lowercase();
+    if ext == "csv" || ext == "tsv" {
+        // Excel saves `;` where the comma is the decimal point
+        let first = text.lines().next().unwrap_or_default();
+        let sep = if ext == "tsv" { '\t' } else { ['\t', ';', ','].into_iter().max_by_key(|&c| (first.matches(c).count(), c == ',')).unwrap_or(',') };
+        return table(&text, sep).iter().map(|row| row.iter().map(|c| c.trim()).filter(|c| !c.is_empty()).collect::<Vec<_>>().join("\n")).filter(|i| !i.is_empty()).collect();
+    }
+    let (mut blocks, mut open): (Vec<Vec<&str>>, bool) = (Vec::new(), false);
+    for line in text.lines().map(str::trim) {
+        match blocks.last_mut() {
+            Some(b) if open && !line.is_empty() => b.push(line),
+            _ if !line.is_empty() => blocks.push(vec![line]),
+            _ => {}
+        }
+        open = !line.is_empty();
+    }
+    match blocks.as_slice() {
+        [one] => one.iter().map(|l| l.to_string()).collect(),
+        _ => blocks.iter().map(|b| b.join("\n")).collect(),
+    }
+}
+
+fn decode(bytes: &[u8]) -> String {
+    if let Some(rest) = bytes.strip_prefix(b"\xEF\xBB\xBF") {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    if let Some(rest) = bytes.strip_prefix(b"\xFF\xFE") {
+        return String::from_utf16_lossy(&rest.as_chunks::<2>().0.iter().map(|&p| u16::from_le_bytes(p)).collect::<Vec<_>>());
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    // Windows-1252: Latin-1 but for 0x80..0x9F (the euro, curly quotes, dashes)
+    const HIGH: [u16; 32] = [
+        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+    ];
+    bytes.iter().map(|&b| if (0x80..0xA0).contains(&b) { char::from_u32(u32::from(HIGH[usize::from(b - 0x80)])).unwrap_or('?') } else { char::from(b) }).collect()
+}
+
+/// A CSV's rows of cells (RFC 4180: a quoted cell may hold the separator, newlines and `""`).
+fn table(text: &str, sep: char) -> Vec<Vec<String>> {
+    let (mut rows, mut row, mut cell, mut quoted) = (Vec::new(), Vec::new(), String::new(), false);
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                cell.push('"');
+                chars.next();
+            }
+            '"' if quoted => quoted = false,
+            '"' if cell.trim().is_empty() => {
+                cell.clear();
+                quoted = true;
+            }
+            c if quoted => cell.push(c),
+            '\n' => {
+                row.push(std::mem::take(&mut cell));
+                rows.push(std::mem::take(&mut row));
+            }
+            c if c == sep => row.push(std::mem::take(&mut cell)),
+            c => cell.push(c),
+        }
+    }
+    if !cell.is_empty() || !row.is_empty() {
+        row.push(cell);
+        rows.push(row);
+    }
+    rows
+}
+
 /// Up to [`MEDIA_LIST_FILES`] pictures and movies played in turn ([`Node::media`], a path a line).
 pub const MEDIA_LIST: &str = "velo.medialist";
 /// How many files a Media List holds: the engine streams them, three in memory at a time.

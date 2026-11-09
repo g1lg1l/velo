@@ -2383,10 +2383,11 @@ impl App {
     }
 
     /// A Text List's items, one for each turn: a field each (Enter starts another line of the same
-    /// item), × to take one out, + to add one. Typing in one is one undo step, as in a Text.
+    /// item), × to take one out, + to add one, or all of them from a file. Typing in one is one
+    /// undo step, as in a Text.
     fn items_section(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str, words: &str, first: bool) {
         let mut items: Vec<String> = velo_core::text_items(words).into_iter().map(String::from).collect();
-        let (mut typed, mut done, mut remove, mut add) = (false, false, None, false);
+        let (mut typed, mut done, mut remove, mut add, mut import) = (false, false, None, false, false);
         kit::section(ui, t, icons::LIST_BULLETS, tr!("ITEMS"), first, |ui| {
             let count = items.len();
             for (k, item) in items.iter_mut().enumerate() {
@@ -2404,8 +2405,14 @@ impl App {
                     }
                 });
             }
-            add = kit::button(ui, t, Some(icons::PLUS), tr!("Add an item"), false).on_hover_text(tr!("Another turn of words: it shows them one at a time, as its Order, Clock and Every say")).clicked();
+            ui.horizontal(|ui| {
+                add = kit::button(ui, t, Some(icons::PLUS), tr!("Add an item"), false).on_hover_text(tr!("Another turn of words: it shows them one at a time, as its Order, Clock and Every say")).clicked();
+                import = kit::button(ui, t, Some(icons::FILE_PLUS), tr!("From a file…"), false).on_hover_text(tr!("Items from a .txt (a line each, or a block between empty lines) or a .csv (a row each, its cells on lines): they replace these")).clicked();
+            });
         });
+        if import {
+            return self.import_items_dialog(node);
+        }
         if let Some(k) = remove {
             items.remove(k);
         }
@@ -3086,6 +3093,10 @@ impl App {
         }
         for path in folders.iter().chain(files.iter().filter(|_| files.len() == 1)) {
             self.import_media(path);
+        }
+        // words: a Text List of each file's lines or rows
+        for path in dropped.iter().filter(|p| p.extension().is_some_and(|e| velo_core::TEXT_FILES.iter().any(|x| e.eq_ignore_ascii_case(x)))) {
+            self.import_text_list(path);
         }
         self.sync_live(&ctx);
 
