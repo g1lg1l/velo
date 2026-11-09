@@ -51,7 +51,7 @@ loop {
 
 ## 4. Media
 
-Pictures from files feed Image, Video, Media List, Text and Particles nodes. Each file loads once on the media thread; a graph built while a file loads shows black there and is built again once it's in. A Media List streams instead: three Image nodes of its own are its slots, turn k's file on slot k % 3, and a thread of the list's own loads the next turn's file during this one, so only the turn before (fading out), this one and the next are in memory. Each file plays from its start on its turn; a rebuilt graph takes over what the old one had in.
+Pictures from files feed Image, Video, Media List, Text and Particles nodes. Each file loads once on the media thread; a graph built while a file loads shows black there and is built again once it's in. A Media List loads on a thread of its own instead, the most pressing file first: three Image nodes of its own are its slots, turn k's file on slot k % 3. Streamed (its Load parameter, the default), the next turn's file loads during this one and only the turn before (fading out), this one and the next are in memory; each file plays from its start on its turn. In memory, every file loads and stays, so no turn waits, and each plays on from where its last turn left it. A rebuilt graph takes over what the old one had in.
 
 | Media | How |
 |---|---|

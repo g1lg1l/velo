@@ -549,8 +549,8 @@ fn read_video(clip: &Clip, shared: &Reader) {
     }
 }
 
-/// How many of a Media List's files are in at once: the turn before (fading out), this one, the
-/// next (loading).
+/// How many Image nodes a Media List shows its files through: the turn before (fading out),
+/// this one, the next.
 pub const SLOTS: usize = 3;
 
 /// Why the files a Media List couldn't play didn't, by path: until one plays again.
@@ -561,116 +561,177 @@ pub fn failed(path: &str) -> Option<String> {
     FAILED.lock().ok()?.get(path).cloned()
 }
 
-/// A loader's answer: the slot, the turn it was for, the file playing (or why not).
-type Loaded = (usize, i64, Result<Playing, String>);
+/// What a Media List's loader is asked for: the files due, the most pressing first, and the
+/// one it's loading.
+#[derive(Default)]
+struct Asked {
+    need: Vec<usize>,
+    loading: Option<usize>,
+    stop: bool,
+}
 
-/// A Media List as it plays: its files streamed through [`SLOTS`] Image nodes, turn k's file on
-/// slot k % 3 (medialist.wgsl). Only the turn before, this one and the next are in: the next
-/// loads on a thread of the list's own during this turn, every other file stays on disk. Each
-/// file plays from its start on its turn.
+#[derive(Default)]
+struct Loader {
+    asked: Mutex<Asked>,
+    wake: std::sync::Condvar,
+}
+
+impl Loader {
+    /// The next file to load, once one is due; none once the reel is gone.
+    fn next(&self) -> Option<usize> {
+        let mut asked = self.asked.lock().ok()?;
+        loop {
+            if asked.stop {
+                return None;
+            }
+            if !asked.need.is_empty() {
+                let file = asked.need.remove(0);
+                asked.loading = Some(file);
+                return Some(file);
+            }
+            asked = self.wake.wait(asked).ok()?;
+        }
+    }
+}
+
+/// A Media List as it plays: its files shown through [`SLOTS`] Image nodes, turn k's on slot
+/// k % 3 (medialist.wgsl), loaded on a thread of the list's own, the most pressing first.
+/// Streamed (its `load` parameter at 0), only this turn's file, the next and the one fading out
+/// are in, and each plays from its start on its turn. In memory (1), every file loads and
+/// stays: a turn never waits, at the memory all of them take, and each plays on from where its
+/// last turn left it.
 pub struct Reel {
-    /// The Media List's node id and engine node, and its order, clock, every and fade
+    /// The Media List's node id and engine node, and its order, clock, every, fade and load
     /// parameters' indices.
     id: String,
     pub node: usize,
-    params: [usize; 4],
-    /// Its slots' engine nodes.
+    params: [usize; 5],
+    /// Its slots' engine nodes, and what each shows: the turn, its file, whether that was in.
     slots: [usize; SLOTS],
+    bound: [Option<(i64, usize, bool)>; SLOTS],
     files: Vec<String>,
-    /// The turn each slot is for, and its file once it's in.
-    held: [Option<(i64, Option<Playing>)>; SLOTS],
-    jobs: std::sync::mpsc::Sender<(usize, i64, String)>,
-    done: std::sync::mpsc::Receiver<Loaded>,
+    /// Each file in, by index; one that failed isn't asked for again until it's due anew.
+    cache: Vec<Option<Playing>>,
+    broken: Vec<bool>,
+    loader: Arc<Loader>,
+    done: std::sync::mpsc::Receiver<(usize, Result<Playing, String>)>,
 }
 
 impl Reel {
     /// Movies in HAP only with `bc` (BC textures on this GPU).
     #[allow(clippy::too_many_arguments)]
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, id: String, node: usize, params: [usize; 4], slots: [usize; SLOTS], files: Vec<String>, bc: bool) -> Self {
-        let (jobs, todo) = std::sync::mpsc::channel::<(usize, i64, String)>();
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, id: String, node: usize, params: [usize; 5], slots: [usize; SLOTS], files: Vec<String>, bc: bool) -> Self {
+        let loader = Arc::new(Loader::default());
         let (answer, done) = std::sync::mpsc::channel();
-        let (device, queue) = (device.clone(), queue.clone());
-        // gone with the reel: its jobs' sender dropped
+        let (device, queue, shared, paths) = (device.clone(), queue.clone(), loader.clone(), files.clone());
         let _ = std::thread::Builder::new().name("velo media list".into()).spawn(move || {
-            while let Ok(job) = todo.recv() {
-                // the newest job of each slot: a turn gone by while another loaded isn't loaded
-                let mut batch = vec![job];
-                for newer in todo.try_iter() {
-                    match batch.iter_mut().find(|j| j.0 == newer.0) {
-                        Some(older) => *older = newer,
-                        None => batch.push(newer),
-                    }
+            while let Some(file) = shared.next() {
+                let path = &paths[file];
+                let playing = open(&device, &queue, path, bc);
+                if let Ok(mut failed) = FAILED.lock() {
+                    match &playing {
+                        Ok(_) => failed.remove(path),
+                        Err(e) => failed.insert(path.clone(), e.clone()),
+                    };
                 }
-                for (slot, turn, path) in batch {
-                    let playing = open(&device, &queue, &path, bc);
-                    if let Ok(mut failed) = FAILED.lock() {
-                        match &playing {
-                            Ok(_) => failed.remove(&path),
-                            Err(e) => failed.insert(path, e.clone()),
-                        };
-                    }
-                    if answer.send((slot, turn, playing)).is_err() {
-                        return;
-                    }
+                // answered with the lock held: the reel never asks again for what's on its way
+                let Ok(mut asked) = shared.asked.lock() else { return };
+                asked.loading = None;
+                if answer.send((file, playing)).is_err() {
+                    return;
                 }
             }
         });
-        Self { id, node, params, slots, files, held: Default::default(), jobs, done }
+        let n = files.len();
+        Self { id, node, params, slots, bound: [None; SLOTS], files, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done }
     }
 
-    /// This frame, `beats` and `time` as the GPU gets them: the files due asked for (this
-    /// turn's first, then the next), those in bound to their slots, this turn's played on and
-    /// the one before while it fades out. `value` is the list's parameters' values.
+    /// This frame, `beats` and `time` as the GPU gets them: the files due asked for, those in
+    /// bound to their slots, this turn's played on and the one before while it fades out.
+    /// `value` is the list's parameters' values.
     #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, runner: &mut crate::gpu::Runner, programs: &[crate::gpu::Program], value: impl Fn(usize) -> f32, beats: f32, time: f32, dt: f32) {
-        if self.files.is_empty() {
+        let n = self.files.len();
+        if n == 0 {
             return;
         }
-        let [order, clock, every, fade] = self.params.map(value);
+        let [order, clock, every, fade, load] = self.params.map(value);
         // as medialist.wgsl counts turns
         let t = if clock.round() as i32 == 1 { time } else { beats } / every.max(0.01);
         let turn = (t.floor() as i64).max(0);
-        // the turn before only to fade from
-        for at in [turn, turn + 1, turn - 1] {
-            let slot = at.rem_euclid(SLOTS as i64) as usize;
-            if at < 0 || (at < turn && fade <= 0.0) || self.held[slot].as_ref().is_some_and(|h| h.0 == at) {
-                continue;
+        let fading = fade > 0.0 && turn > 0 && t - t.floor() < fade;
+        let file = |at: i64| pick(at, n, order.round() as i32);
+        // the files due, the most pressing first: this turn's, the next, the one fading out,
+        // then (in memory) every other
+        let (mut due, mut wanted) = (Vec::new(), vec![false; n]);
+        let rest = if load.round() as i32 == 1 { 0..n } else { 0..0 };
+        for f in [turn, turn + 1].into_iter().chain(fading.then_some(turn - 1)).map(file).chain(rest) {
+            if !std::mem::replace(&mut wanted[f], true) {
+                due.push(f);
             }
-            // the slot's file goes: black until the new one's in
-            self.held[slot] = Some((at, None));
-            runner.set_file(device, programs, self.slots[slot], None);
-            let _ = self.jobs.send((slot, at, self.files[pick(at, self.files.len(), order.round() as i32)].clone()));
         }
-        for (slot, at, playing) in self.done.try_iter() {
-            if let (Some((turn, held)), Ok(playing)) = (&mut self.held[slot], playing)
-                && *turn == at
+        if let Ok(mut asked) = self.loader.asked.lock() {
+            for (f, playing) in self.done.try_iter() {
+                match playing {
+                    Ok(playing) if wanted[f] => self.cache[f] = Some(playing),
+                    Ok(_) => {}
+                    Err(_) => self.broken[f] = true,
+                }
+            }
+            // what isn't due goes, and a broken file is tried again once it's due anew
+            for f in (0..n).filter(|&f| !wanted[f]) {
+                (self.cache[f], self.broken[f]) = (None, false);
+            }
+            let need: Vec<usize> = due.into_iter().filter(|&f| self.cache[f].is_none() && !self.broken[f] && asked.loading != Some(f)).collect();
+            if need != asked.need {
+                asked.need = need;
+                self.loader.wake.notify_one();
+            }
+        }
+        for at in [turn, turn + 1, turn - 1].into_iter().filter(|&at| at >= 0) {
+            let (slot, f) = (at.rem_euclid(SLOTS as i64) as usize, file(at));
+            let shown = self.cache[f].as_ref();
+            if self.bound[slot] != Some((at, f, shown.is_some())) {
+                runner.set_file(device, programs, self.slots[slot], shown.map(|p| p.texture.create_view(&Default::default())).as_ref());
+                self.bound[slot] = Some((at, f, shown.is_some()));
+            }
+        }
+        // this turn's file plays on, and the one fading out (once, if it's the same)
+        let mut played = None;
+        for f in [turn].into_iter().chain(fading.then_some(turn - 1)).map(file) {
+            if played != Some(f)
+                && let Some(playing) = &mut self.cache[f]
             {
-                runner.set_file(device, programs, self.slots[slot], Some(&playing.texture.create_view(&Default::default())));
-                *held = Some(playing);
-            }
-        }
-        let fading = fade > 0.0 && t - t.floor() < fade;
-        for at in [turn, turn - 1].into_iter().filter(|&at| at == turn || fading) {
-            if let Some((_, Some(playing))) = self.held[at.rem_euclid(SLOTS as i64) as usize].as_mut().filter(|h| h.0 == at) {
                 playing.step(queue, dt, 1.0, (0.0, 1.0));
             }
+            played = Some(f);
         }
     }
 
     /// What `old`, the same list in the graph this one replaces, has in or loading, carried
-    /// over: a rebuild never shows its files black.
-    pub fn adopt(&mut self, old: &mut Reel, device: &wgpu::Device, runner: &mut crate::gpu::Runner, programs: &[crate::gpu::Program]) {
-        if (&old.id, &old.files) != (&self.id, &self.files) {
-            return;
+    /// over (bound to this one's slots on its first step): a rebuild never shows its files black.
+    pub fn adopt(&mut self, old: &mut Reel) {
+        if (&old.id, &old.files) == (&self.id, &self.files) {
+            std::mem::swap(&mut self.cache, &mut old.cache);
+            std::mem::swap(&mut self.broken, &mut old.broken);
+            std::mem::swap(&mut self.loader, &mut old.loader);
+            std::mem::swap(&mut self.done, &mut old.done);
         }
-        std::mem::swap(&mut self.held, &mut old.held);
-        std::mem::swap(&mut self.jobs, &mut old.jobs);
-        std::mem::swap(&mut self.done, &mut old.done);
-        for (slot, held) in self.slots.iter().zip(&self.held) {
-            if let Some((_, Some(playing))) = held {
-                runner.set_file(device, programs, *slot, Some(&playing.texture.create_view(&Default::default())));
-            }
+    }
+
+    /// How many of its files are in.
+    #[cfg(test)]
+    pub(crate) fn in_memory(&self) -> usize {
+        self.cache.iter().flatten().count()
+    }
+}
+
+impl Drop for Reel {
+    fn drop(&mut self) {
+        if let Ok(mut asked) = self.loader.asked.lock() {
+            asked.stop = true;
         }
+        self.loader.wake.notify_one();
     }
 }
 

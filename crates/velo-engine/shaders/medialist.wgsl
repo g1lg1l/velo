@@ -7,13 +7,15 @@
     { "id": "order", "type": "int", "default": 0, "names": ["In order", "At random", "Back and forth"] },
     { "id": "clock", "type": "int", "default": 0, "names": ["Beats", "Seconds"] },
     { "id": "every", "type": "float", "default": 4.0, "min": 0.25, "max": 64.0 },
-    { "id": "fade", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 }
+    { "id": "fade", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
+    { "id": "load", "type": "int", "default": 0, "names": ["Streamed", "In memory"] }
   ]
 }*/
 
-// Velo streams the files (media.rs, Reel): turn k's file comes in on slot k % 3, an Image node
-// of its own, with the turn before and the next on the other two. Which file a turn shows (the
-// order) is picked there; here the turns cut or crossfade. A slot still loading is black.
+// Velo loads the files (media.rs, Reel), streamed or all in memory (load): turn k's file comes
+// in on slot k % 3, an Image node of its own, with the turn before and the next on the other
+// two. Which file a turn shows (the order) is picked there; here the turns cut or crossfade. A
+// slot still loading is black.
 
 // sampled at one level: which slot shows isn't uniform control flow
 fn slot(k: i32, uv: vec2f) -> vec4f {

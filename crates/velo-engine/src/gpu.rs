@@ -1345,36 +1345,45 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         for n in 0..3 {
             runner.set_params(&queue, &programs, n, &programs[0].node.values(|_| None));
         }
-        // in order, on the seconds, a new file each second
-        let v = |x: f32| [x, 0.0, 0.0, 0.0];
-        let values = programs[1].node.values(|p| match p {
-            "clock" => Some(v(1.0)),
-            "every" => Some(v(1.0)),
-            _ => None,
-        });
-        runner.set_params(&queue, &programs, 3, &values);
         let at = |p| crate::modulate::slot(&programs[1].node, p).unwrap().0;
-        let mut reel = crate::media::Reel::new(&device, &queue, "list".into(), 3, [at("order"), at("clock"), at("every"), at("fade")], [0, 1, 2], files, false);
-        // the turn's file once it's in (black till then)
-        let mut shown = |time: f32| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-            loop {
-                reel.step(&device, &queue, &mut runner, &programs, |p| values[p][0], 0.0, time, 1.0 / 60.0);
-                let mut encoder = device.create_command_encoder(&Default::default());
-                runner.render(&queue, &mut encoder, &programs, &[time, 1.0 / 60.0, 0.0, 2.0]);
-                queue.submit([encoder.finish()]);
-                let rgb: Vec<bool> = read(&device, &queue, &runner, 3)[..3].iter().map(|&c| c >= 0x3800).collect();
-                if rgb.contains(&true) || std::time::Instant::now() > deadline {
-                    return rgb;
+        let params = [at("order"), at("clock"), at("every"), at("fade"), at("load")];
+        // streamed, then all in memory
+        for (load, most) in [(0.0, 2), (1.0, 4)] {
+            // in order, on the seconds, a new file each second
+            let v = |x: f32| [x, 0.0, 0.0, 0.0];
+            let values = programs[1].node.values(|p| match p {
+                "clock" | "every" => Some(v(1.0)),
+                "load" => Some(v(load)),
+                _ => None,
+            });
+            runner.set_params(&queue, &programs, 3, &values);
+            let mut reel = crate::media::Reel::new(&device, &queue, "list".into(), 3, params, [0, 1, 2], files.clone(), false);
+            // the turn's file once it's in (black till then), and how many files are in
+            let mut shown = |time: f32| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    reel.step(&device, &queue, &mut runner, &programs, |p| values[p][0], 0.0, time, 1.0 / 60.0);
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    runner.render(&queue, &mut encoder, &programs, &[time, 1.0 / 60.0, 0.0, 2.0]);
+                    queue.submit([encoder.finish()]);
+                    let rgb: Vec<bool> = read(&device, &queue, &runner, 3)[..3].iter().map(|&c| c >= 0x3800).collect();
+                    // in memory: shown once every file's in
+                    let settled = load == 0.0 || reel.in_memory() == most;
+                    if (rgb.contains(&true) && settled) || std::time::Instant::now() > deadline {
+                        return (rgb, reel.in_memory());
+                    }
+                    std::thread::yield_now();
                 }
-                std::thread::yield_now();
-            }
-        };
-        assert_eq!(shown(0.5), [true, false, false], "turn 0: the first file");
-        assert_eq!(shown(1.5), [false, true, false], "turn 1: the second");
-        assert_eq!(shown(2.5), [false, false, true], "turn 2: the third");
-        assert_eq!(shown(3.5), [true, true, true], "turn 3: the fourth, on the first turn's slot");
-        assert_eq!(shown(4.5), [true, false, false], "and round again");
+            };
+            assert_eq!(shown(0.5).0, [true, false, false], "turn 0: the first file");
+            assert_eq!(shown(1.5).0, [false, true, false], "turn 1: the second");
+            assert_eq!(shown(2.5).0, [false, false, true], "turn 2: the third");
+            assert_eq!(shown(3.5).0, [true, true, true], "turn 3: the fourth, on the first turn's slot");
+            let (rgb, kept) = shown(4.5);
+            assert_eq!(rgb, [true, false, false], "and round again");
+            // streamed: this turn's file and the next; in memory, all four
+            assert!(if load == 0.0 { kept <= most } else { kept == most }, "load {load}: {kept} files in");
+        }
         assert!(crate::media::failed(&dir.join("0.png").to_string_lossy()).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }

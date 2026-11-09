@@ -720,10 +720,9 @@ impl Thread {
                     Command::Install { key, mut graph } => match graphs.iter_mut().find(|g| g.0 == key) {
                         Some(slot) => {
                             // a Media List's files in (or loading) carry over: a rebuild doesn't show them black
-                            let g = &mut *graph;
-                            for new in &mut g.lists {
+                            for new in &mut graph.lists {
                                 for old in &mut slot.1.lists {
-                                    new.adopt(old, &self.device, &mut g.runner, &g.programs);
+                                    new.adopt(old);
                                 }
                             }
                             drop_later(std::mem::replace(&mut slot.1, graph))

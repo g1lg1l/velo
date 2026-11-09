@@ -392,7 +392,7 @@ fn build(
             let list = scene.node(id).filter(|l| l.kind == MEDIA_LIST)?;
             let [a, b, c] = [0, 1, 2].map(|k| index(&format!("{id}#{k}")));
             let at = |param| crate::modulate::slot(&programs[specs[n].program].node, param).map(|s| s.0);
-            let params = [at("order")?, at("clock")?, at("every")?, at("fade")?];
+            let params = [at("order")?, at("clock")?, at("every")?, at("fade")?, at("load")?];
             let files = velo_core::media_list(list).into_iter().map(String::from).collect();
             Some(Reel::new(device, queue, id.clone(), n, params, [a?, b?, c?], files, bc))
         })
