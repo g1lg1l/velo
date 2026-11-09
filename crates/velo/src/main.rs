@@ -2166,13 +2166,13 @@ impl App {
     }
 
     /// A Media List's files in the order it plays them: each to move up or take out, more to
-    /// add (up to [`velo_core::MEDIA_LIST_FILES`]).
+    /// add (up to [`velo_core::MEDIA_LIST_FILES`]), or all of them to take out.
     fn media_list_section(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str) {
         let Some(n) = self.session.active().and_then(|s| s.node(node)) else { return };
         let files: Vec<String> = velo_core::media_list(n).into_iter().map(String::from).collect();
         // each file the engine couldn't play on its last turn, and why
         let failed: Vec<Option<String>> = files.iter().map(|f| velo_engine::media::failed(f)).collect();
-        let (mut act, mut add) = (None, false);
+        let (mut act, mut add, mut clear) = (None, false, false);
         let max = velo_core::MEDIA_LIST_FILES;
         kit::section(ui, t, icons::IMAGES, tr!("FILES"), false, |ui| {
             if files.is_empty() {
@@ -2199,7 +2199,13 @@ impl App {
                 }
             }
             ui.add_space(t.gap);
-            ui.add_enabled_ui(files.len() < max, |ui| add = kit::actions(ui, t, &[(kit::Variant::Outline, Some(icons::FILE_PLUS), tr!("Add files…"))])[0].clicked());
+            // more files while there's room, or none at all (one step to undo)
+            let w = ((ui.available_width() - t.gap) / 2.0).max(0.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = t.gap;
+                add = ui.add_enabled_ui(files.len() < max, |ui| kit::action_sized(ui, t, kit::Variant::Outline, Some(icons::FILE_PLUS), tr!("Add files…"), Some(w))).inner.clicked();
+                clear = kit::action_sized(ui, t, kit::Variant::Outline, Some(icons::TRASH), tr!("Remove all"), Some(w)).clicked();
+            });
             kit::hint(ui, t, &tr!("{} of {} files", files.len(), max));
         });
         let mut list = files.clone();
@@ -2209,6 +2215,9 @@ impl App {
                 list.remove(k);
             }
             None => {}
+        }
+        if clear {
+            list.clear();
         }
         if add && let Some(picked) = rfd::FileDialog::new().add_filter(tr!("Pictures and movies"), &velo_engine::media::EXTENSIONS).pick_files() {
             list.extend(picked.iter().map(|p| p.to_string_lossy().into_owned()));
