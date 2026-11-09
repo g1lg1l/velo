@@ -366,6 +366,9 @@ pub fn brand(ctx: &egui::Context, png: &'static [u8]) -> egui::TextureId {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SourceDrag(pub String, pub String);
 
+/// What a scene card carries while it's dragged to another place in the list: its scene's id.
+pub struct SceneDrag(pub String);
+
 /// One mapping on a slider, as drawn: which source, how far it moves the parameter (a
 /// fraction of the travel, -1..1) and where that source is right now (0..1).
 pub struct ModView<'a> {

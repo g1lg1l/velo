@@ -37,6 +37,8 @@ Operators, all undoable: `macro.set`, `macro.rename`, `macro.assign`, `macro.una
 
 **Templates.** The scenes rail's + offers an empty scene or a template (Velo, Tunnel, Kaleido Bloom, Pulse Rings, Liquid): small patches the music already moves, with named macros, built with the operators in one undo step. A new profile opens the demo: the Velo template, live.
 
+**Order.** Drag a card in the scenes rail to another place (a line shows where it lands), or use its menu's Move (to the top, up, down, to the bottom): `scene.move`, one undo step. Number keys, OSC scene numbers and controllers launch scenes by place, so they follow the new order; the live and the selected scene stay what they were.
+
 ## 3. Launching and transitions
 
 ```rust

@@ -894,24 +894,52 @@ impl App {
         }
         kit::scroll(ui, &t, "scenes", true, t.bg_panel, |ui| {
             ui.spacing_mut().item_spacing.y = t.gap * 1.5;
-            for (i, scene) in scenes.iter().enumerate() {
-                self.scene_card(ui, &t, i, scene, active.as_ref() == Some(&scene.id));
-            }
+            let cards: Vec<egui::Rect> = scenes.iter().enumerate().map(|(i, scene)| self.scene_card(ui, &t, i, scene, active.as_ref() == Some(&scene.id), scenes.len())).collect();
+            self.scene_drop(ui, &t, &scenes, &cards);
         });
     }
 
-    fn scene_card(&mut self, ui: &mut egui::Ui, t: &Theme, i: usize, scene: &Scene, active: bool) {
+    /// A scene card dragged over the list: a line where it would land, the move on release.
+    fn scene_drop(&mut self, ui: &egui::Ui, t: &Theme, scenes: &[Scene], cards: &[egui::Rect]) {
+        let Some(drag) = egui::DragAndDrop::payload::<widgets::SceneDrag>(ui.ctx()) else { return };
+        let Some(from) = scenes.iter().position(|s| s.id == drag.0) else { return };
+        let Some(p) = ui.ctx().pointer_interact_pos().filter(|p| ui.clip_rect().contains(*p)) else { return };
+        // before the first card whose middle is under the pointer
+        let slot = cards.iter().filter(|r| r.center().y < p.y).count();
+        let to = if slot > from { slot - 1 } else { slot };
+        if to == from {
+            return;
+        }
+        let gap = ui.spacing().item_spacing.y / 2.0;
+        let y = if slot == 0 { cards[0].top() - gap } else { cards[slot - 1].bottom() + gap };
+        ui.painter().hline(cards[0].x_range(), y.max(ui.clip_rect().top() + 1.0), egui::Stroke::new(2.0, t.accent));
+        if ui.input(|i| i.pointer.any_released()) {
+            egui::DragAndDrop::clear_payload(ui.ctx());
+            self.run("scene.move", json!({ "scene": drag.0, "to": to }));
+        }
+    }
+
+    /// One scene's card, dragged by its body to another place; where it is.
+    fn scene_card(&mut self, ui: &mut egui::Ui, t: &Theme, i: usize, scene: &Scene, active: bool, count: usize) -> egui::Rect {
         // LIVE pulses with the beat; a launch counts down to its boundary
         let layer = (scene.layer != Layer::Scene).then(|| (scene.layer == Layer::Top, self.live.as_ref().is_none_or(|l| !l.off.contains(&scene.id))));
         let state = match &self.live {
             Some(l) => widgets::CardState { selected: active, live: (l.live_scene() == Some(scene.id.as_str())).then(|| l.clock()[1]), armed: l.armed(&scene.id), shot: l.shot(&scene.id), layer },
             None => widgets::CardState { selected: active, layer, ..Default::default() },
         };
-        let resp = widgets::scene_card(ui, t, i, &scene.name, &scene.icon, widgets::hue_of(&scene.id), state);
-        self.hint(&resp, tr!("Click to select · its number key launches it · double-click to rename · right-click for more"));
+        // the card itself drags (a drag-only widget over it would eat its clicks)
+        let resp = widgets::scene_card(ui, t, i, &scene.name, &scene.icon, widgets::hue_of(&scene.id), state).interact(egui::Sense::drag());
+        if resp.drag_started() {
+            egui::DragAndDrop::set_payload(ui.ctx(), widgets::SceneDrag(scene.id.clone()));
+        }
+        if resp.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        }
+        let rect = resp.rect;
+        self.hint(&resp, tr!("Click to select · its number key launches it · drag to reorder · double-click to rename · right-click for more"));
         let target = Target::LaunchScene(i);
         if self.learnable(ui, &resp, &target) {
-            return;
+            return rect;
         }
         if resp.clicked() && !active {
             self.run("scene.select", json!({ "scene": scene.id }));
@@ -929,6 +957,14 @@ impl App {
             if ui.button(format!("{}  {}", icons::COPY, tr!("Duplicate"))).clicked() {
                 self.run("scene.duplicate", json!({ "scene": scene.id }));
             }
+            ui.menu_button(format!("{}  {}", icons::ARROWS_DOWN_UP, tr!("Move")), |ui| {
+                let last = count - 1;
+                for (label, to, can) in [(tr!("To the top"), 0, i > 0), (tr!("Up"), i.saturating_sub(1), i > 0), (tr!("Down"), i + 1, i < last), (tr!("To the bottom"), last, i < last)] {
+                    if ui.add_enabled(can, egui::Button::new(label)).clicked() {
+                        self.run("scene.move", json!({ "scene": scene.id, "to": to }));
+                    }
+                }
+            });
             if ui.button(format!("{}  {}", icons::FLOPPY_DISK, tr!("Export as a project…"))).on_hover_text(tr!("One file with this scene and its media, to share or to start a show from")).clicked() {
                 self.export_dialog(Some(&scene.id));
             }
@@ -968,6 +1004,7 @@ impl App {
             ui.separator();
             self.learn_items(ui, &target);
         });
+        rect
     }
 
     /// The middle of the window, between the floating panels: the node canvas shows through

@@ -4014,6 +4014,31 @@ mod tests {
     }
 
     #[test]
+    fn a_scene_card_dragged_below_the_last_moves_there_and_a_click_still_selects() {
+        let mut h = Harness::new();
+        for name in ["B", "C"] {
+            h.app.run("scene.add", json!({ "name": name }));
+        }
+        h.ctx.enable_accesskit();
+        h.frame(Vec::new());
+        let names = |h: &Harness| h.app.session.project.scenes.iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        let (first, last) = (h.widget("Scene 1").expect("the first card"), h.widget("C").expect("the last card"));
+        h.move_to(first.center());
+        h.button(first.center(), true, NONE);
+        let to = pos2(first.center().x, last.bottom() - 4.0);
+        for k in 1..=8 {
+            h.move_to(first.center().lerp(to, k as f32 / 8.0));
+        }
+        h.button(to, false, NONE);
+        assert_eq!(names(&h), ["B", "C", "Scene 1"]);
+        h.app.run("edit.undo", json!({}));
+        assert_eq!(names(&h), ["Scene 1", "B", "C"], "one step to undo");
+        h.frame(Vec::new());
+        h.click(h.widget("B").expect("B's card").center());
+        assert_eq!(h.app.session.active().map(|s| s.name.as_str()), Some("B"));
+    }
+
+    #[test]
     fn a_mapping_chip_opens_its_settings_in_the_inspector_and_on_its_link() {
         for on_link in [false, true] {
             let mut h = Harness::new();

@@ -396,6 +396,28 @@ pub static OPERATORS: &[Operator] = &[
         },
     },
     Operator {
+        id: "scene.move",
+        label: "Move Scene",
+        description: "Put a scene (the selected one unless scene has an id) at another place in the list: to is its index after the move (0 is the first; past the end means the last). Number keys and controllers launch scenes by place, so they follow the new order.",
+        example: r#"{"to": 0}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            #[derive(Deserialize)]
+            struct MoveScene {
+                #[serde(default)]
+                scene: Option<String>,
+                to: usize,
+            }
+            let MoveScene { scene, to } = props(v)?;
+            let i = s.scene_index(scene.as_deref())?;
+            let scenes = &mut s.project.scenes;
+            let moved = scenes.remove(i);
+            scenes.insert(to.min(scenes.len()), moved);
+            Ok(())
+        },
+    },
+    Operator {
         id: "scene.select",
         label: "Select Scene",
         description: "Show a scene in the editor, by its id.",

@@ -106,6 +106,25 @@ fn scenes_keep_their_ids_through_add_select_rename_remove() {
 }
 
 #[test]
+fn scenes_move_in_one_undo_step() {
+    let mut s = Session::default();
+    for name in ["A", "B", "C"] {
+        ok(&mut s, "scene.add", json!({"name": name}));
+    }
+    let a = s.project.scenes[0].id.clone();
+    ok(&mut s, "scene.move", json!({"scene": a, "to": 2}));
+    assert_eq!(names(&s), ["B", "C", "A"]);
+    assert_eq!(s.active().map(|c| c.name.as_str()), Some("C"), "the selection stays on its scene");
+    ok(&mut s, "scene.move", json!({"to": 99}));
+    assert_eq!(names(&s), ["B", "A", "C"], "past the end is the last place");
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(names(&s), ["B", "C", "A"]);
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(names(&s), ["A", "B", "C"]);
+    assert!(s.run("scene.move", json!({"scene": "s_nope", "to": 0})).is_err());
+}
+
+#[test]
 fn project_round_trips_through_ron() {
     let mut s = session();
     ok(&mut s, "scene.add", json!({"name": "Drop"}));
