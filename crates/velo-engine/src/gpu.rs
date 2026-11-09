@@ -459,6 +459,12 @@ impl Runner {
         queue.write_buffer(&self.nodes[node].params, 0, bytes);
     }
 
+    /// Writes one parameter (its index in the header) of a node, after what else wrote them.
+    pub fn write_param(&self, queue: &wgpu::Queue, node: usize, param: usize, value: [f32; 4]) {
+        let bytes: Vec<u8> = value.iter().flat_map(|x| x.to_ne_bytes()).collect();
+        queue.write_buffer(&self.nodes[node].params, param as u64 * 16, &bytes);
+    }
+
     /// Records one frame: every node, upstream first. `globals` are the `g` values after
     /// `resolution` (time, delta, frame…, see [`crate::GLOBALS`]); the resolution is filled in here.
     pub fn render(&mut self, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, programs: &[Program], globals: &[f32]) {
@@ -1118,9 +1124,10 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             };
             let first = frame(&mut runner);
             assert_eq!([lit(&first, 8, 4), lit(&first, 56, 4), lit(&first, 32, 26)], [Some(0), Some(1), Some(2)], "{name}: red | green over blue");
-            // read ahead on the reader's thread: the frame due at 0.2 s is blue
+            // read ahead on the reader's thread: the frame due at 0.2 s is blue (time for a
+            // reader starting a GPU's decoder, with other tests on the GPU too)
             playing.step(&queue, 0.1, 1.0, (0.0, 1.0));
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::thread::sleep(std::time::Duration::from_millis(1000));
             playing.step(&queue, 0.1, 1.0, (0.0, 1.0));
             let third = frame(&mut runner);
             assert_eq!([lit(&third, 8, 4), lit(&third, 56, 26)], [Some(2), Some(2)], "{name}: the third frame");
@@ -1293,29 +1300,30 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         for n in 0..3 {
             runner.set_params(&queue, &programs, n, &[]);
         }
-        // on the seconds, a new turn each second
-        let v = |x: f32| [x, 0.0, 0.0, 0.0];
-        runner.set_params(
-            &queue,
-            &programs,
-            3,
-            &programs[3].node.values(|p| match p {
-                "clock" => Some(v(1.0)),
-                "every" => Some(v(1.0)),
-                _ => None,
-            }),
-        );
-        let mut shown = |time: f32| {
+        // the slot showing and how much of the one before still does, as the reel tells it
+        let mut shown = |now: f32, before: f32| {
+            let v = |x: f32| [x, 0.0, 0.0, 0.0];
+            runner.set_params(
+                &queue,
+                &programs,
+                3,
+                &programs[3].node.values(|p| match p {
+                    "_now" => Some(v(now)),
+                    "_fade" => Some(v(before)),
+                    _ => None,
+                }),
+            );
             let mut encoder = device.create_command_encoder(&Default::default());
-            runner.render(&queue, &mut encoder, &programs, &[time, 1.0 / 60.0, 0.0, 2.0]);
+            runner.render(&queue, &mut encoder, &programs, &[0.0, 1.0 / 60.0, 0.0, 2.0]);
             queue.submit([encoder.finish()]);
             read(&device, &queue, &runner, 3)[..3].to_vec()
         };
-        let one = 0x3C00;
-        assert_eq!(shown(0.5), [one, 0, 0], "turn 0: the first slot");
-        assert_eq!(shown(1.5), [0, one, 0], "turn 1: the second");
-        assert_eq!(shown(2.5), [0, 0, one], "turn 2: the third");
-        assert_eq!(shown(3.5), [one, 0, 0], "and round again");
+        let (one, half) = (0x3C00, 0x3800);
+        assert_eq!(shown(0.0, 0.0), [one, 0, 0], "the first slot");
+        assert_eq!(shown(1.0, 0.0), [0, one, 0], "the second");
+        assert_eq!(shown(2.0, 0.0), [0, 0, one], "the third");
+        assert_eq!(shown(1.0, 0.5), [half, half, 0], "the second, half of the first still in");
+        assert_eq!(shown(0.0, 0.5), [half, 0, half], "the one before the first: the third");
     }
 
     #[test]
@@ -1345,8 +1353,6 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         for n in 0..3 {
             runner.set_params(&queue, &programs, n, &programs[0].node.values(|_| None));
         }
-        let at = |p| crate::modulate::slot(&programs[1].node, p).unwrap().0;
-        let params = [at("order"), at("clock"), at("every"), at("fade"), at("load")];
         // streamed, then all in memory
         for (load, most) in [(0.0, 2), (1.0, 4)] {
             // in order, on the seconds, a new file each second
@@ -1357,7 +1363,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
                 _ => None,
             });
             runner.set_params(&queue, &programs, 3, &values);
-            let mut reel = crate::media::Reel::new(&device, &queue, "list".into(), 3, params, [0, 1, 2], files.clone(), false);
+            let mut reel = crate::media::Reel::new(&device, &queue, "list".into(), 3, &programs[1].node, [0, 1, 2], files.clone(), false).unwrap();
             // the turn's file once it's in (black till then), and how many files are in
             let mut shown = |time: f32| {
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -1386,6 +1392,51 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         }
         assert!(crate::media::failed(&dir.join("0.png").to_string_lossy()).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The H.264 fixture (video.rs): its bottom middle blue, green, blue, white, at 10 fps.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn a_media_lists_movie_plays_frame_by_frame() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let movie = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/h264.mp4").to_string_lossy().into_owned();
+        let programs = [program(&device, "image"), program(&device, "medialist")];
+        let nodes = [0, 1, 2, 3].map(|n| if n == 3 { NodeSpec { program: 1, inputs: vec![Some(0), Some(1), Some(2)] } } else { NodeSpec { program: 0, inputs: vec![] } });
+        // as wide for its height as the movie: pixel (16, 13) is the movie's bottom middle
+        let mut runner = Runner::new(&device, &programs, &nodes, &[], [32, 16], &wave_texture(&device)).unwrap();
+        for n in 0..3 {
+            runner.set_params(&queue, &programs, n, &programs[0].node.values(|_| None));
+        }
+        let v = |x: f32| [x, 0.0, 0.0, 0.0];
+        // one turn the whole time
+        let values = programs[1].node.values(|p| match p {
+            "clock" => Some(v(1.0)),
+            "every" => Some(v(60.0)),
+            _ => None,
+        });
+        runner.set_params(&queue, &programs, 3, &values);
+        let mut reel = crate::media::Reel::new(&device, &queue, "list".into(), 3, &programs[1].node, [0, 1, 2], vec![movie], false).unwrap();
+        let dt = 1.0 / 60.0;
+        let mut seen = Vec::new();
+        // a second at 60 frames a second: the clip (0.4 s) two and a half times
+        for frame in 0..60 {
+            reel.step(&device, &queue, &mut runner, &programs, |p| values[p][0], 0.0, frame as f32 * dt, dt);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runner.render(&queue, &mut encoder, &programs, &[frame as f32 * dt, dt, 0.0, 2.0]);
+            queue.submit([encoder.finish()]);
+            let pixel = read(&device, &queue, &runner, 3)[(13 * 32 + 16) * 4..][..3].iter().map(|&c| c >= 0x3800).collect::<Vec<_>>();
+            if seen.last() != Some(&pixel) {
+                seen.push(pixel);
+            }
+            std::thread::sleep(std::time::Duration::from_secs_f32(dt));
+        }
+        let (blue, green, white) = (vec![false, false, true], vec![false, true, false], vec![true, true, true]);
+        assert!(seen.contains(&green) && seen.contains(&white) && seen.contains(&blue), "its frames in turn: {seen:?}");
+        assert!(seen.len() >= 6, "and round again: {seen:?}");
     }
 
     #[test]

@@ -1,11 +1,14 @@
 //! General video (H.264, HEVC…) on Windows: Media Foundation's source reader decodes it and
 //! converts it to BGRA, frames read one after another ([`Decoder`]) on a movie's reader
 //! thread (media.rs), as video.rs does on macOS. A frame due behind the last one read, or far
-//! ahead, starts a new reader there.
+//! ahead, starts a new reader there. The GPU's video decoder decodes where there is one.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use windows::Win32::Foundation::HMODULE;
+use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D11::{D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3D11CreateDevice, ID3D11Device, ID3D11Multithread};
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::StructuredStorage::PROPVARIANT;
 use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoTaskMemFree};
@@ -21,6 +24,8 @@ pub struct Clip {
     /// Its first frame's time in the file: the MP4 reader skips edit lists, so a movie with
     /// B frames starts a frame or two late.
     offset: f64,
+    /// How long it is (seconds): as far as the reader goes.
+    length: f64,
 }
 
 /// The first video stream (the reader numbers its special streams below zero).
@@ -46,16 +51,51 @@ fn why(e: Error) -> String {
     }
 }
 
-/// A reader of a movie's first video stream, its frames as RGB32 (BGRA in memory).
+/// The D3D11 device every movie decodes on, made once (the GPU's video decoder: an iPhone's
+/// 1080p HEVC decodes a little under 30 fps on the CPU), none where there's none.
+fn gpu() -> Option<IMFDXGIDeviceManager> {
+    struct Shared(IMFDXGIDeviceManager);
+    // SAFETY: a DXGI device manager is made to be shared by threads (it hands its device out
+    // under its own lock), and the device is multithread protected
+    unsafe impl Send for Shared {}
+    unsafe impl Sync for Shared {}
+    static GPU: OnceLock<Option<Shared>> = OnceLock::new();
+    let made = GPU.get_or_init(|| unsafe {
+        let mut device = None;
+        let made = D3D11CreateDevice(None, D3D_DRIVER_TYPE_HARDWARE, HMODULE::default(), D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT, None, D3D11_SDK_VERSION, Some(&mut device), None, None);
+        made.ok().and(device).and_then(|device: ID3D11Device| {
+            // Media Foundation uses it from threads of its own
+            let _ = device.cast::<ID3D11Multithread>().ok()?.SetMultithreadProtected(true);
+            let (mut token, mut manager) = (0, None);
+            MFCreateDXGIDeviceManager(&mut token, &mut manager).ok()?;
+            let manager = manager?;
+            manager.ResetDevice(&device, token).ok()?;
+            Some(Shared(manager))
+        })
+    });
+    made.as_ref().map(|s| s.0.clone())
+}
+
+/// A reader of a movie's first video stream, its frames as RGB32 (BGRA in memory): decoded
+/// on the GPU where it can, its frames copied back, else on the CPU.
 fn reader(path: &Path) -> windows::core::Result<IMFSourceReader> {
+    match gpu().map(|gpu| reader_on(path, Some(&gpu))) {
+        Some(Ok(reader)) => Ok(reader),
+        _ => reader_on(path, None),
+    }
+}
+
+fn reader_on(path: &Path, gpu: Option<&IMFDXGIDeviceManager>) -> windows::core::Result<IMFSourceReader> {
     unsafe {
         let mut attributes = None;
-        MFCreateAttributes(&mut attributes, 1)?;
+        MFCreateAttributes(&mut attributes, 3)?;
         let attributes = attributes.ok_or_else(Error::empty)?;
-        // converted by the video processor (2.5 times the plain one's speed at 1080p);
-        // ponytail: decoded on the CPU, hardware wants a D3D11 device handed over
-        // (MF_SOURCE_READER_D3D_MANAGER) and its frames copied back, if 4K stutters
+        // converted by the video processor (2.5 times the plain one's speed at 1080p)
         attributes.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1)?;
+        if let Some(gpu) = gpu {
+            attributes.SetUnknown(&MF_SOURCE_READER_D3D_MANAGER, gpu)?;
+            attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
+        }
         let reader = MFCreateSourceReaderFromURL(&HSTRING::from(path.as_os_str()), &attributes)?;
         // the picture only: no sound decoded
         reader.SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)?;
@@ -99,7 +139,7 @@ pub fn open(path: &Path) -> Result<(Clip, [u32; 2], Vec<f64>), String> {
     let frame = frame(&reader).map_err(why)?;
     let mut first = Decoder { reader, size, frame, from: f64::MIN, offset: 0.0, ended: false };
     let offset = first.next(&mut Vec::new()).ok_or("no frame of it decodes here")?;
-    Ok((Clip { path: path.to_path_buf(), fps, size, offset }, size, ends))
+    Ok((Clip { path: path.to_path_buf(), fps, size, offset, length: seconds }, size, ends))
 }
 
 /// Frames in order from a point in a movie, as BGRA rows.
@@ -123,7 +163,9 @@ impl Decoder {
             let mut at = PROPVARIANT::default();
             unsafe {
                 let v = &mut *at.Anonymous.Anonymous;
-                (v.vt, v.Anonymous.hVal) = (VT_I8, ((start + clip.offset) * 1e7) as i64);
+                // with the first frame's time added, the last frames are past the end, where
+                // the reader won't go: it goes as far as the end, the frames before skipped
+                (v.vt, v.Anonymous.hVal) = (VT_I8, ((start + clip.offset).min(clip.length) * 1e7) as i64);
                 // a null GUID: the position in 100 ns units
                 reader.SetCurrentPosition(&GUID::zeroed(), &at).map_err(why)?;
             }
@@ -309,6 +351,34 @@ mod tests {
         let mut d = Decoder::new(&clip, 0.2).unwrap();
         assert!((d.next(&mut frame).unwrap() - 0.2).abs() < 1e-3);
         assert_eq!(lit(&frame, 96, 12, 6), Some(0), "blue");
+    }
+
+    #[test]
+    fn a_movie_reads_from_anywhere_in_it() {
+        // its first frame 0.2 s into the file (B frames): the last ones are past its duration
+        // with that added, and Media Foundation refuses to go there
+        let (clip, _, _) = open(&fixture()).unwrap();
+        let mut frame = Vec::new();
+        for (start, first) in [(0.05, 0.0), (0.1, 0.1), (0.25, 0.2), (0.3, 0.3), (0.35, 0.3)] {
+            let at = Decoder::new(&clip, start).unwrap().next(&mut frame).unwrap();
+            assert!((at - first).abs() < 1e-3, "from {start}: {at}");
+        }
+    }
+
+    /// How fast a movie decodes here: `VELO_MOVIE=<path> cargo test -p velo-engine --lib -- --ignored decode_speed --nocapture`.
+    #[test]
+    #[ignore]
+    fn decode_speed() {
+        let Ok(path) = std::env::var("VELO_MOVIE") else { return };
+        let (clip, size, ends) = open(Path::new(&path)).unwrap();
+        let mut d = Decoder::new(&clip, 0.0).unwrap();
+        let mut frame = Vec::new();
+        // a decoder warms up over its first frames
+        (0..10).for_each(|_| _ = d.next(&mut frame));
+        let start = std::time::Instant::now();
+        let n = (0..120).take_while(|_| d.next(&mut frame).is_some()).count();
+        let ms = start.elapsed().as_secs_f64() * 1000.0 / n.max(1) as f64;
+        eprintln!("{size:?} at {:.2} fps, {} frames: {ms:.1} ms a frame ({:.0} fps)", clip.fps, ends.len(), 1000.0 / ms);
     }
 
     #[test]

@@ -4432,7 +4432,7 @@ dependencies = [
 
 [[package]]
 name = "velo"
-version = "0.9.3-beta"
+version = "0.9.4-beta"
 dependencies = [
  "arboard",
  "eframe",
@@ -4460,7 +4460,7 @@ dependencies = [
 
 [[package]]
 name = "velo-audio"
-version = "0.9.3-beta"
+version = "0.9.4-beta"
 dependencies = [
  "cpal",
  "libc",
@@ -4473,7 +4473,7 @@ dependencies = [
 
 [[package]]
 name = "velo-core"
-version = "0.9.3-beta"
+version = "0.9.4-beta"
 dependencies = [
  "ron",
  "serde",
@@ -4482,7 +4482,7 @@ dependencies = [
 
 [[package]]
 name = "velo-engine"
-version = "0.9.3-beta"
+version = "0.9.4-beta"
 dependencies = [
  "ab_glyph",
  "image",
@@ -4504,7 +4504,7 @@ dependencies = [
 
 [[package]]
 name = "velo-mcp"
-version = "0.9.3-beta"
+version = "0.9.4-beta"
 dependencies = [
  "serde_json",
 ]

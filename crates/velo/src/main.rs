@@ -2144,7 +2144,8 @@ impl App {
             }
             for (k, path) in files.iter().enumerate() {
                 let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), t.control_h), egui::Sense::hover());
-                let button = |i: f32| egui::Rect::from_center_size(egui::pos2(row.right() - 12.0 - i * (t.control_h + 2.0), row.center().y), egui::vec2(t.control_h, t.control_h));
+                // inside the row: one past its edge widens the panel, and each row after it
+                let button = |i: f32| egui::Rect::from_center_size(egui::pos2(row.right() - t.control_h / 2.0 - i * (t.control_h + 2.0), row.center().y), egui::vec2(t.control_h, t.control_h));
                 if ui.put(button(0.0), |ui: &mut egui::Ui| kit::icon_button(ui, t, icons::X, tr!("Take it out"), false)).clicked() {
                     act = Some((k, false));
                 }
@@ -2517,12 +2518,18 @@ impl App {
         let (mut learn, mut forget, mut asks) = (None, None, Vec::new());
         // a picture made from nothing (not a file's) can be thrown somewhere new
         let random = node_kind(kind).is_some_and(|k| k.category == Category::Generator) && !velo_core::shows_media(kind) && kind != velo_core::MEDIA_LIST;
-        let mut shuffle = false;
+        let (mut shuffle, mut reset) = (false, false);
+        // what's set apart from how the node came
+        let changed = shader.controls.iter().any(|(p, _)| set.get(&p.id).is_some_and(|v| *v != p.default));
         kit::section(ui, t, icons::SLIDERS_HORIZONTAL, tr!("PARAMETERS"), first, |ui| {
-            if random {
-                let r = kit::button(ui, t, Some(icons::SHUFFLE), tr!("Random"), false);
-                shuffle = r.clone().on_hover_text(tr!("Its settings somewhere new, colors and Automagic aside: click again for another, Ctrl+Z goes back")).clicked();
-            }
+            ui.horizontal(|ui| {
+                if random {
+                    let r = kit::button(ui, t, Some(icons::SHUFFLE), tr!("Random"), false);
+                    shuffle = r.clone().on_hover_text(tr!("Its settings somewhere new, colors and Automagic aside: click again for another, Ctrl+Z goes back")).clicked();
+                }
+                let r = ui.add_enabled_ui(changed, |ui| kit::button(ui, t, Some(icons::ARROW_CLOCKWISE), tr!("Reset"), false)).inner;
+                reset = r.on_hover_text(tr!("Every setting back to how the node came: Ctrl+Z goes back")).clicked();
+            });
             ui.add_space(t.gap);
             let mut switches = Vec::new();
             // Automagic first: what the node does with the music on its own
@@ -2774,6 +2781,14 @@ impl App {
         });
         if shuffle {
             self.randomize(node, shader, set, &scene);
+        }
+        // one undo step
+        if reset {
+            let key = format!("reset {node}");
+            for (param, _) in shader.controls.iter().filter(|(p, _)| set.get(&p.id).is_some_and(|v| *v != p.default)) {
+                self.run_merge("node.set_param", json!({ "node": node, "param": param.id, "value": param.default }), &key);
+            }
+            self.session.close_merge();
         }
         // what the right-click menus of switches, choices and colors asked for
         for (ask, id, default, [min, max]) in asks {

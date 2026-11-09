@@ -599,17 +599,22 @@ impl Loader {
 /// Streamed (its `load` parameter at 0), only this turn's file, the next and the one fading out
 /// are in, and each plays from its start on its turn. In memory (1), every file loads and
 /// stays: a turn never waits, at the memory all of them take, and each plays on from where its
-/// last turn left it.
+/// last turn left it. A movie's turn lasts `movie_every` (beats or seconds as the clock goes),
+/// a picture's `every`.
 pub struct Reel {
-    /// The Media List's node id and engine node, and its order, clock, every, fade and load
-    /// parameters' indices.
+    /// The Media List's node id and engine node, its order, clock, every, fade, load and
+    /// movie_every parameters' indices, and those of what it tells its shader: the slot showing
+    /// and how much of the one before is still in.
     id: String,
     pub node: usize,
-    params: [usize; 5],
+    params: [usize; 6],
+    shows: [usize; 2],
     /// Its slots' engine nodes, and what each shows: the turn, its file, whether that was in.
     slots: [usize; SLOTS],
     bound: [Option<(i64, usize, bool)>; SLOTS],
     files: Vec<String>,
+    /// Which files are movies.
+    movie: Vec<bool>,
     /// Each file in, by index; one that failed isn't asked for again until it's due anew.
     cache: Vec<Option<Playing>>,
     broken: Vec<bool>,
@@ -618,9 +623,14 @@ pub struct Reel {
 }
 
 impl Reel {
-    /// Movies in HAP only with `bc` (BC textures on this GPU).
+    /// The list `id`, engine node `node` running `shader` (medialist.wgsl, none without its
+    /// parameters). Movies in HAP only with `bc` (BC textures on this GPU).
     #[allow(clippy::too_many_arguments)]
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, id: String, node: usize, params: [usize; 5], slots: [usize; SLOTS], files: Vec<String>, bc: bool) -> Self {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, id: String, node: usize, shader: &crate::ShaderNode, slots: [usize; SLOTS], files: Vec<String>, bc: bool) -> Option<Self> {
+        let at = |param| crate::modulate::slot(shader, param).map(|s| s.0);
+        let params = [at("order")?, at("clock")?, at("every")?, at("fade")?, at("load")?, at("movie_every")?];
+        let shows = [at("_now")?, at("_fade")?];
+        let movie = files.iter().map(|f| Path::new(f).extension().is_some_and(|e| MOVIES.iter().any(|m| e.eq_ignore_ascii_case(m)))).collect();
         let loader = Arc::new(Loader::default());
         let (answer, done) = std::sync::mpsc::channel();
         let (device, queue, shared, paths) = (device.clone(), queue.clone(), loader.clone(), files.clone());
@@ -643,24 +653,37 @@ impl Reel {
             }
         });
         let n = files.len();
-        Self { id, node, params, slots, bound: [None; SLOTS], files, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done }
+        Some(Self { id, node, params, shows, slots, bound: [None; SLOTS], files, movie, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done })
     }
 
-    /// This frame, `beats` and `time` as the GPU gets them: the files due asked for, those in
-    /// bound to their slots, this turn's played on and the one before while it fades out.
-    /// `value` is the list's parameters' values.
+    /// This frame, at `beats` and `time` (seconds): the turn, told to the shader with how much
+    /// of the one before still shows, the files due asked for, those in bound to their slots,
+    /// this turn's played on and the one before while it fades out. `value` is the list's
+    /// parameters' values.
     #[allow(clippy::too_many_arguments)]
     pub fn step(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, runner: &mut crate::gpu::Runner, programs: &[crate::gpu::Program], value: impl Fn(usize) -> f32, beats: f32, time: f32, dt: f32) {
         let n = self.files.len();
         if n == 0 {
             return;
         }
-        let [order, clock, every, fade, load] = self.params.map(value);
-        // as medialist.wgsl counts turns
-        let t = if clock.round() as i32 == 1 { time } else { beats } / every.max(0.01);
-        let turn = (t.floor() as i64).max(0);
-        let fading = fade > 0.0 && turn > 0 && t - t.floor() < fade;
-        let file = |at: i64| pick(at, n, order.round() as i32);
+        let [order, clock, every, fade, load, movie_every] = self.params.map(value);
+        let order = order.round() as i32;
+        // a movie's turn as long as a picture's unless it's given its own
+        let every = every.max(0.01);
+        let movie_every = if movie_every > 0.0 { movie_every.max(0.01) } else { every };
+        let t = if clock.round() as i32 == 1 { time } else { beats }.max(0.0);
+        let (turn, k) = turn_at(t, n, order, |f| if self.movie[f] { movie_every } else { every });
+        let fading = fade > 0.0 && turn > 0 && k < fade;
+        // the first part of each turn crossfades from the one before
+        let before = if fading {
+            let x = k / fade;
+            1.0 - x * x * (3.0 - 2.0 * x)
+        } else {
+            0.0
+        };
+        runner.write_param(queue, self.node, self.shows[0], [turn.rem_euclid(SLOTS as i64) as f32, 0.0, 0.0, 0.0]);
+        runner.write_param(queue, self.node, self.shows[1], [before, 0.0, 0.0, 0.0]);
+        let file = |at: i64| pick(at, n, order);
         // the files due, the most pressing first: this turn's, the next, the one fading out,
         // then (in memory) every other
         let (mut due, mut wanted) = (Vec::new(), vec![false; n]);
@@ -755,33 +778,61 @@ fn open(device: &wgpu::Device, queue: &wgpu::Queue, path: &str, bc: bool) -> Res
     Ok(playing)
 }
 
-/// The file turn `at` of a list of `n` shows: in order, at random (each once a round, never
-/// the one just before) or back and forth.
-fn pick(at: i64, n: usize, order: i32) -> usize {
-    let at = at.max(0) as usize;
+/// How many turns a round of a list of `n` takes: each file once, or there and back.
+fn period(n: usize, order: i32) -> usize {
     match order {
-        _ if n < 2 => 0,
-        // two at random, never the one before, are in turn: the last arm
-        1 if n > 2 => {
-            let (round, i) = (at / n, at % n);
-            let files = deck(round, n);
-            // a round doesn't start on the file the one before ended on: its first two swap
-            // (the last of a round of three or more never moves)
-            if round > 0 && i < 2 && files[0] == deck(round - 1, n)[n - 1] {
-                return files[1 - i];
-            }
-            files[i]
-        }
-        2 => {
-            let period = 2 * n - 2;
-            let s = at % period;
-            if s >= n { period - s } else { s }
-        }
-        _ => at % n,
+        _ if n < 2 => 1,
+        2 => 2 * n - 2,
+        _ => n,
     }
 }
 
-/// Round `round`'s files, shuffled (the same every time it's asked).
+/// The files round `round` of a list of `n` shows, in turn: in order, at random (each once a
+/// round, never the one just before) or back and forth.
+fn round_files(round: usize, n: usize, order: i32) -> Vec<usize> {
+    match order {
+        _ if n < 2 => vec![0],
+        // two at random, never the one before, are in turn: the last arm
+        1 if n > 2 => {
+            let mut files = deck(round, n);
+            // a round doesn't start on the file the one before ended on: its first two swap
+            // (the last of a round of three or more never moves)
+            if round > 0 && files[0] == deck(round - 1, n)[n - 1] {
+                files.swap(0, 1);
+            }
+            files
+        }
+        2 => (0..2 * n - 2).map(|s| if s >= n { 2 * n - 2 - s } else { s }).collect(),
+        _ => (0..n).collect(),
+    }
+}
+
+/// The file turn `at` shows.
+fn pick(at: i64, n: usize, order: i32) -> usize {
+    let (at, m) = (at.max(0) as usize, period(n, order));
+    round_files(at / m, n, order)[at % m]
+}
+
+/// The turn the clock is on at `t` (beats or seconds), and how far through it it is (0 to 1),
+/// each file's turn as long as `long` says. A round lasts as long whichever it is (the same
+/// files), so it's found at once, then the turn in it.
+fn turn_at(t: f32, n: usize, order: i32, long: impl Fn(usize) -> f32) -> (i64, f32) {
+    let m = period(n, order);
+    let length: f32 = round_files(0, n, order).into_iter().map(&long).sum();
+    let round = (t / length).floor().max(0.0);
+    let mut start = round * length;
+    let files = round_files(round as usize, n, order);
+    for (i, &f) in files.iter().enumerate() {
+        let long = long(f);
+        if t < start + long || i + 1 == files.len() {
+            return ((round as usize * m + i) as i64, ((t - start) / long).clamp(0.0, 1.0));
+        }
+        start += long;
+    }
+    (0, 0.0)
+}
+
+/// Round `round`'s files shuffled, the same every time it's asked.
 fn deck(round: usize, n: usize) -> Vec<usize> {
     let mut deck: Vec<usize> = (0..n).collect();
     for i in (1..n).rev() {
@@ -819,6 +870,24 @@ mod tests {
             }
         }
         assert_ne!(picks(1, 7), picks(0, 7), "at random isn't in order");
+    }
+
+    #[test]
+    fn a_movies_turn_lasts_its_own() {
+        // three files in order, the second a movie: 4, 10, 4 beats
+        let long = |f: usize| if f == 1 { 10.0 } else { 4.0 };
+        let turn = |t| turn_at(t, 3, 0, long);
+        assert_eq!(turn(1.0), (0, 0.25));
+        assert_eq!(turn(4.0), (1, 0.0), "the movie from 4");
+        assert_eq!(turn(9.0), (1, 0.5));
+        assert_eq!(turn(14.0), (2, 0.0), "the third from 14");
+        assert_eq!(turn(18.0), (3, 0.0), "round again at 18");
+        assert_eq!(turn(18.0 * 10.0 + 5.0), (31, 0.1), "found at once however far on");
+        // all as long: a turn every so many beats, as ever
+        assert!((0..40).all(|b| turn_at(b as f32 + 0.5, 5, 0, |_| 4.0).0 == (b / 4) as i64));
+        // at random, each round as long: the same files, shuffled
+        let random: Vec<i64> = [0.0, 4.5, 18.5, 40.0].iter().map(|&t| turn_at(t, 3, 1, long).0).collect();
+        assert!(random.windows(2).all(|w| w[0] <= w[1]) && random[3] >= 6, "{random:?}");
     }
 
     /// The H.264 fixture: red | green over blue, then green, blue, white, at 10 fps (video.rs).

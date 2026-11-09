@@ -31,8 +31,10 @@ pub struct Shader {
 }
 
 impl Shader {
+    /// A parameter whose name starts with `_` is the engine's to set (a Media List's slot
+    /// showing): no control.
     fn of(params: &'static [Param]) -> Self {
-        Self { controls: params.iter().map(|p| (p, infos(p))).collect() }
+        Self { controls: params.iter().filter(|p| !p.id.starts_with('_')).map(|p| (p, infos(p))).collect() }
     }
 }
 
