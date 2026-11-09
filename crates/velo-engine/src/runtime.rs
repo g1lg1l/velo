@@ -157,6 +157,8 @@ pub struct Graph {
     pub probes: Vec<crate::gpu::Probe>,
     /// Its Image nodes' files, each frame uploaded as it comes due.
     pub media: Vec<crate::media::Playing>,
+    /// Its Media Lists, each streaming its files through its slots.
+    pub lists: Vec<crate::media::Reel>,
     /// Its nodes that read only some of their inputs (Switches, Blends), by node index.
     pub lazy: Vec<(usize, crate::gpu::Lazy)>,
 }
@@ -715,8 +717,17 @@ impl Thread {
         loop {
             for command in self.commands.try_iter() {
                 match command {
-                    Command::Install { key, graph } => match graphs.iter_mut().find(|g| g.0 == key) {
-                        Some(slot) => drop_later(std::mem::replace(&mut slot.1, graph)),
+                    Command::Install { key, mut graph } => match graphs.iter_mut().find(|g| g.0 == key) {
+                        Some(slot) => {
+                            // a Media List's files in (or loading) carry over: a rebuild doesn't show them black
+                            let g = &mut *graph;
+                            for new in &mut g.lists {
+                                for old in &mut slot.1.lists {
+                                    new.adopt(old, &self.device, &mut g.runner, &g.programs);
+                                }
+                            }
+                            drop_later(std::mem::replace(&mut slot.1, graph))
+                        }
                         None => graphs.push((key, graph)),
                     },
                     Command::Evict(key) => {
@@ -935,6 +946,11 @@ impl Thread {
                 globals[7..19].copy_from_slice(&features);
                 // the beats counted so far (a Media List steps on them)
                 globals[19] = clock.beats(t) as f32;
+                // a Media List's turn: its file in, the next loading
+                for r in &mut g.lists {
+                    let node = r.node;
+                    r.step(&self.device, &self.queue, &mut g.runner, &g.programs, |p| g.mods.get(node).map_or(0.0, |m| m.value(p)), globals[19], globals[0], delta);
+                }
                 let set = timing.as_ref().filter(|x| time_now && *key == edit && x.key == edit).map(|x| &x.set);
                 // what nobody sees sleeps: a Switch's other inputs, a Blend's at no opacity, what
                 // doesn't reach the output. The edited graph's sleepers wake a frame in eight, for
@@ -1507,7 +1523,7 @@ mod tests {
         let kaleido = &programs[1].node;
         let kick = velo_core::Mapping { param: "zoom".into(), source: "kick".into(), amount: 0.2, attack_ms: 5.0, release_ms: 150.0, invert: false };
         let mods = vec![Modulator::new(&programs[0].node, &[], Vec::new()), Modulator::new(kaleido, &kaleido.values(|_| None), crate::routes(kaleido, &[kick], &[]))];
-        engine.send(Command::Install { key: 1, graph: Box::new(Graph { programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lazy: Vec::new() }) });
+        engine.send(Command::Install { key: 1, graph: Box::new(Graph { programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lazy: Vec::new() }) });
         engine.send(Command::Launch { scene: 1, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
         engine.send(Command::Edit(1));
         engine.send(Command::Tempo(140.0));
@@ -1557,7 +1573,7 @@ mod tests {
         let runner = Runner::new(device, std::slice::from_ref(&program), &[NodeSpec { program: 0, inputs: vec![] }], &[], [64, 36], engine.wave_texture()).unwrap();
         runner.set_params(engine.queue(), std::slice::from_ref(&program), 0, &values);
         let mods = vec![Modulator::new(&program.node, &values, Vec::new())];
-        Box::new(Graph { programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lazy: Vec::new() })
+        Box::new(Graph { programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lazy: Vec::new() })
     }
 
     /// The newest preview's average red and blue (0..255), waiting up to 2 s for one.

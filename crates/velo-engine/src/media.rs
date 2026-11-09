@@ -549,9 +549,216 @@ fn read_video(clip: &Clip, shared: &Reader) {
     }
 }
 
+/// How many of a Media List's files are in at once: the turn before (fading out), this one, the
+/// next (loading).
+pub const SLOTS: usize = 3;
+
+/// Why the files a Media List couldn't play didn't, by path: until one plays again.
+static FAILED: Mutex<std::collections::BTreeMap<String, String>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// Why a Media List's file didn't play on its last turn, if it didn't.
+pub fn failed(path: &str) -> Option<String> {
+    FAILED.lock().ok()?.get(path).cloned()
+}
+
+/// A loader's answer: the slot, the turn it was for, the file playing (or why not).
+type Loaded = (usize, i64, Result<Playing, String>);
+
+/// A Media List as it plays: its files streamed through [`SLOTS`] Image nodes, turn k's file on
+/// slot k % 3 (medialist.wgsl). Only the turn before, this one and the next are in: the next
+/// loads on a thread of the list's own during this turn, every other file stays on disk. Each
+/// file plays from its start on its turn.
+pub struct Reel {
+    /// The Media List's node id and engine node, and its order, clock, every and fade
+    /// parameters' indices.
+    id: String,
+    pub node: usize,
+    params: [usize; 4],
+    /// Its slots' engine nodes.
+    slots: [usize; SLOTS],
+    files: Vec<String>,
+    /// The turn each slot is for, and its file once it's in.
+    held: [Option<(i64, Option<Playing>)>; SLOTS],
+    jobs: std::sync::mpsc::Sender<(usize, i64, String)>,
+    done: std::sync::mpsc::Receiver<Loaded>,
+}
+
+impl Reel {
+    /// Movies in HAP only with `bc` (BC textures on this GPU).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, id: String, node: usize, params: [usize; 4], slots: [usize; SLOTS], files: Vec<String>, bc: bool) -> Self {
+        let (jobs, todo) = std::sync::mpsc::channel::<(usize, i64, String)>();
+        let (answer, done) = std::sync::mpsc::channel();
+        let (device, queue) = (device.clone(), queue.clone());
+        // gone with the reel: its jobs' sender dropped
+        let _ = std::thread::Builder::new().name("velo media list".into()).spawn(move || {
+            while let Ok(job) = todo.recv() {
+                // the newest job of each slot: a turn gone by while another loaded isn't loaded
+                let mut batch = vec![job];
+                for newer in todo.try_iter() {
+                    match batch.iter_mut().find(|j| j.0 == newer.0) {
+                        Some(older) => *older = newer,
+                        None => batch.push(newer),
+                    }
+                }
+                for (slot, turn, path) in batch {
+                    let playing = open(&device, &queue, &path, bc);
+                    if let Ok(mut failed) = FAILED.lock() {
+                        match &playing {
+                            Ok(_) => failed.remove(&path),
+                            Err(e) => failed.insert(path, e.clone()),
+                        };
+                    }
+                    if answer.send((slot, turn, playing)).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        Self { id, node, params, slots, files, held: Default::default(), jobs, done }
+    }
+
+    /// This frame, `beats` and `time` as the GPU gets them: the files due asked for (this
+    /// turn's first, then the next), those in bound to their slots, this turn's played on and
+    /// the one before while it fades out. `value` is the list's parameters' values.
+    #[allow(clippy::too_many_arguments)]
+    pub fn step(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, runner: &mut crate::gpu::Runner, programs: &[crate::gpu::Program], value: impl Fn(usize) -> f32, beats: f32, time: f32, dt: f32) {
+        if self.files.is_empty() {
+            return;
+        }
+        let [order, clock, every, fade] = self.params.map(value);
+        // as medialist.wgsl counts turns
+        let t = if clock.round() as i32 == 1 { time } else { beats } / every.max(0.01);
+        let turn = (t.floor() as i64).max(0);
+        // the turn before only to fade from
+        for at in [turn, turn + 1, turn - 1] {
+            let slot = at.rem_euclid(SLOTS as i64) as usize;
+            if at < 0 || (at < turn && fade <= 0.0) || self.held[slot].as_ref().is_some_and(|h| h.0 == at) {
+                continue;
+            }
+            // the slot's file goes: black until the new one's in
+            self.held[slot] = Some((at, None));
+            runner.set_file(device, programs, self.slots[slot], None);
+            let _ = self.jobs.send((slot, at, self.files[pick(at, self.files.len(), order.round() as i32)].clone()));
+        }
+        for (slot, at, playing) in self.done.try_iter() {
+            if let (Some((turn, held)), Ok(playing)) = (&mut self.held[slot], playing)
+                && *turn == at
+            {
+                runner.set_file(device, programs, self.slots[slot], Some(&playing.texture.create_view(&Default::default())));
+                *held = Some(playing);
+            }
+        }
+        let fading = fade > 0.0 && t - t.floor() < fade;
+        for at in [turn, turn - 1].into_iter().filter(|&at| at == turn || fading) {
+            if let Some((_, Some(playing))) = self.held[at.rem_euclid(SLOTS as i64) as usize].as_mut().filter(|h| h.0 == at) {
+                playing.step(queue, dt, 1.0, (0.0, 1.0));
+            }
+        }
+    }
+
+    /// What `old`, the same list in the graph this one replaces, has in or loading, carried
+    /// over: a rebuild never shows its files black.
+    pub fn adopt(&mut self, old: &mut Reel, device: &wgpu::Device, runner: &mut crate::gpu::Runner, programs: &[crate::gpu::Program]) {
+        if (&old.id, &old.files) != (&self.id, &self.files) {
+            return;
+        }
+        std::mem::swap(&mut self.held, &mut old.held);
+        std::mem::swap(&mut self.jobs, &mut old.jobs);
+        std::mem::swap(&mut self.done, &mut old.done);
+        for (slot, held) in self.slots.iter().zip(&self.held) {
+            if let Some((_, Some(playing))) = held {
+                runner.set_file(device, programs, *slot, Some(&playing.texture.create_view(&Default::default())));
+            }
+        }
+    }
+}
+
+/// A Media List's file, playing: on a texture of its own, a still's pixels only there.
+fn open(device: &wgpu::Device, queue: &wgpu::Queue, path: &str, bc: bool) -> Result<Playing, String> {
+    let media = Media::load(Path::new(path))?;
+    let name = Path::new(path).file_name().map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned());
+    if media.model.is_some() {
+        return Err(format!("{name}: a 3D model isn't a picture"));
+    }
+    if media.movie.is_some() && !bc {
+        return Err(format!("{name}: HAP needs BC textures, which this GPU hasn't"));
+    }
+    // the reel plays it itself: no engine node, no speed
+    let mut playing = Playing::new(device, queue, 0, None, Arc::new(media));
+    if playing.media.count() < 2
+        && let Some(media) = Arc::get_mut(&mut playing.media)
+    {
+        media.frames = Vec::new();
+    }
+    Ok(playing)
+}
+
+/// The file turn `at` of a list of `n` shows: in order, at random (each once a round, never
+/// the one just before) or back and forth.
+fn pick(at: i64, n: usize, order: i32) -> usize {
+    let at = at.max(0) as usize;
+    match order {
+        _ if n < 2 => 0,
+        // two at random, never the one before, are in turn: the last arm
+        1 if n > 2 => {
+            let (round, i) = (at / n, at % n);
+            let files = deck(round, n);
+            // a round doesn't start on the file the one before ended on: its first two swap
+            // (the last of a round of three or more never moves)
+            if round > 0 && i < 2 && files[0] == deck(round - 1, n)[n - 1] {
+                return files[1 - i];
+            }
+            files[i]
+        }
+        2 => {
+            let period = 2 * n - 2;
+            let s = at % period;
+            if s >= n { period - s } else { s }
+        }
+        _ => at % n,
+    }
+}
+
+/// Round `round`'s files, shuffled (the same every time it's asked).
+fn deck(round: usize, n: usize) -> Vec<usize> {
+    let mut deck: Vec<usize> = (0..n).collect();
+    for i in (1..n).rev() {
+        deck.swap(i, (mix(mix(round as u64) ^ i as u64) % (i as u64 + 1)) as usize);
+    }
+    deck
+}
+
+/// splitmix64's finalizer: a well mixed hash of x.
+fn mix(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_media_lists_turns_pick_its_files() {
+        let picks = |order, n| (0..24).map(|at| pick(at, n, order)).collect::<Vec<_>>();
+        assert_eq!(picks(0, 3)[..7], [0, 1, 2, 0, 1, 2, 0], "in order");
+        assert_eq!(picks(2, 3)[..9], [0, 1, 2, 1, 0, 1, 2, 1, 0], "back and forth");
+        assert_eq!(picks(1, 2)[..4], [0, 1, 0, 1], "two at random: in turn");
+        assert!(picks(1, 1).iter().all(|&k| k == 0) && picks(2, 1).iter().all(|&k| k == 0), "one file: always it");
+        for n in [3, 4, 7] {
+            let shown: Vec<usize> = (0..60).map(|at| pick(at, n, 1)).collect();
+            assert!(shown.windows(2).all(|w| w[0] != w[1]), "{n} at random: never twice running ({shown:?})");
+            for round in shown.chunks(n).filter(|r| r.len() == n) {
+                let mut sorted = round.to_vec();
+                sorted.sort();
+                assert_eq!(sorted, (0..n).collect::<Vec<_>>(), "each once a round");
+            }
+        }
+        assert_ne!(picks(1, 7), picks(0, 7), "at random isn't in order");
+    }
 
     /// The H.264 fixture: red | green over blue, then green, blue, white, at 10 fps (video.rs).
     #[cfg(any(target_os = "macos", windows))]

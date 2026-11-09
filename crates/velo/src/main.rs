@@ -2129,17 +2129,17 @@ impl App {
     }
 
     /// A Media List's files in the order it plays them: each to move up or take out, more to
-    /// add (eight at most).
+    /// add (up to [`velo_core::MEDIA_LIST_FILES`]).
     fn media_list_section(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str) {
         let Some(n) = self.session.active().and_then(|s| s.node(node)) else { return };
         let files: Vec<String> = velo_core::media_list(n).into_iter().map(String::from).collect();
-        // each file as the engine loaded it, as an Image node of its own (`<list>#<k>`)
-        let failed: Vec<Option<String>> = (0..files.len()).map(|k| self.live.as_ref().and_then(|l| l.media(&format!("{node}#{k}"))).and_then(|l| l.get()?.as_ref().err().cloned())).collect();
+        // each file the engine couldn't play on its last turn, and why
+        let failed: Vec<Option<String>> = files.iter().map(|f| velo_engine::media::failed(f)).collect();
         let (mut act, mut add) = (None, false);
         let max = velo_core::MEDIA_LIST_FILES;
         kit::section(ui, t, icons::IMAGES, tr!("FILES"), false, |ui| {
             if files.is_empty() {
-                add = kit::drop_zone(ui, t, icons::IMAGES, tr!("Add pictures or movies"), tr!("Up to eight, played in turn")).clicked();
+                add = kit::drop_zone(ui, t, icons::IMAGES, tr!("Add pictures or movies"), &tr!("Up to {}, streamed in turn", max)).clicked();
                 return;
             }
             for (k, path) in files.iter().enumerate() {

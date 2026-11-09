@@ -736,8 +736,8 @@ pub fn join_items<S: AsRef<str>>(items: &[S]) -> String {
 
 /// Up to [`MEDIA_LIST_FILES`] pictures and movies played in turn ([`Node::media`], a path a line).
 pub const MEDIA_LIST: &str = "velo.medialist";
-/// How many files a Media List holds.
-pub const MEDIA_LIST_FILES: usize = 8;
+/// How many files a Media List holds: the engine streams them, three in memory at a time.
+pub const MEDIA_LIST_FILES: usize = 256;
 
 /// A Media List's files, in the order it plays them.
 pub fn media_list(n: &Node) -> Vec<&str> {

@@ -3168,7 +3168,7 @@ impl App {
         self.canvas.reveal = Some(new);
     }
 
-    /// Several pictures or movies dropped at once: a Media List of them (eight at most), right
+    /// Several pictures or movies dropped at once: a Media List of them (up to its most), right
     /// of the scene's nodes, into an Output with nothing in yet, selected; one undo step.
     pub fn import_media_set(&mut self, paths: &[std::path::PathBuf]) {
         const KEY: &str = "media set";
@@ -3523,7 +3523,7 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::IMAGE => tr!("A picture, a GIF or a folder of frames from a file."),
         velo_core::VIDEO => tr!("A movie from a file, looping."),
         velo_core::LIVE => tr!("A live picture: an NDI source, a Spout sender or a camera, as it comes."),
-        velo_core::MEDIA_LIST => tr!("Up to eight pictures and movies in turn: in order, at random or back and forth, on the beat."),
+        velo_core::MEDIA_LIST => tr!("Pictures and movies in turn, streamed from disk: in order, at random or back and forth, on the beat."),
         velo_core::TEXT => tr!("Words set in a font, colored, sized and placed."),
         velo_core::TEXT_LIST => tr!("Lines of words one at a time: in order, at random or back and forth, on the beat."),
         velo_core::PARTICLES => tr!("Thousands of glowing points or pictures of your own, thrown, pulled and stirred: map Kick onto Emission for bursts."),

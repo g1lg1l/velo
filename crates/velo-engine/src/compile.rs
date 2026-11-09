@@ -8,7 +8,9 @@ use std::sync::mpsc;
 
 use std::borrow::Cow;
 
-use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, MEDIA_LIST, MEDIA_LIST_FILES, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
+use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, MEDIA_LIST, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
+
+use crate::media::{Reel, SLOTS};
 
 use crate::gpu::{Lazy, topological};
 use crate::{BUILTINS, Graph, Macros, Modulator, NodeSpec, Program, Runner, ShaderError, ShaderNode, macro_routes, routes};
@@ -80,23 +82,24 @@ pub fn own(code: &str) -> Result<ShaderNode, ShaderError> {
     Ok(node)
 }
 
-/// How many inputs a node reads: its kind's, or a Media List's files ([`expand`]).
+/// How many inputs a node reads: its kind's, or a Media List's slots ([`expand`]).
 fn ports(n: &Node) -> usize {
-    if n.kind == MEDIA_LIST { MEDIA_LIST_FILES } else { node_kind(&n.kind).map_or(0, |k| k.inputs.len()) }
+    if n.kind == MEDIA_LIST { SLOTS } else { node_kind(&n.kind).map_or(0, |k| k.inputs.len()) }
 }
 
-/// The scene as the engine builds it: each of a Media List's files an Image node of its own
-/// (`<list id>#<k>`) wired into the list in order, whose shader picks among them.
+/// The scene as the engine builds it: a Media List with files gets [`SLOTS`] Image nodes of
+/// its own (`<list id>#<k>`) wired into it, with no file: its [`Reel`] streams its files
+/// through them.
 fn expand(scene: &Scene) -> Cow<'_, Scene> {
-    if !scene.nodes.iter().any(|n| n.kind == MEDIA_LIST) {
+    let lists = |n: &&Node| n.kind == MEDIA_LIST && !velo_core::media_list(n).is_empty();
+    if !scene.nodes.iter().any(|n| lists(&n)) {
         return Cow::Borrowed(scene);
     }
     let mut s = scene.clone();
-    for n in scene.nodes.iter().filter(|n| n.kind == MEDIA_LIST) {
-        for (k, path) in velo_core::media_list(n).into_iter().enumerate() {
+    for n in scene.nodes.iter().filter(lists) {
+        for k in 0..SLOTS {
             let id = format!("{}#{k}", n.id);
-            let file =
-                Node { id: id.clone(), kind: IMAGE.into(), name: String::new(), off: n.off, pos: n.pos, params: Default::default(), mappings: Vec::new(), code: None, file: None, media: Some(path.into()), text: None, icon: String::new() };
+            let file = Node { id: id.clone(), kind: IMAGE.into(), name: String::new(), off: n.off, pos: n.pos, params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() };
             s.nodes.push(file);
             s.edges.push(Edge { from: (id, 0), to: (n.id.clone(), k as u8) });
         }
@@ -379,8 +382,23 @@ fn build(
             }
         })
         .collect();
+    // each Media List's files, streamed through its slots
+    let index = |id: &str| plan.nodes.iter().position(|(n, _)| n == id);
+    let lists = plan
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(n, (id, _))| {
+            let list = scene.node(id).filter(|l| l.kind == MEDIA_LIST)?;
+            let [a, b, c] = [0, 1, 2].map(|k| index(&format!("{id}#{k}")));
+            let at = |param| crate::modulate::slot(&programs[specs[n].program].node, param).map(|s| s.0);
+            let params = [at("order")?, at("clock")?, at("every")?, at("fade")?];
+            let files = velo_core::media_list(list).into_iter().map(String::from).collect();
+            Some(Reel::new(device, queue, id.clone(), n, params, [a?, b?, c?], files, bc))
+        })
+        .collect();
     let shaders = specs.iter().map(|spec| programs[spec.program].node.clone()).collect();
-    Ok(Built { graph: Box::new(Graph { programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lazy }), plan, signals, shaders, errors, media })
+    Ok(Built { graph: Box::new(Graph { programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lists, lazy }), plan, signals, shaders, errors, media })
 }
 
 #[cfg(test)]
@@ -522,16 +540,18 @@ mod tests {
     }
 
     #[test]
-    fn a_media_lists_files_are_images_of_their_own_feeding_it() {
+    fn a_media_list_streams_through_three_images_of_its_own() {
         let mut s = scene(&["velo.medialist", "velo.output"], &[(0, 1, 0)]);
-        s.nodes[0].media = Some("a.png\n\nb.mov\n".into());
+        assert_eq!(shaders(&plan(&s)), ["medialist", "output"], "no files, no slots");
+        s.nodes[0].media = Some("a.png\n\nb.mov\nc.png\nd.png\n".into());
         let p = plan(&s);
         let ids: Vec<&str> = p.nodes.iter().map(|(id, _)| id.as_str()).collect();
-        assert_eq!(ids, [s.nodes[0].id.as_str(), &format!("{}#0", s.nodes[0].id), &format!("{}#1", s.nodes[0].id), s.nodes[1].id.as_str()]);
-        assert_eq!(shaders(&p), ["medialist", "image", "image", "output"]);
-        // the list reads its two files, in order, and goes out
-        assert_eq!(p.inputs[0][..3], [Some(1), Some(2), None]);
-        assert_eq!((&p.inputs[3], p.output), (&vec![Some(0)], Some(3)));
+        let slot = |k| format!("{}#{k}", s.nodes[0].id);
+        assert_eq!(ids, [s.nodes[0].id.as_str(), &slot(0), &slot(1), &slot(2), s.nodes[1].id.as_str()]);
+        assert_eq!(shaders(&p), ["medialist", "image", "image", "image", "output"]);
+        // four files, three slots: the list reads them, and goes out
+        assert_eq!(p.inputs[0], [Some(1), Some(2), Some(3)]);
+        assert_eq!((&p.inputs[4], p.output), (&vec![Some(0)], Some(4)));
         // off, its files aren't played either
         s.nodes[0].off = true;
         assert!(plan(&s).nodes.is_empty());

@@ -257,6 +257,9 @@ pub struct Runner {
     frame: u64,
     /// What draws a history's frames, when a node keeps one.
     record: Option<Program>,
+    /// What [`Runner::set_file`] binds again: the sampler, and black for an input with nothing.
+    sampler: wgpu::Sampler,
+    black: wgpu::TextureView,
 }
 
 impl Runner {
@@ -380,7 +383,39 @@ impl Runner {
         for (node, views) in run.iter_mut().zip(targets) {
             node.targets = views;
         }
-        Ok(Self { size, globals, nodes: run, inputs: nodes.iter().map(|n| n.inputs.clone()).collect(), order, frame: 0, record })
+        Ok(Self { size, globals, nodes: run, inputs: nodes.iter().map(|n| n.inputs.clone()).collect(), order, frame: 0, record, sampler, black })
+    }
+
+    /// The file `node` reads as its first input from the next frame on (a Media List's slot
+    /// taking its next file), or none: what's wired there, else black.
+    /// ponytail: only a node that reads nothing but its inputs (an Image node); one with buffers,
+    /// feedback, the wave, a history or particles keeps what it was built with
+    pub fn set_file(&mut self, device: &wgpu::Device, programs: &[Program], node: usize, file: Option<&wgpu::TextureView>) {
+        let n = &self.nodes[node];
+        let program = &programs[n.program];
+        if !program.node.buffers.is_empty() || program.node.feedback || program.node.audio || n.past.is_some() || n.sim.is_some() {
+            return;
+        }
+        let group = |p: usize| {
+            let mut entries = vec![
+                wgpu::BindGroupEntry { binding: 0, resource: self.globals.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: n.params.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+            ];
+            for i in 0..program.node.inputs.len() {
+                let view = match file {
+                    Some(file) if i == 0 => file,
+                    _ => self.inputs[node].get(i).copied().flatten().map_or(&self.black, |from| {
+                        let t = &self.nodes[from].targets;
+                        &t[p % t.len()]
+                    }),
+                };
+                entries.push(wgpu::BindGroupEntry { binding: 3 + i as u32, resource: wgpu::BindingResource::TextureView(view) });
+            }
+            device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some(&program.node.name), layout: &program.layout, entries: &entries })
+        };
+        let groups = vec![[group(0), group(1)]];
+        self.nodes[node].groups = groups;
     }
 
     /// Sets a node's parameter values (one vec4 per parameter, in header order).
@@ -1245,28 +1280,26 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     }
 
     #[test]
-    fn a_media_list_shows_its_files_in_turn() {
+    fn a_media_list_shows_its_slots_in_turn() {
         let _gpu = crate::gpu_lock();
         let Some((device, queue)) = gpu() else {
             eprintln!("no GPU adapter here: skipped");
             return;
         };
         let flat = |rgb: &str| Program::new(&device, ShaderNode::parse(&format!("/*{{ \"name\": \"Flat\" }}*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f {{ return vec4f({rgb}, 1.0); }}")).unwrap()).unwrap();
-        let programs = [flat("1.0, 0.0, 0.0"), flat("0.0, 1.0, 0.0"), program(&device, "medialist")];
-        let mut inputs = vec![None; 8];
-        (inputs[0], inputs[1]) = (Some(0), Some(1));
-        let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![] }, NodeSpec { program: 2, inputs }];
+        let programs = [flat("1.0, 0.0, 0.0"), flat("0.0, 1.0, 0.0"), flat("0.0, 0.0, 1.0"), program(&device, "medialist")];
+        let nodes = [0, 1, 2, 3].map(|program| NodeSpec { program, inputs: if program == 3 { vec![Some(0), Some(1), Some(2)] } else { vec![] } });
         let mut runner = Runner::new(&device, &programs, &nodes, &[], [32, 8], &wave_texture(&device)).unwrap();
-        for n in 0..2 {
+        for n in 0..3 {
             runner.set_params(&queue, &programs, n, &[]);
         }
-        // in order, on the seconds, a new one each second
+        // on the seconds, a new turn each second
         let v = |x: f32| [x, 0.0, 0.0, 0.0];
         runner.set_params(
             &queue,
             &programs,
-            2,
-            &programs[2].node.values(|p| match p {
+            3,
+            &programs[3].node.values(|p| match p {
                 "clock" => Some(v(1.0)),
                 "every" => Some(v(1.0)),
                 _ => None,
@@ -1276,12 +1309,74 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             let mut encoder = device.create_command_encoder(&Default::default());
             runner.render(&queue, &mut encoder, &programs, &[time, 1.0 / 60.0, 0.0, 2.0]);
             queue.submit([encoder.finish()]);
-            read(&device, &queue, &runner, 2)[..3].to_vec()
+            read(&device, &queue, &runner, 3)[..3].to_vec()
         };
         let one = 0x3C00;
-        assert_eq!(shown(0.5), [one, 0, 0], "the first");
-        assert_eq!(shown(1.5), [0, one, 0], "a second on, the second");
-        assert_eq!(shown(2.5), [one, 0, 0], "and round again");
+        assert_eq!(shown(0.5), [one, 0, 0], "turn 0: the first slot");
+        assert_eq!(shown(1.5), [0, one, 0], "turn 1: the second");
+        assert_eq!(shown(2.5), [0, 0, one], "turn 2: the third");
+        assert_eq!(shown(3.5), [one, 0, 0], "and round again");
+    }
+
+    #[test]
+    fn a_media_list_streams_its_files_from_disk() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("velo-reel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // four files, more than the three slots
+        let colors = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 255]];
+        let files: Vec<String> = colors
+            .iter()
+            .enumerate()
+            .map(|(k, rgb)| {
+                let path = dir.join(format!("{k}.png"));
+                image::RgbaImage::from_pixel(4, 4, image::Rgba([rgb[0], rgb[1], rgb[2], 255])).save(&path).unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect();
+        let programs = [program(&device, "image"), program(&device, "medialist")];
+        // three Image slots, then the list reading them
+        let nodes = [0, 1, 2, 3].map(|n| if n == 3 { NodeSpec { program: 1, inputs: vec![Some(0), Some(1), Some(2)] } } else { NodeSpec { program: 0, inputs: vec![] } });
+        let mut runner = Runner::new(&device, &programs, &nodes, &[], [32, 8], &wave_texture(&device)).unwrap();
+        for n in 0..3 {
+            runner.set_params(&queue, &programs, n, &programs[0].node.values(|_| None));
+        }
+        // in order, on the seconds, a new file each second
+        let v = |x: f32| [x, 0.0, 0.0, 0.0];
+        let values = programs[1].node.values(|p| match p {
+            "clock" => Some(v(1.0)),
+            "every" => Some(v(1.0)),
+            _ => None,
+        });
+        runner.set_params(&queue, &programs, 3, &values);
+        let at = |p| crate::modulate::slot(&programs[1].node, p).unwrap().0;
+        let mut reel = crate::media::Reel::new(&device, &queue, "list".into(), 3, [at("order"), at("clock"), at("every"), at("fade")], [0, 1, 2], files, false);
+        // the turn's file once it's in (black till then)
+        let mut shown = |time: f32| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                reel.step(&device, &queue, &mut runner, &programs, |p| values[p][0], 0.0, time, 1.0 / 60.0);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                runner.render(&queue, &mut encoder, &programs, &[time, 1.0 / 60.0, 0.0, 2.0]);
+                queue.submit([encoder.finish()]);
+                let rgb: Vec<bool> = read(&device, &queue, &runner, 3)[..3].iter().map(|&c| c >= 0x3800).collect();
+                if rgb.contains(&true) || std::time::Instant::now() > deadline {
+                    return rgb;
+                }
+                std::thread::yield_now();
+            }
+        };
+        assert_eq!(shown(0.5), [true, false, false], "turn 0: the first file");
+        assert_eq!(shown(1.5), [false, true, false], "turn 1: the second");
+        assert_eq!(shown(2.5), [false, false, true], "turn 2: the third");
+        assert_eq!(shown(3.5), [true, true, true], "turn 3: the fourth, on the first turn's slot");
+        assert_eq!(shown(4.5), [true, false, false], "and round again");
+        assert!(crate::media::failed(&dir.join("0.png").to_string_lossy()).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
