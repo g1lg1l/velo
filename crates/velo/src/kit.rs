@@ -563,7 +563,8 @@ pub fn hold_button(ui: &mut Ui, t: &Theme, icon: Option<&str>, label: &str, done
     let done_galley = ui.painter().layout_no_wrap(done_label.to_string(), font, t.fg_text);
     let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
     let size = vec2(ui.available_width().max(galley.size().x.max(done_galley.size().x) + icon_w + 2.0 * t.pad), t.control_h);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    // a drag too: egui stops treating a press as a click after max_click_duration (0.8 s), and the hold is longer
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let enabled = ui.is_enabled();
     let (now, primary, keyboard) = ui.input(|i| (i.time, i.pointer.primary_down(), i.key_down(egui::Key::Enter) || i.key_down(egui::Key::Space)));
     let held = enabled && ((resp.is_pointer_button_down_on() && primary) || (resp.has_focus() && keyboard));
@@ -1189,5 +1190,28 @@ mod tests {
             out.textures_delta.clear(); // no renderer here
         }
         assert!((width - 300.0).abs() < 1.0, "{width}");
+    }
+
+    /// A hold longer than egui's max_click_duration (0.8 s) still confirms: past it, egui stops
+    /// counting a press on a click-only widget as being on it.
+    #[test]
+    fn a_long_hold_confirms() {
+        let ctx = egui::Context::default();
+        let t = Theme::dark();
+        let frame = |time: f64, events: Vec<egui::Event>| {
+            let (mut confirmed, mut rect) = (false, Rect::NOTHING);
+            let input = egui::RawInput { time: Some(time), events, ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                let r = ui.scope(|ui| hold_button(ui, &t, None, "Hold to delete all", "Deleted", 1.2));
+                (confirmed, rect) = (r.inner, r.response.rect);
+            });
+            out.textures_delta.clear(); // no renderer here
+            (confirmed, rect)
+        };
+        let at = frame(0.0, Vec::new()).1.center();
+        let press = egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() };
+        frame(0.05, vec![egui::Event::PointerMoved(at), press]);
+        let confirmed = (1..=30).any(|i| frame(0.05 + i as f64 * 0.05, Vec::new()).0);
+        assert!(confirmed, "held 1.5 s without confirming");
     }
 }
