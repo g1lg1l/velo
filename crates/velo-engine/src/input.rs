@@ -1,5 +1,5 @@
-//! Live pictures from outside, for the Live node: an NDI source, or (Windows) a Spout sender or
-//! a camera (a capture card too). A reader thread of its own per source keeps the newest frame,
+//! Live pictures from outside, for the Live node: an NDI source, a camera (Windows and macOS;
+//! a capture card too) or (Windows) a Spout sender. A reader thread of its own per source keeps the newest frame,
 //! BGRA at the size of the first, in a mailbox the render thread takes from without waiting;
 //! the thread ends when nobody holds the feed any more. A source is named `ndi:<name>`,
 //! `spout:<name>` or `camera:<name>`.
@@ -108,7 +108,7 @@ fn read(kind: &str, name: &str, first: Sender<First>) {
         "ndi" => crate::share::ndi::receive(name, stop, each),
         #[cfg(windows)]
         "spout" => crate::share::spout::receive(name, stop, each),
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         "camera" => crate::video::camera(name, stop, each),
         other => Err(format!("{other}: no live source of that kind here")),
     };
@@ -126,11 +126,11 @@ pub fn sources() -> Vec<String> {
     if !last.1 && last.0.is_none_or(|at| at.elapsed() > Duration::from_secs(4)) {
         last.1 = true;
         let started = std::thread::Builder::new().name("velo live sources".into()).spawn(|| {
-            #[cfg_attr(not(windows), allow(unused_mut))]
+            #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_mut))]
             let mut all: Vec<String> = crate::share::ndi::sources(2).unwrap_or_default().into_iter().map(|n| format!("ndi:{n}")).collect();
             #[cfg(windows)]
             all.extend(crate::share::spout::senders().into_iter().map(|n| format!("spout:{n}")));
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             all.extend(crate::video::cameras().into_iter().map(|n| format!("camera:{n}")));
             if let Ok(mut last) = LAST.lock() {
                 *last = (Some(Instant::now()), false, all);

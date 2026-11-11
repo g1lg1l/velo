@@ -62,7 +62,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - Particles are born wherever a picture is lit (a logo, an edge map, a movie), in a sphere, or on the points of a 3D model (.obj, .ply), and drawn as soft dots or a picture of your own; its Orbit view turns a camera round them.
 - A **Mesh** node draws a 3D model (.obj, .ply) solid, with a depth test and 4x antialiasing, lit by a light with a shine, a studio reflection and a rim, from a camera that turns round it; the surface breathes with the bass and the kick flashes it.
 - Stills, GIFs, image sequences, HAP, H.264 and HEVC movies.
-- Live pictures with the Live node: **NDI** sources on the network, and on Windows **Spout** senders on this computer and cameras or capture cards.
+- Live pictures with the Live node: **NDI** sources on the network, cameras and capture cards (Windows and macOS), and on Windows **Spout** senders on this computer.
 
 **Patches by hand**
 - One graph per scene, TouchDesigner's way: every node shows its picture and what it costs the GPU.

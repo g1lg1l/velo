@@ -28,6 +28,7 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSMicrophoneUsageDescription</key><string>Velo listens to your audio input to make the visuals react to the music.</string>
+  <key>NSCameraUsageDescription</key><string>Velo shows your camera's picture in a Live node.</string>
   <key>NSAudioCaptureUsageDescription</key><string>Velo listens to what your computer plays (Spotify, a DJ app) to make the visuals react to it.</string>
   <key>CFBundleDocumentTypes</key>
   <array><dict>

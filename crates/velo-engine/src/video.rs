@@ -1,15 +1,23 @@
 //! General video (H.264, HEVC, ProRes…) on macOS: AVFoundation decodes it, in hardware where
 //! it can, into BGRA frames read one after another ([`Decoder`]) on a movie's reader thread
 //! (media.rs). A frame due behind the last one read, or far ahead, starts a new reader there.
+//! Cameras too ([`camera`]): a capture session's frames, as they come, for a Live node.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
+use dispatch2::DispatchQueue;
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::AnyObject;
-use objc2_av_foundation::{AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVMediaTypeVideo, AVURLAsset};
-use objc2_core_media::{CMTime, CMTimeRange};
+use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
+use objc2_av_foundation::{
+    AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession, AVCaptureVideoDataOutput,
+    AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo, AVURLAsset,
+};
+use objc2_core_media::{CMSampleBuffer, CMTime, CMTimeRange};
 use objc2_core_video::{
-    CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
+    CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
     kCVPixelFormatType_32BGRA,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
@@ -51,6 +59,33 @@ pub fn open(path: &Path) -> Result<(Clip, [u32; 2], Vec<f64>), String> {
     })
 }
 
+/// The output settings that ask for BGRA frames.
+fn bgra() -> Retained<NSDictionary<NSString, AnyObject>> {
+    let key: &NSString = unsafe { &*(kCVPixelBufferPixelFormatTypeKey as *const _ as *const NSString) };
+    let format = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
+    NSDictionary::<NSString, AnyObject>::from_slices(&[key], &[format.as_ref()])
+}
+
+/// A BGRA frame's rows into `out`, packed, with its size; none if it can't be read (`out` is
+/// empty for a frame of another layout).
+fn rows(image: &CVPixelBuffer, out: &mut Vec<u8>) -> Option<[u32; 2]> {
+    let (w, h) = (CVPixelBufferGetWidth(image), CVPixelBufferGetHeight(image));
+    if unsafe { CVPixelBufferLockBaseAddress(image, CVPixelBufferLockFlags::ReadOnly) } != 0 {
+        return None;
+    }
+    let (base, stride) = (CVPixelBufferGetBaseAddress(image) as *const u8, CVPixelBufferGetBytesPerRow(image));
+    out.clear();
+    if !base.is_null() && stride >= w * 4 {
+        for row in 0..h {
+            // the buffer's rows, without the padding at their ends
+            let line = unsafe { std::slice::from_raw_parts(base.add(row * stride), w * 4) };
+            out.extend_from_slice(line);
+        }
+    }
+    unsafe { CVPixelBufferUnlockBaseAddress(image, CVPixelBufferLockFlags::ReadOnly) };
+    Some([w as u32, h as u32])
+}
+
 /// Frames in order from a point in a movie, as BGRA rows.
 pub struct Decoder {
     reader: Retained<AVAssetReader>,
@@ -65,10 +100,7 @@ impl Decoder {
             let track = track(&asset).ok_or("no video track")?;
             let reader = unsafe { AVAssetReader::assetReaderWithAsset_error(&asset) }.map_err(|e| e.localizedDescription().to_string())?;
             // BGRA, as the texture takes it; the system converts while it decodes
-            let key: &NSString = unsafe { &*(kCVPixelBufferPixelFormatTypeKey as *const _ as *const NSString) };
-            let format = NSNumber::new_u32(kCVPixelFormatType_32BGRA);
-            let settings = NSDictionary::<NSString, AnyObject>::from_slices(&[key], &[format.as_ref()]);
-            let output = unsafe { AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(&track, Some(&settings)) };
+            let output = unsafe { AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(&track, Some(&bgra())) };
             // the frames are only read: no copy of each one
             unsafe { output.setAlwaysCopiesSampleData(false) };
             unsafe { reader.addOutput(&output) };
@@ -91,20 +123,9 @@ impl Decoder {
                 // marker-only buffers carry no picture
                 let Some(image) = (unsafe { sample.image_buffer() }) else { continue };
                 let time = unsafe { sample.presentation_time_stamp().seconds() };
-                let (w, h) = (CVPixelBufferGetWidth(&image), CVPixelBufferGetHeight(&image));
-                if unsafe { CVPixelBufferLockBaseAddress(&image, CVPixelBufferLockFlags::ReadOnly) } != 0 {
+                if rows(&image, out).is_none() {
                     continue;
                 }
-                let (base, stride) = (CVPixelBufferGetBaseAddress(&image) as *const u8, CVPixelBufferGetBytesPerRow(&image));
-                out.clear();
-                if !base.is_null() && stride >= w * 4 {
-                    for row in 0..h {
-                        // the buffer's rows, without the padding at their ends
-                        let line = unsafe { std::slice::from_raw_parts(base.add(row * stride), w * 4) };
-                        out.extend_from_slice(line);
-                    }
-                }
-                unsafe { CVPixelBufferUnlockBaseAddress(&image, CVPixelBufferLockFlags::ReadOnly) };
                 return Some(time);
             }
         })
@@ -114,6 +135,104 @@ impl Decoder {
     pub fn done(&self) -> bool {
         (unsafe { self.reader.status() }) != AVAssetReaderStatus::Reading
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Cameras
+
+/// A camera's newest frame, from the capture queue to its reader thread.
+#[derive(Default)]
+struct Shot {
+    pixels: Vec<u8>,
+    size: [u32; 2],
+    fresh: bool,
+}
+
+type Slot = Arc<(Mutex<Shot>, Condvar)>;
+
+define_class!(
+    // SAFETY: NSObject has no subclassing requirements, and Grabber has no Drop
+    #[unsafe(super(NSObject))]
+    #[name = "VeloCameraGrabber"]
+    #[ivars = Slot]
+    struct Grabber;
+
+    unsafe impl NSObjectProtocol for Grabber {}
+
+    unsafe impl AVCaptureVideoDataOutputSampleBufferDelegate for Grabber {
+        /// On the capture queue: the frame copied out, the one before it not yet taken replaced.
+        #[unsafe(method(captureOutput:didOutputSampleBuffer:fromConnection:))]
+        fn frame(&self, _output: &AVCaptureOutput, sample: &CMSampleBuffer, _connection: &AVCaptureConnection) {
+            let Some(image) = (unsafe { sample.image_buffer() }) else { return };
+            let (shot, came) = &**self.ivars();
+            let Ok(mut shot) = shot.lock() else { return };
+            if let Some(size) = rows(&image, &mut shot.pixels) {
+                (shot.size, shot.fresh) = (size, !shot.pixels.is_empty());
+                came.notify_one();
+            }
+        }
+    }
+);
+
+#[allow(deprecated)] // the plain device list: built-in, USB and capture cards, without naming each kind
+fn devices() -> Vec<(String, Retained<AVCaptureDevice>)> {
+    let Some(video) = (unsafe { AVMediaTypeVideo }) else { return Vec::new() };
+    unsafe { AVCaptureDevice::devicesWithMediaType(video) }.iter().map(|d| (unsafe { d.localizedName() }.to_string(), d)).collect()
+}
+
+/// The cameras macOS has, by name.
+pub fn cameras() -> Vec<String> {
+    autoreleasepool(|_| devices().into_iter().map(|d| d.0).collect())
+}
+
+/// The camera called `name` (or whose name holds it), read until `stop` says so, each frame's
+/// size, BGRA rows and bytes a row to `each`. Err when there's none by that name, or macOS
+/// won't open it. The first time, macOS asks whether Velo may use the camera: no frame comes
+/// until the answer.
+pub fn camera(name: &str, stop: impl Fn() -> bool, mut each: impl FnMut([u32; 2], &[u8], usize)) -> Result<(), String> {
+    let video = unsafe { AVMediaTypeVideo }.ok_or("no video on this Mac")?;
+    let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(video) };
+    if status == AVAuthorizationStatus::Denied || status == AVAuthorizationStatus::Restricted {
+        return Err("macOS doesn't let Velo use the camera: allow it in System Settings, Privacy & Security, Camera".into());
+    }
+    let all = devices();
+    let (_, device) = all.iter().find(|d| d.0 == name).or_else(|| all.iter().find(|d| d.0.contains(name))).ok_or_else(|| format!("no camera called {name:?}"))?;
+    let input = unsafe { AVCaptureDeviceInput::deviceInputWithDevice_error(device) }.map_err(|e| format!("{name}: {}", e.localizedDescription()))?;
+    let output = unsafe { AVCaptureVideoDataOutput::new() };
+    unsafe { output.setVideoSettings(Some(&bgra())) };
+    // a frame the reader hasn't taken is replaced, never queued
+    unsafe { output.setAlwaysDiscardsLateVideoFrames(true) };
+    let slot = Slot::default();
+    let grabber: Retained<Grabber> = unsafe { msg_send![super(Grabber::alloc().set_ivars(slot.clone())), init] };
+    let queue = DispatchQueue::new("velo camera", None);
+    unsafe { output.setSampleBufferDelegate_queue(Some(ProtocolObject::from_ref(&*grabber)), Some(&queue)) };
+    let session = unsafe { AVCaptureSession::new() };
+    if !unsafe { session.canAddInput(&input) && session.canAddOutput(&output) } {
+        return Err(format!("{name}: the camera won't open"));
+    }
+    unsafe {
+        session.addInput(&input);
+        session.addOutput(&output);
+        session.startRunning();
+    }
+    let mut frame = Vec::new();
+    while !stop() {
+        let (shot, came) = &*slot;
+        let Ok(shot) = shot.lock() else { break };
+        // woken now and then to see whether to stop
+        let Ok((mut shot, _)) = came.wait_timeout_while(shot, Duration::from_millis(100), |s| !s.fresh) else { break };
+        if std::mem::take(&mut shot.fresh) {
+            std::mem::swap(&mut frame, &mut shot.pixels);
+            let size = shot.size;
+            drop(shot);
+            each(size, &frame, size[0] as usize * 4);
+        }
+    }
+    unsafe {
+        session.stopRunning();
+        output.setSampleBufferDelegate_queue(None, None);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -157,5 +276,17 @@ mod tests {
     #[test]
     fn what_isnt_a_movie_says_so() {
         assert!(open(Path::new("/nowhere/at/all.mp4")).is_err());
+    }
+
+    /// Needs a camera, and macOS' leave to use it: `cargo test -p velo-engine a_camera -- --ignored`.
+    #[test]
+    #[ignore]
+    fn a_camera_sends_frames() {
+        let name = cameras().into_iter().next().expect("a camera");
+        let (started, got) = (std::time::Instant::now(), std::cell::Cell::new(None));
+        camera(&name, || got.get().is_some() || started.elapsed().as_secs() > 10, |size, pixels, stride| got.set(Some((size, pixels.len(), stride)))).expect("opens");
+        let (size, bytes, stride) = got.get().expect("a frame in 10 s");
+        assert!(size[0] > 0 && stride == size[0] as usize * 4 && bytes == stride * size[1] as usize, "{name}: {size:?}, {bytes} bytes");
+        eprintln!("{name}: {size:?}");
     }
 }
