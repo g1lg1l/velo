@@ -127,7 +127,31 @@ pub fn vsep(ui: &mut Ui, t: &Theme) {
 
 /// Small-caps section label.
 pub fn caps(ui: &mut Ui, t: &Theme, text: &str) -> Response {
-    ui.label(RichText::new(text).font(Theme::mono(t.text_xs)).extra_letter_spacing(1.0).color(t.fg_muted))
+    ui.label(RichText::new(sentence(text)).size(t.text_sm).color(t.fg_muted))
+}
+
+/// A label written in capitals (as the strings and their translations are) set in sentence
+/// case, read faster than tracked capitals: its first letter up, the rest down, acronyms kept.
+pub fn sentence(text: &str) -> String {
+    const KEPT: [&str; 16] = ["AI", "MCP", "MIDI", "OSC", "NDI", "BPM", "GPU", "CPU", "UI", "ISF", "WGSL", "FPS", "LFO", "HAP", "API", "URL"];
+    let mut out = String::with_capacity(text.len());
+    for (i, word) in text.split(' ').enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        // an acronym, bare or in brackets ("(MCP)")
+        let bare = word.trim_matches(|c: char| !c.is_alphanumeric());
+        if KEPT.contains(&bare) {
+            out.push_str(word);
+        } else if i == 0 {
+            let mut chars = word.chars();
+            out.extend(chars.next().into_iter().flat_map(char::to_uppercase));
+            out.push_str(&chars.as_str().to_lowercase());
+        } else {
+            out.push_str(&word.to_lowercase());
+        }
+    }
+    out
 }
 
 /// A titled group of controls: a divider edge to edge above it (none above a panel's
@@ -162,7 +186,7 @@ fn section_title(ui: &mut Ui, t: &Theme, icon: &str, title: &str, open: f32) -> 
     let painter = ui.painter();
     let y = rect.center().y;
     icon_at(painter, pos2(rect.left() + 6.0, y), icon, 12.0, color);
-    let words = egui::WidgetText::from(RichText::new(title).font(Theme::mono(t.text_xs)).extra_letter_spacing(1.0).color(color)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+    let words = egui::WidgetText::from(RichText::new(sentence(title)).size(t.text_sm).color(color)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
     painter.galley(pos2(rect.left() + 18.0, y - words.size().y / 2.0), words, color);
     icon_turned(painter, pos2(rect.right() - 6.0, y), crate::icons::CARET_DOWN, 12.0, color, -std::f32::consts::FRAC_PI_2 * (1.0 - open));
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, open > 0.5, title));
@@ -252,10 +276,13 @@ pub fn switch(ui: &mut Ui, t: &Theme, on: &mut bool, label: &str) -> Response {
     // the knob overshoots a little and settles, both ways
     let x = if *on { spring(k) } else { 1.0 - spring(1.0 - k) };
     let painter = ui.painter();
-    let track = Theme::mix(Theme::mix(t.bg_control, t.fg_text, 0.08 * h), t.accent, k);
+    // switched off by another switch: it keeps its place, but nothing about it looks on
+    let lit = if enabled { k } else { 0.2 * k };
+    let track = Theme::mix(Theme::mix(t.bg_control, t.fg_text, 0.08 * h), t.accent, lit);
     painter.rect_filled(rect, CornerRadius::same(10), track);
     let knob = pos2(rect.left() + 10.0 + x * (rect.width() - 20.0), rect.center().y);
-    painter.circle_filled(knob, 7.0, Theme::mix(t.fg_muted, t.fg_text, 0.4 + 0.6 * k.max(h)));
+    let knob_color = if enabled { Theme::mix(t.fg_muted, t.fg_text, 0.4 + 0.6 * k.max(h)) } else { Theme::mix(t.bg_control, t.fg_muted, 0.5) };
+    painter.circle_filled(knob, 7.0, knob_color);
     focus_ring(ui, t, &resp, 10);
     resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, enabled, *on, label));
     resp
@@ -1175,6 +1202,16 @@ pub fn popover_frame(ctx: &egui::Context, t: &Theme) -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capitals_read_in_sentence_case_with_acronyms_kept() {
+        assert_eq!(sentence("SCENES"), "Scenes");
+        assert_eq!(sentence("SET UP"), "Set up");
+        assert_eq!(sentence("AGENTS (MCP)"), "Agents (MCP)");
+        assert_eq!(sentence("MIDI LEARN"), "MIDI learn");
+        assert_eq!(sentence("CONNECT AN AI"), "Connect an AI");
+        assert_eq!(sentence("SORGENTI"), "Sorgenti");
+    }
 
     /// A docked panel keeps the width it was given: egui stores a panel's size from what its
     /// contents used, and a resize used to snap back to the minimum.

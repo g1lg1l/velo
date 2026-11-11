@@ -1349,6 +1349,10 @@ fn paint_node(ui: &Ui, painter: &Painter, t: &Theme, r: Rect, zoom: f32, look: L
         let kind = kind.map_or("?", |k| if name == k.label || name == i18n::t(k.label) { i18n::t(crate::role_of(k)) } else { i18n::t(k.label) }).to_uppercase();
         let left = footer.left() + 10.0 * zoom;
         kit::fit_text(painter, pos2(left, footer.center().y), Align2::LEFT_CENTER, &kind, FontId::monospace(t.text_xs * zoom), t.fg_muted, right - left);
+    } else {
+        // zoomed far out the name stays at reading size over the card, as a design tool names
+        // its frames: the graph is still told apart node by node
+        kit::fit_text(painter, pos2(r.left(), r.top() - 4.0), Align2::LEFT_BOTTOM, name, font(t.text_sm), t.fg_text, r.width().max(72.0));
     }
     if !look.rows {
         viewer_paint(ui, painter, t, viewer_rect(r, zoom), zoom, &look);

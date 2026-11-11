@@ -153,7 +153,8 @@ impl Theme {
             bg_field: rgb(0x121212),
             line: rgb(0x383838),
             fg_text: rgb(0xd6d6d6),
-            fg_muted: rgb(0x8a8a8a),
+            // 4.7:1 on the cards (#2a2a2a), as small text needs
+            fg_muted: rgb(0x969696),
             accent: rgb(0x22d3ee),
             select: rgb(0xc8c8c8),
             warn: rgb(0xf59e0b),
