@@ -399,6 +399,12 @@ impl App {
                 }
             }
         }
+        // VELO_DEMO_EDIT=n: scene n selected once the first one is live: edited, not live (tests)
+        if let Some(n) = std::env::var("VELO_DEMO_EDIT").ok().and_then(|n| n.parse::<usize>().ok())
+            && let Some(scene) = app.session.project.scenes.get(n.saturating_sub(1))
+        {
+            app.demo_drop = Some((scene.id.clone(), false));
+        }
         // VELO_DEMO_SHARE=spout|ndi: the program shared that way from the start (tests)
         if let (Ok(way), Some(live)) = (std::env::var("VELO_DEMO_SHARE"), &mut app.live) {
             live.share(Some(if way == "ndi" { velo_engine::share::Share::Ndi } else { velo_engine::share::Share::Spout }));
@@ -3300,6 +3306,17 @@ impl eframe::App for App {
                     let costs: Vec<String> = scene.nodes.iter().filter_map(|n| live.cost(&n.id).map(|c| format!("{} {c:.2}", n.kind))).collect();
                     eprintln!("velo: GPU ms per node of {}: {}", scene.name, costs.join(", "));
                 }
+            }
+        }
+        // VELO_DEMO_PERF: the engine's rate on stderr every 2 s, in a normal run (measuring)
+        if std::env::var_os("VELO_DEMO_PERF").is_some()
+            && let Some(live) = &self.live
+        {
+            static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            if LAST.swap(now as u64 / 2, Relaxed) != now as u64 / 2 {
+                let s = &live.engine.status;
+                let (avg, worst) = self.cpu.stats();
+                eprintln!("velo: t {now:.0} s, engine {:.1} fps, frame {} µs, {} late, {} stalls; UI {:.2} ms average, {:.2} ms worst, {} frames", live.fps, s.frame_us.load(Relaxed), s.late.load(Relaxed), s.stalls.load(Relaxed), avg * 1000.0, worst * 1000.0, self.cpu.samples.len());
             }
         }
         // VELO_DEMO_TOAST=done|error|action: a toast fully out when the 5-s capture is taken

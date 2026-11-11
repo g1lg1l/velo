@@ -29,6 +29,9 @@ const PREVIEW_EVERY: Duration = Duration::from_millis(16);
 pub const THUMB: [u32; 2] = [128, 72];
 pub const THUMBS: [u32; 2] = [8, 4];
 const THUMBS_EVERY: Duration = Duration::from_millis(100);
+/// How many frames a graph renders before its card's picture is taken: its feedback and its
+/// files' first frames in.
+const PEEK: u32 = 30;
 
 /// Audio features as atomics: the analysis thread stores, the render thread loads, nobody waits.
 /// In the order of `velo_audio::Features::globals`.
@@ -213,6 +216,9 @@ pub enum Command {
     /// The graph being edited: its node is the watched one, and the preview shows it alone
     /// (rendering it too) while it isn't the live one.
     Edit(u64),
+    /// A graph's picture for its scene's card: rendered for [`PEEK`] frames (alone, if it isn't
+    /// rendering already), then what it shows goes to [`Engine::take_shot`]. One at a time.
+    Peek(u64),
     /// The layer scenes switched on, in scene order: each rendered every frame and put over or
     /// under the program the way its blend says.
     Layers(Vec<(u64, Layer, LayerBlend)>),
@@ -356,6 +362,7 @@ pub struct Engine {
     wave_texture: wgpu::TextureView,
     preview: Arc<Preview>,
     thumbs: Arc<Preview>,
+    shots: Arc<Preview>,
 }
 
 impl Engine {
@@ -395,6 +402,7 @@ impl Engine {
         let wave_texture = crate::gpu::wave_texture(&device);
         let preview = Arc::new(Preview::new(&device, PREVIEW, PREVIEW_FORMAT));
         let thumbs = Arc::new(Preview::new(&device, [THUMB[0] * THUMBS[0], THUMB[1] * THUMBS[1]], PREVIEW_FORMAT));
+        let shots = Arc::new(Preview::new(&device, THUMB, PREVIEW_FORMAT));
         let thread = Thread {
             device: device.clone(),
             queue: queue.clone(),
@@ -406,9 +414,10 @@ impl Engine {
             wave_texture: wave_texture.clone(),
             preview: preview.clone(),
             thumbs: thumbs.clone(),
+            shots: shots.clone(),
         };
         std::thread::Builder::new().name("velo render".into()).spawn(move || thread.run()).map_err(|e| e.to_string())?;
-        Ok(Engine { instance, adapter, device, queue, commands, detached, status, features, wave, wave_texture, preview, thumbs })
+        Ok(Engine { instance, adapter, device, queue, commands, detached, status, features, wave, wave_texture, preview, thumbs, shots })
     }
 
     /// The engine's device, for compiling programs and building graphs on a worker.
@@ -439,6 +448,12 @@ impl Engine {
     /// [`THUMBS`] cells of [`THUMB`] each, node n in cell n (left to right, then down).
     pub fn take_thumbs(&self, show: impl FnOnce(&[u8])) -> bool {
         self.thumbs.take(show)
+    }
+
+    /// Hands the picture a [`Command::Peek`] asked for to `show`, once it's there: RGBA8, sRGB,
+    /// [`THUMB`] sized.
+    pub fn take_shot(&self, show: impl FnOnce(&[u8])) -> bool {
+        self.shots.take(show)
     }
 }
 
@@ -668,6 +683,42 @@ const IN_FLIGHT: usize = 2;
 /// The longest the render thread waits for one: past it, it counts a stall and goes on.
 const GPU_WAIT: Duration = Duration::from_millis(250);
 
+/// The edited scene while it isn't going out: it renders for its preview and its cards only.
+/// Every frame while the frames keep to their budget; once one doesn't, the show comes first:
+/// it gets a frame at a time, about a tenth of the time.
+#[derive(Default)]
+struct Aside {
+    /// When its last frame went.
+    at: Option<Instant>,
+    /// The longest frame since, and how many: a frame's cost shows up to [`IN_FLIGHT`] frames later.
+    peak: Duration,
+    since: usize,
+    slow: bool,
+    /// What its skipped frames took, in seconds: its next frame steps by all of it.
+    owed: f32,
+}
+
+impl Aside {
+    fn due(&self, now: Instant) -> bool {
+        !self.slow || (self.since > IN_FLIGHT && self.at.is_none_or(|at| now >= at + self.peak * 10))
+    }
+
+    fn rendered(&mut self, now: Instant) {
+        (self.at, self.peak, self.since) = (Some(now), Duration::ZERO, 0);
+    }
+
+    /// After every frame, with what it took of the render thread.
+    fn frame(&mut self, work: Duration, budget: Duration) {
+        self.since += 1;
+        self.peak = self.peak.max(work);
+        if self.peak > budget {
+            self.slow = true;
+        } else if self.since > IN_FLIGHT {
+            self.slow = false;
+        }
+    }
+}
+
 struct Thread {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -679,6 +730,7 @@ struct Thread {
     wave_texture: wgpu::TextureView,
     preview: Arc<Preview>,
     thumbs: Arc<Preview>,
+    shots: Arc<Preview>,
 }
 
 impl Thread {
@@ -687,6 +739,9 @@ impl Thread {
         let preview_view = self.preview.texture.create_view(&Default::default());
         let thumb_blit = Blit::new(&self.device, PREVIEW_FORMAT);
         let thumbs_view = self.thumbs.texture.create_view(&Default::default());
+        let shot_view = self.shots.texture.create_view(&Default::default());
+        // the graph rendering for its card's picture, and the frames it has left
+        let mut peek: Option<(u64, u32)> = None;
         // what a crossfade shows for a graph with nothing to show
         let black = crate::gpu::texture(&self.device, [1, 1]);
         // Freeze: the program copied once, shown until it's let go
@@ -698,6 +753,8 @@ impl Thread {
         let (mut freeze, mut held, mut pattern) = (false, None, false);
         let start = Instant::now();
         let tick = Duration::from_micros(16_667);
+        // when the next tick is due, without an output's vsync to pace the frames
+        let mut deadline = Instant::now();
         // the scene graphs it keeps (a dozen at most: the UI evicts), the live one and the launches
         let mut graphs: Vec<(u64, Box<Graph>)> = Vec::with_capacity(16);
         let (mut show, mut edit) = (Show::default(), 0u64);
@@ -714,6 +771,7 @@ impl Thread {
         let period = self.queue.get_timestamp_period();
         let (mut timing, mut last_timing): (Option<Timing>, Instant) = (None, start);
         let mut sharing: Option<Sharing> = None;
+        let mut aside = Aside::default();
         loop {
             for command in self.commands.try_iter() {
                 match command {
@@ -784,6 +842,7 @@ impl Thread {
                     }
                     Command::Launch { scene, transition, duration_beats, quantize } => show.launch(scene, transition, duration_beats, quantize),
                     Command::Edit(key) => edit = key,
+                    Command::Peek(key) => peek = Some((key, PEEK)),
                     Command::Layers(on) => layers = on,
                     Command::Tap(at) => clock.tap(secs(at)),
                     Command::Tempo(bpm) => clock.set_bpm(start.elapsed().as_secs_f64(), bpm),
@@ -851,7 +910,12 @@ impl Thread {
                 _ => None,
             };
             if target.is_none() {
-                std::thread::sleep(tick.saturating_sub(last.elapsed()));
+                // to the next tick on a fixed beat, not a tick after waking: a wake that comes
+                // late is made up on the next frame instead of slowing every one (a deadline
+                // missed by more than a tick starts the beat again from now)
+                let now = Instant::now();
+                deadline = if deadline + tick < now { now } else { deadline + tick };
+                std::thread::sleep(deadline.saturating_duration_since(now));
             }
             let now = Instant::now();
             if let (Some(o), Some(_)) = (&output, &target)
@@ -861,6 +925,11 @@ impl Thread {
             }
             let delta = (now - last).as_secs_f32();
             last = now;
+            // what a frame may take: the output's period while it paces the frames, else the tick
+            let budget = match (&output, &target) {
+                (Some(o), Some(_)) => o.period,
+                _ => tick,
+            };
 
             // launches: a waiting one lands on its boundary once its graph is built
             let t = secs(now);
@@ -883,7 +952,19 @@ impl Thread {
                 slot.store(v.to_bits(), Relaxed);
             }
             let mut encoder = self.device.create_command_encoder(&Default::default());
-            let renders = |key: &u64| [show.live, fading, edit].contains(key) || layers.iter().any(|l| l.0 == *key);
+            // the edited scene that isn't going out rests while the show needs the frames
+            let apart = edit != 0 && edit != show.live && edit != fading && !layers.iter().any(|l| l.0 == edit);
+            if !apart {
+                aside = Aside::default();
+            }
+            let resting = apart && !aside.due(now);
+            if resting {
+                aside.owed += delta;
+            } else if apart {
+                aside.rendered(now);
+            }
+            let peeked = peek.map_or(0, |p| p.0);
+            let renders = |key: &u64| !(resting && *key == edit) && ([show.live, fading, edit].contains(key) || layers.iter().any(|l| l.0 == *key)) || (*key == peeked && peeked != 0);
             if graphs.iter().any(|(key, g)| renders(key) && g.programs.iter().any(|p| p.node.audio)) {
                 self.wave.load(&mut wave);
                 for (bytes, value) in wave_bytes.as_chunks_mut::<4>().0.iter_mut().zip(wave.iter().flatten()) {
@@ -903,13 +984,15 @@ impl Thread {
                     timing = Some(Timing::new(&self.device, edit, nodes));
                 }
             }
-            let time_now = timed && now - last_timing >= TIMING_EVERY && timing.as_ref().is_some_and(|x| x.key == edit && x.state.load(Relaxed) == FREE);
+            let time_now = timed && !resting && now - last_timing >= TIMING_EVERY &&timing.as_ref().is_some_and(|x| x.key == edit && x.state.load(Relaxed) == FREE);
             // what renders, each graph once: the program (two graphs in a crossfade) and the
             // edited graph; the warm ones wait
             let watch = self.status.watch.load(Relaxed);
             let beats = clock.beats(t);
             self.status.beats.store(beats.to_bits(), Relaxed);
             for (key, g) in graphs.iter_mut().filter(|(k, _)| renders(k)) {
+                // after a rest, the time it rested too: its motion keeps its speed
+                let delta = if apart && *key == edit { delta + std::mem::take(&mut aside.owed) } else { delta };
                 // this graph's LFOs after the shared sources; its Probes with what they last read
                 for p in &g.probes {
                     g.signals[p.signal].feed(p.color());
@@ -960,7 +1043,7 @@ impl Thread {
                     let mut awake = g.runner.needed(std::iter::once(out).chain(g.probes.iter().map(|p| p.node)), reads);
                     if *key == edit {
                         self.status.asleep.store(awake.iter().take(64).enumerate().filter(|(_, a)| !**a).fold(0, |bits, (n, _)| bits | 1 << n), Relaxed);
-                        if *key != show.live && *key != fading && !layers.iter().any(|l| l.0 == *key) {
+                        if apart {
                             for (n, a) in awake.iter_mut().enumerate() {
                                 *a |= (frame + n as u64).is_multiple_of(8);
                             }
@@ -1093,6 +1176,23 @@ impl Thread {
                     self.thumbs.copy(&mut encoder, i);
                 }
             }
+            // a card's picture, once its graph has rendered long enough (one gone meanwhile: none)
+            let mut shot_into = None;
+            if let Some((key, left)) = &mut peek {
+                *left = left.saturating_sub(1);
+                if *left == 0 {
+                    shot_into = picture(*key).and_then(|view| Some((view, self.shots.free()?)));
+                    if let Some((view, i)) = shot_into {
+                        thumb_blit.draw(&self.device, &self.queue, &mut encoder, [view, view], (0.0, 1.0), &shot_view, None);
+                        self.shots.copy(&mut encoder, i);
+                    }
+                    // no buffer free yet (the UI hasn't taken the last): next frame
+                    if shot_into.is_some() || picture(*key).is_none() {
+                        peek = None;
+                    }
+                }
+            }
+            let shot_into = shot_into.map(|s| s.1);
             in_flight.push_back(self.queue.submit([encoder.finish()]));
             for p in graphs.iter().flat_map(|(_, g)| &g.probes) {
                 p.read();
@@ -1120,10 +1220,16 @@ impl Thread {
             if let Some(i) = thumbs_into {
                 self.thumbs.mapped(i);
             }
+            if let Some(i) = shot_into {
+                self.shots.mapped(i);
+            }
             let _ = self.device.poll(wgpu::PollType::Poll);
             frame += 1;
             self.status.frames.fetch_add(1, Relaxed);
             self.status.frame_us.store(now.elapsed().as_micros() as u64, Relaxed);
+            if apart {
+                aside.frame(now.elapsed(), budget);
+            }
         }
     }
 }
@@ -1412,6 +1518,32 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
 mod tests {
     use super::*;
     use crate::{BUILTINS, NodeSpec, ShaderNode};
+
+    #[test]
+    fn the_edited_scene_rests_once_a_frame_goes_over_budget() {
+        let (ms, t0) = (Duration::from_millis, Instant::now());
+        let mut a = Aside::default();
+        // frames within the budget: every one
+        for _ in 0..10 {
+            assert!(a.due(t0));
+            a.rendered(t0);
+            a.frame(ms(5), ms(16));
+        }
+        // one of 100 ms: none for a second, then one alone
+        a.rendered(t0);
+        a.frame(ms(100), ms(16));
+        assert!(!a.due(t0 + ms(900)));
+        a.frame(ms(5), ms(16));
+        a.frame(ms(5), ms(16));
+        assert!(!a.due(t0 + ms(900)) && a.due(t0 + ms(1000)));
+        // that one cheap, seen once the frames in flight are through: every frame again
+        a.rendered(t0 + ms(1000));
+        a.frame(ms(5), ms(16));
+        assert!(!a.due(t0 + ms(1016)), "not judged yet");
+        a.frame(ms(5), ms(16));
+        a.frame(ms(5), ms(16));
+        assert!(a.due(t0 + ms(1048)));
+    }
 
     #[test]
     fn a_picture_keeps_its_shape_on_any_display() {

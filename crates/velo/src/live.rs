@@ -180,6 +180,10 @@ pub struct Live {
     thumbs: Option<egui::TextureHandle>,
     /// Each scene's picture as it last went out while it was the one edited (its card's).
     shots: HashMap<String, egui::TextureHandle>,
+    /// The scene rendering a moment for its card's picture (one at a time), and the scenes
+    /// that had their turn: one with nothing to show keeps its wash.
+    peek: Option<Peek>,
+    peeked: std::collections::HashSet<String>,
     /// The video memory the system lets Velo hold, where it says (Windows), and the graphs held
     /// with what their pictures take, as of the last sync.
     pub budget: Option<u64>,
@@ -231,6 +235,8 @@ impl Live {
             preview: None,
             thumbs: None,
             shots: HashMap::new(),
+            peek: None,
+            peeked: Default::default(),
             budget: None,
             held: (0, 0),
             off: Default::default(),
@@ -275,6 +281,13 @@ impl Live {
         if edit != self.edit {
             self.edit = edit;
             self.engine.send(Command::Edit(edit));
+        }
+        // a card with no picture yet: its scene held, built, rendered a moment and pictured
+        if self.peek.is_none()
+            && let Some(scene) = project.scenes.iter().find(|s| !self.shots.contains_key(&s.id) && !self.peeked.contains(&s.id))
+        {
+            let key = self.slot(&scene.id).key;
+            self.peek = Some(Peek { scene: scene.id.clone(), key, since: Instant::now(), sent: false });
         }
         // the layers switched on, held and rendered every frame
         let on: Vec<&Scene> = project.scenes.iter().filter(|s| s.layer != velo_core::Layer::Scene && !self.off.contains(&s.id)).collect();
@@ -333,6 +346,27 @@ impl Live {
                 Err(e) => error = Some(e),
             }
         }
+        if let Some(p) = &mut self.peek {
+            let slot = self.slots.iter().find(|s| s.key == p.key);
+            let mut got = false;
+            if p.sent {
+                let shots = &mut self.shots;
+                self.engine.take_shot(|rgba| {
+                    use velo_engine::runtime::THUMB;
+                    set_shot(shots, ctx, &p.scene, egui::ColorImage::from_rgba_premultiplied([THUMB[0] as usize, THUMB[1] as usize], rgba));
+                    got = true;
+                });
+            } else if slot.is_some_and(|s| s.built && s.output.is_some()) {
+                (p.sent, p.since) = (true, Instant::now());
+                self.engine.send(Command::Peek(p.key));
+            }
+            // pictured; or nothing to picture: no output, a build that fails, a graph that never shows
+            let waits = slot.is_some_and(|s| !s.built || s.output.is_some()) && p.since.elapsed() < PEEK_WAIT;
+            if got || !waits {
+                self.peeked.insert(p.scene.clone());
+                self.peek = None;
+            }
+        }
         // the hot path: values and mappings only, no rebuild (drags, undo of a drag); the
         // engine computes the modulated values itself, for every graph it renders
         let morph = self.morph.take();
@@ -380,7 +414,7 @@ impl Live {
         }
         let status = &self.engine.status;
         let (live, fading) = (status.live.load(Relaxed), status.fading.load(Relaxed));
-        let in_use: Vec<u64> = [live, fading, status.armed().map_or(0, |a| a.0), self.launched, self.edit].into_iter().chain(self.layers.iter().map(|l| l.0)).collect();
+        let in_use: Vec<u64> = [live, fading, status.armed().map_or(0, |a| a.0), self.launched, self.edit, self.peek.as_ref().map_or(0, |p| p.key)].into_iter().chain(self.layers.iter().map(|l| l.0)).collect();
         // what a graph's pictures take: a texture of the canvas each node, two for feedback, a
         // history's frames at a quarter of one each, and two pictures a buffer at its scale (in quarters)
         let texture = u64::from(size[0]) * u64::from(size[1]) * 8;
@@ -437,14 +471,7 @@ impl Live {
                 for y in y0..y0 + cell_h {
                     cell.extend_from_slice(&rgba[(y * width + x0) * 4..(y * width + x0 + cell_w) * 4]);
                 }
-                let image = egui::ColorImage::from_rgba_premultiplied([cell_w, cell_h], &cell);
-                match self.shots.get_mut(&scene) {
-                    Some(t) => t.set(image, egui::TextureOptions::LINEAR),
-                    None => {
-                        let texture = ctx.load_texture(format!("shot {scene}"), image, egui::TextureOptions::LINEAR);
-                        self.shots.insert(scene, texture);
-                    }
-                }
+                set_shot(&mut self.shots, ctx, &scene, egui::ColorImage::from_rgba_premultiplied([cell_w, cell_h], &cell));
             }
         });
         let (at, frames) = self.counted;
@@ -697,6 +724,28 @@ impl Live {
     pub fn set_pattern(&mut self, on: bool) {
         self.pattern = on;
         self.engine.send(Command::Pattern(on));
+    }
+}
+
+/// A scene rendering a moment for its card's picture: since when it waits (to be built, then
+/// for the picture).
+struct Peek {
+    scene: String,
+    key: u64,
+    since: Instant,
+    sent: bool,
+}
+
+/// How long a card's picture may take to build, and then to come, before its scene's turn ends.
+const PEEK_WAIT: Duration = Duration::from_secs(10);
+
+/// A scene's card's picture, new or replaced.
+fn set_shot(shots: &mut HashMap<String, egui::TextureHandle>, ctx: &egui::Context, scene: &str, image: egui::ColorImage) {
+    match shots.get_mut(scene) {
+        Some(t) => t.set(image, egui::TextureOptions::LINEAR),
+        None => {
+            shots.insert(scene.to_string(), ctx.load_texture(format!("shot {scene}"), image, egui::TextureOptions::LINEAR));
+        }
     }
 }
 
