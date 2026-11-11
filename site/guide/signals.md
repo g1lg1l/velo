@@ -29,7 +29,7 @@ Click the audio chip in the top bar, or the input in an Audio In's inspector (th
 Picking the computer's or one app's sound also turns on **Follow the music**, so the tempo comes from what plays.
 
 ::: tip On macOS
-macOS asks before Velo can capture the computer's sound. If the chip says **No audio: allow Velo in System Settings**, open **System Settings → Privacy & Security → Screen & System Audio Recording** (or **Microphone** for an input), allow Velo, then reopen it.
+macOS asks before Velo can capture the computer's sound. If the chip says **No sound: allow Velo**, its menu's first item, **Let Velo hear the computer…**, shows the way: **System Settings → Privacy & Security → Screen & System Audio Recording** (or **Microphone** for an input), allow Velo, then reopen it. Meanwhile the Audio In card says that no sound comes in.
 :::
 
 ### Hits: Simple and Model

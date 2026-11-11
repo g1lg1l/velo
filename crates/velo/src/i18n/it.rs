@@ -472,7 +472,7 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Listening to {}", "In ascolto di {}"),
     ("Waiting for permission…", "In attesa del permesso…"),
     ("Waiting for the input to start (on macOS, for your permission)", "In attesa che l'ingresso parta (su macOS, del tuo permesso)"),
-    ("No audio: allow Velo in System Settings", "Niente audio: consenti Velo nelle Impostazioni di Sistema"),
+    ("No sound: allow Velo", "Niente suono: consenti Velo"),
     (
         "Only silence arrives. macOS: System Settings → Privacy & Security → Screen & System Audio Recording (or Microphone): allow Velo, then reopen it.",
         "Arriva solo silenzio. macOS: Impostazioni di Sistema → Privacy e sicurezza → Registrazione schermo e audio di sistema (o Microfono): consenti Velo, poi riaprilo.",
@@ -1242,6 +1242,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Inner", "Interno"),
     ("Roundness", "Arrotondamento"),
     ("Silence", "Silenzio"),
+    ("No sound comes in", "Non arriva nessun suono"),
+    ("Pick what to hear in the audio menu, top left", "Scegli cosa ascoltare nel menu audio, in alto a sinistra"),
     ("Nothing arrives yet: play something, or pick another input", "Non arriva ancora niente: fai partire qualcosa, o scegli un altro ingresso"),
     ("Reset", "Ripristina"),
     ("Every setting back to how the node came: Ctrl+Z goes back", "Ogni impostazione com'era all'inizio: Ctrl+Z torna indietro"),

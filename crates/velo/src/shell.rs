@@ -320,27 +320,7 @@ impl App {
         };
         let state = live.audio.state().unwrap_or_default();
         let (current, level) = (live.audio.input.clone(), live.engine.features.load()[0]);
-        let app = match &current {
-            Some(Input::App { name, .. }) => Some(name.clone()),
-            _ => None,
-        };
-        let (text, tip) = match (&state.hearing, &app) {
-            (Hearing::Failed(e), Some(name)) => (tr!("Waiting for {}", name), e.clone()),
-            (Hearing::Nothing, Some(name)) => (tr!("{} is silent", name), tr!("Nothing plays in {}. If something does: macOS System Settings → Privacy & Security → Screen & System Audio Recording, allow Velo, then reopen it.", name)),
-            (hearing, _) => match hearing {
-                Hearing::Live => (state.name.clone(), tr!("Listening to {}", state.name)),
-                Hearing::Waiting if cfg!(target_os = "macos") => (tr!("Waiting for permission…").to_string(), tr!("Waiting for the input to start (on macOS, for your permission)").to_string()),
-                Hearing::Nothing if cfg!(target_os = "macos") => (
-                    tr!("No audio: allow Velo in System Settings").to_string(),
-                    tr!("Only silence arrives. macOS: System Settings → Privacy & Security → Screen & System Audio Recording (or Microphone): allow Velo, then reopen it.").to_string(),
-                ),
-                // elsewhere no permission holds it: the computer's sound (WASAPI loopback) sends
-                // nothing at all while nothing plays
-                // the input's name stays (the empty ring says it's silent): the bar doesn't jump when the music starts
-                Hearing::Waiting | Hearing::Nothing => (if state.name.is_empty() { tr!("Silence").to_string() } else { state.name.clone() }, tr!("Nothing arrives yet: play something, or pick another input").to_string()),
-                Hearing::Failed(e) => (tr!("No audio input").to_string(), e.clone()),
-            },
-        };
+        let (text, tip) = audio_words(&state, current.as_ref());
         // a narrow bar shortens the name
         let text = if tight && text.chars().count() > 16 { format!("{}…", text.chars().take(15).collect::<String>()) } else { text };
         // room on the right for the level: a ring whose middle fills with the sound
@@ -1472,6 +1452,32 @@ fn display_name(name: &str) -> String {
 
 /// The inputs to listen to: the computer's sound, the default input, each device, each app that
 /// uses audio. Returns the one picked, and whether the way to the permission was asked for.
+/// What the audio input does, in a few words and in full: the audio chip's text and its tip.
+fn audio_words(state: &AudioState, current: Option<&Input>) -> (String, String) {
+    let app = match current {
+        Some(Input::App { name, .. }) => Some(name.clone()),
+        _ => None,
+    };
+    match (&state.hearing, &app) {
+        (Hearing::Failed(e), Some(name)) => (tr!("Waiting for {}", name), e.clone()),
+        (Hearing::Nothing, Some(name)) => (tr!("{} is silent", name), tr!("Nothing plays in {}. If something does: macOS System Settings → Privacy & Security → Screen & System Audio Recording, allow Velo, then reopen it.", name)),
+        (hearing, _) => match hearing {
+            Hearing::Live => (state.name.clone(), tr!("Listening to {}", state.name)),
+            Hearing::Waiting if cfg!(target_os = "macos") => (tr!("Waiting for permission…").to_string(), tr!("Waiting for the input to start (on macOS, for your permission)").to_string()),
+            Hearing::Nothing if cfg!(target_os = "macos") => (
+                // short enough to fit a narrow bar: the tip and the menu's first item say how
+                tr!("No sound: allow Velo").to_string(),
+                tr!("Only silence arrives. macOS: System Settings → Privacy & Security → Screen & System Audio Recording (or Microphone): allow Velo, then reopen it.").to_string(),
+            ),
+            // elsewhere no permission holds it: the computer's sound (WASAPI loopback) sends
+            // nothing at all while nothing plays
+            // the input's name stays (the empty ring says it's silent): the bar doesn't jump when the music starts
+            Hearing::Waiting | Hearing::Nothing => (if state.name.is_empty() { tr!("Silence").to_string() } else { state.name.clone() }, tr!("Nothing arrives yet: play something, or pick another input").to_string()),
+            Hearing::Failed(e) => (tr!("No audio input").to_string(), e.clone()),
+        },
+    }
+}
+
 fn audio_menu(ui: &mut Ui, t: &Theme, state: &AudioState, current: Option<&Input>) -> (Option<Input>, bool) {
     let (mut pick, mut help) = (None, false);
     // nothing arrives: the way to the permission first (macOS: the one that holds it)

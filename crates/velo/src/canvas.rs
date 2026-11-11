@@ -33,7 +33,7 @@ const DECK_H: f32 = 84.0;
 /// A line of the jacks under a card's footer: a signal plugged into it.
 const JACK_H: f32 = 22.0;
 /// An output's row in a card that lists them (an Audio In's Level, Bass…).
-const ROW_H: f32 = 60.0;
+const ROW_H: f32 = 44.0;
 /// Samples in a row's curve: a second and a half.
 const TRAIL: usize = 45;
 /// Room the canvas leaves between nodes it places itself (append, duplicate, the demo).
@@ -47,6 +47,9 @@ const ZOOM_FLOOR: f32 = 0.5;
 const STEPS: [f32; 10] = [0.02, 0.03, 0.06, 0.13, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0];
 /// Screen room around the nodes when the view fits them.
 const FIT_MARGIN: f32 = 64.0;
+/// The strip along the canvas' bottom the floating toolbar and zoom menu take, kept free of
+/// fitted nodes (FIT_MARGIN already leaves part of it).
+const TOOLBAR_ROOM: f32 = 40.0;
 /// How fast a wheel or pinch zoom catches up with the pointer (seconds; Figma-like easing).
 const ZOOM_EASE: f32 = 0.05;
 /// Below this, names would be too small to read: cards keep their color and viewer only.
@@ -245,6 +248,9 @@ pub struct State {
     /// The part of the canvas no panel covers (last frame's): what fitting fills, where the
     /// zoom menu and empty state go. The panels float over the rest.
     pub view: Option<Rect>,
+    /// The floating preview card over the canvas (last frame's), if it shows: fitting keeps
+    /// the nodes out from under it.
+    pub covered: Option<Rect>,
     /// Asked for by the toolbar or the menu: the nodes arranged, done where the canvas runs.
     pub arrange: bool,
     /// Nodes just arranged: where each was and when, it slides to its place.
@@ -641,6 +647,22 @@ fn fit(b: Option<Rect>, center: Pos2, view: Rect, max: f32) -> Camera {
     Camera { pan: view.center() - center - b.center().to_vec2() * zoom, zoom }
 }
 
+/// The part of `view` beside a card floating over it (left, right, above or below) where the
+/// nodes `b` come out largest, so they're fitted where they're seen; `view` itself when
+/// there's no card, or what's left beside it is too small to hold a graph.
+fn uncovered(view: Rect, card: Option<Rect>, b: Option<Rect>) -> Rect {
+    let Some(c) = card.map(|c| c.expand(FIT_MARGIN / 2.0)).filter(|c| c.intersects(view)) else { return view };
+    let sides = [
+        Rect::from_min_max(view.min, Pos2::new(c.left(), view.bottom())),
+        Rect::from_min_max(Pos2::new(c.right(), view.top()), view.max),
+        Rect::from_min_max(view.min, Pos2::new(view.right(), c.top())),
+        Rect::from_min_max(Pos2::new(view.left(), c.bottom()), view.max),
+    ];
+    let room = |r: &Rect| b.map_or(r.area(), |b| fit_zoom(b, *r));
+    let best = sides.into_iter().filter(|r| r.width() >= 240.0 && r.height() >= 180.0).max_by(|x, y| room(x).total_cmp(&room(y)));
+    best.unwrap_or(view)
+}
+
 /// How far out you can zoom: until every node shows (Figma-style, recomputed as the graph
 /// grows), and at least to [`ZOOM_FLOOR`] so an empty scene doesn't zoom out forever.
 fn min_zoom(scene: &Scene, view: Rect) -> f32 {
@@ -966,8 +988,9 @@ struct Row<'a> {
 /// A card's outputs as rows filling all of it between its header and its footer: a graph a row
 /// with a line between each, its last second and a half as a filled curve running to its port, a
 /// dot that swells with it, its name inside at the top left; a hit lights its row up. Returns
-/// where the model's badges went (their hover says what they mean).
-fn paint_rows(painter: &Painter, t: &Theme, r: Rect, zoom: f32, deck: f32, rows: &[Row]) -> Vec<Rect> {
+/// where the model's badges went (their hover says what they mean). `silence`: nothing comes
+/// in (an Audio In without sound), said across the rows instead of leaving them blank.
+fn paint_rows(painter: &Painter, t: &Theme, r: Rect, zoom: f32, deck: f32, rows: &[Row], silence: Option<&str>) -> Vec<Rect> {
     let mut badges = Vec::new();
     let top = r.top() + (HEADER_H + deck) * zoom;
     let panel = Rect::from_min_max(pos2(r.left() + 1.0, top), pos2(r.right() - 1.0, top + rows.len() as f32 * ROW_H * zoom));
@@ -1017,6 +1040,19 @@ fn paint_rows(painter: &Painter, t: &Theme, r: Rect, zoom: f32, deck: f32, rows:
                 badges.push(badge);
             }
         }
+    }
+    if let Some(why) = silence.filter(|_| zoom >= TEXT_ZOOM && !rows.is_empty()) {
+        // under the names, over the flat curves: what's wrong and where to fix it
+        let width = panel.width() - 32.0 * zoom;
+        let title = painter.layout(why.to_string(), FontId::proportional(13.0 * zoom), t.fg_text, width);
+        let hint = painter.layout(tr!("Pick what to hear in the audio menu, top left").to_string(), FontId::proportional(11.0 * zoom), t.fg_muted, width);
+        let gap = 4.0 * zoom;
+        let size = vec2(title.size().x.max(hint.size().x), title.size().y + gap + hint.size().y);
+        let block = Rect::from_center_size(panel.center() + vec2(0.0, 8.0 * zoom), size);
+        painter.rect_filled(block.expand2(vec2(12.0, 8.0) * zoom), CornerRadius::same((6.0 * zoom) as u8), t.bg_field);
+        let (title_w, hint_w) = (title.size().x, hint.size().x);
+        painter.galley(pos2(block.center().x - title_w / 2.0, block.top()), title, t.fg_text);
+        painter.galley(pos2(block.center().x - hint_w / 2.0, block.bottom() - hint.size().y), hint, t.fg_muted);
     }
     badges
 }
@@ -1392,14 +1428,17 @@ impl App {
         st.hovered = bg.hovered() || bg.dragged();
 
         // ---- the view ----
-        let mut cam = st.cameras.get(&scene.id).copied().unwrap_or_else(|| fit(bounds(scene, None), center, view, 1.0));
+        // where fitting puts the nodes: clear of the preview card and of the toolbar along the
+        // bottom (its pill and the gap under it)
+        let free = uncovered(view.with_max_y(view.bottom() - TOOLBAR_ROOM), st.covered, bounds(scene, None));
+        let mut cam = st.cameras.get(&scene.id).copied().unwrap_or_else(|| fit(bounds(scene, None), center, free, 1.0));
         let min = min_zoom(scene, view);
         if let Some(to) = st.zoom_to.take() {
             // keys and the zoom menu ease there; the pointer if it's on the canvas, else the view's center
             let at = pointer.filter(|_| st.hovered).unwrap_or(view.center());
             let target = match to {
-                ZoomTo::Fit => fit(bounds(scene, None), center, view, 1.0),
-                ZoomTo::Selection => fit(bounds(scene, Some(&st.selected)).or(bounds(scene, None)), center, view, 2.0),
+                ZoomTo::Fit => fit(bounds(scene, None), center, free, 1.0),
+                ZoomTo::Selection => fit(bounds(scene, Some(&st.selected)).or(bounds(scene, None)), center, free, 2.0),
                 ZoomTo::Level(z) => cam.zoomed(center, view.center(), z.clamp(min, MAX_ZOOM)),
                 ZoomTo::In => cam.zoomed(center, at, step(cam.zoom, true).clamp(min, MAX_ZOOM)),
                 ZoomTo::Out => cam.zoomed(center, at, step(cam.zoom, false).clamp(min, MAX_ZOOM)),
@@ -2269,7 +2308,10 @@ impl App {
                     })
                     .collect();
                 let deck = deck_h(&n.kind);
-                let badges = paint_rows(&painter, &t, r, cam.zoom, deck, &listed);
+                // whether sound comes in, as the audio chip knows it
+                let heard = (deck > 0.0).then(|| self.live.as_ref().and_then(|l| l.audio.state()).map(|s| s.hearing == crate::live::Hearing::Live)).flatten();
+                let silence = (heard == Some(false) && !n.off).then(|| tr!("No sound comes in"));
+                let badges = paint_rows(&painter, &t, r, cam.zoom, deck, &listed, silence);
                 if ui.ctx().pointer_hover_pos().is_some_and(|p| badges.iter().any(|b| b.contains(p))) {
                     bg.clone().on_hover_text(widgets::model_tip());
                 }
@@ -2277,8 +2319,13 @@ impl App {
                     let at = |id: &str| k.outputs.iter().position(|o| *o == id).map_or(0.0, |p| read(&n.id, p as u8));
                     let room = Rect::from_min_max(pos2(r.left() + 1.0, r.top() + HEADER_H * cam.zoom + 0.5), pos2(r.right() - 1.0, r.top() + (HEADER_H + deck) * cam.zoom));
                     let level = if n.off { 0.0 } else { at("level") };
-                    // (the test loop's name carries its tempo: the deck shows that apart)
-                    let source = self.live.as_ref().and_then(|l| l.audio.state()).map(|s| s.name.split(" · ").next().unwrap_or_default().to_string()).unwrap_or_default();
+                    // (the test loop's name carries its tempo: the deck shows that apart); while
+                    // nothing comes in, silence rather than a name that seems to play (the rows
+                    // under it say why and where to fix it)
+                    let source = match heard {
+                        Some(false) => tr!("Silence").to_string(),
+                        _ => self.live.as_ref().and_then(|l| l.audio.state()).map(|s| s.name.split(" · ").next().unwrap_or_default().to_string()).unwrap_or_default(),
+                    };
                     let bpm = self.live.as_ref().map(|l| l.clock()).map(|c| (c[0], c[1]));
                     let deck = Deck { reel: st.reel, tape: ((now / 90.0).fract() as f32 * 2.0 - 1.0).abs(), level, peak: st.peak, source: &source, bpm };
                     paint_deck(&painter, &t, room, cam.zoom, &deck);

@@ -1097,6 +1097,7 @@ impl App {
             kit::empty_state(ui, &t, icons::STACK, tr!("No scene selected"), tr!("Add a scene on the left to start."));
             return;
         };
+        self.canvas.covered = None;
         if !self.settings.hide_preview && self.settings.split == Split::Off {
             self.preview_card(ui.ctx(), &t, view);
         }
@@ -1876,7 +1877,8 @@ impl App {
 
     fn preview_card(&mut self, ctx: &egui::Context, t: &Theme, view: egui::Rect) {
         let c = self.session.project.canvas;
-        let w = 288.0;
+        // a third of a narrow canvas at most, so the nodes keep room beside it
+        let w = (view.width() * 0.32).clamp(168.0, 288.0);
         let h = (w * c.height as f32 / c.width.max(1) as f32).clamp(60.0, 400.0);
         let picture = self.live.as_ref().and_then(live::Live::picture);
         let (blackout, frozen, pattern) = self.live.as_ref().map_or((false, false, false), |l| (l.blackout, l.frozen, l.pattern));
@@ -1892,7 +1894,7 @@ impl App {
         let mut launch = false;
         let (mut hide, mut behind) = (false, self.settings.preview_background);
         // a little window: drag it anywhere, it stays where you left it
-        egui::Area::new(Id::unique("preview-card")).order(egui::Order::Middle).default_pos(view.right_top() + egui::vec2(-t.pad, t.pad)).pivot(egui::Align2::RIGHT_TOP).movable(true).constrain_to(view).show(ctx, |ui| {
+        let shown = egui::Area::new(Id::unique("preview-card")).order(egui::Order::Middle).default_pos(view.right_top() + egui::vec2(-t.pad, t.pad)).pivot(egui::Align2::RIGHT_TOP).movable(true).constrain_to(view).show(ctx, |ui| {
             let card = Frame::new().fill(t.bg_panel).stroke(egui::Stroke::new(1.0, t.line)).corner_radius(t.radius_md).shadow(ctx.global_style().visuals.popup_shadow).inner_margin(t.gap).show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(t.gap, t.gap);
                 ui.horizontal(|ui| {
@@ -1913,7 +1915,10 @@ impl App {
                             behind ^= true;
                         }
                         if on_air {
-                            ui.label(RichText::new(format!("{}×{}", c.width, c.height)).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+                            // the size only where the header has room for it beside the name
+                            if w >= 240.0 {
+                                ui.label(RichText::new(format!("{}×{}", c.width, c.height)).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+                            }
                         } else {
                             let r = kit::icon_button(ui, t, icons::PLAY, &launch_tip, armed.is_some());
                             launch = !self.learnable(ui, &r, &Target::LaunchSelected) && r.clicked();
@@ -1938,6 +1943,7 @@ impl App {
                 ui.painter().rect_stroke(edge.expand(2.0), t.radius_md + 2, egui::Stroke::new(3.0, t.accent.gamma_multiply(0.15 * beat)), egui::StrokeKind::Outside);
             }
         });
+        self.canvas.covered = Some(shown.response.rect);
         if hide {
             self.settings.hide_preview = true;
         }
