@@ -698,6 +698,9 @@ pub const VIDEO: &str = "velo.video";
 /// `camera:<device>` (Spout on Windows, cameras on Windows and macOS): the Image shader on frames as they arrive. Not
 /// a file, so nothing is exported or warned about missing.
 pub const LIVE: &str = "velo.live";
+/// A Live node's source that is no feed from outside: what plays under the layer its scene is
+/// (docs/scenes.md §3, Layers), so a layer on top can process the picture instead of covering it.
+pub const LIVE_PROGRAM: &str = "program";
 
 /// Up to 4 × 4 cells of eight inputs, one picture out (it was an output node until format 3).
 pub const GRID: &str = "velo.grid";

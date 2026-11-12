@@ -164,6 +164,9 @@ pub struct Graph {
     pub lists: Vec<crate::media::Reel>,
     /// Its nodes that read only some of their inputs (Switches, Blends), by node index.
     pub lazy: Vec<(usize, crate::gpu::Lazy)>,
+    /// What plays under it, for a layer on top whose Live nodes show the program: the render
+    /// thread fills it when it puts the layers together ([`Under`]), the nodes read it a frame later.
+    pub under: Option<wgpu::TextureView>,
 }
 
 /// UI → render thread. Fire and forget. Graphs go by the key the UI installs them with (one
@@ -1117,9 +1120,15 @@ impl Thread {
             showing.extend(was.iter().filter(|l| !layers.iter().any(|on| on.0 == l.0)).map(|&(key, layer, blend, fade)| (key, layer, blend, fade - step)).filter(|l| l.3 > 0.0));
             // the layers switched on: those under the program, then those over it (one that is
             // the live scene shows once, as the scene)
-            let shown: Vec<_> = showing.iter().filter(|l| ![show.live, fading].contains(&l.0)).filter_map(|&(key, layer, blend, fade)| Some((picture(key)?, layer, blend, fade))).collect();
+            let shown: Vec<_> = showing.iter().filter(|l| ![show.live, fading].contains(&l.0)).filter_map(|&(key, layer, blend, fade)| Some((picture(key)?, layer, blend, fade, key))).collect();
             let size = size.or_else(|| showing.iter().find_map(|l| graphs.iter().find(|g| g.0 == l.0).map(|(_, g)| g.runner.size())));
-            let program = match size.filter(|_| !shown.is_empty()) {
+            // the graphs that read what plays under them (a layer on top with a Live node on the
+            // program), and what each is given this frame; with none built, nothing here costs
+            let given = |key: u64| under(key, [show.live, fading], &showing, [edit, peeked]);
+            let reading = |want: Under| graphs.iter().filter_map(move |(key, g)| g.under.as_ref().filter(|_| given(*key) == Some(want)));
+            // one that isn't on yet still shows what it would do (its preview, its card): the
+            // program is staged for it even with no layer on
+            let program = match size.filter(|_| !shown.is_empty() || reading(Under::Program).next().is_some()) {
                 Some(size) => {
                     if stage.as_ref().is_none_or(|s| s.0 != size) {
                         stage = Some((size, [crate::gpu::texture(&self.device, size), crate::gpu::texture(&self.device, size)]));
@@ -1128,15 +1137,28 @@ impl Thread {
                     let (a, b, p) = program.unwrap_or((&black, &black, 0.0));
                     stage_blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), &views[0], None);
                     let mut at = 0;
-                    for (pass, &(view, layer, blend, fade)) in shown.iter().filter(|l| l.1 == Layer::Bottom).chain(shown.iter().filter(|l| l.1 == Layer::Top)).enumerate() {
+                    for (pass, &(view, layer, blend, fade, key)) in shown.iter().filter(|l| l.1 == Layer::Bottom).chain(shown.iter().filter(|l| l.1 == Layer::Top)).enumerate() {
+                        // what is under a layer on top, kept before the layer goes on: its graph
+                        // reads it next frame. Never its own picture, so nothing feeds back
+                        if let Some((_, g)) = graphs.iter().find(|g| g.0 == key && layer == Layer::Top)
+                            && let Some(to) = &g.under
+                        {
+                            keep(&mut encoder, &views[at], to);
+                        }
                         let (under, over) = if layer == Layer::Top { (&views[at], view) } else { (view, &views[at]) };
                         compose.draw(&self.device, &self.queue, &mut encoder, [under, over], blend, (fade, layer == Layer::Bottom), pass, &views[1 - at]);
                         at = 1 - at;
+                    }
+                    for to in reading(Under::Program) {
+                        keep(&mut encoder, &views[at], to);
                     }
                     Some((&views[at], &views[at], 0.0))
                 }
                 None => program,
             };
+            for to in reading(Under::Black) {
+                clear(&mut encoder, to);
+            }
             if freeze
                 && held.is_none()
                 && let (Some((a, b, p)), Some(size)) = (program, size)
@@ -1283,6 +1305,43 @@ fn drop_later(graph: Box<Graph>) {
 
 /// How long a layer takes to come in or go out when it's switched, in seconds.
 const LAYER_FADE: f32 = 0.5;
+
+/// What a graph that reads what plays under it ([`Graph::under`]) is given in a frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Under {
+    /// The stage as it is when the layer is about to go on it: the program and every layer
+    /// before this one. Each layer on top gets its own, so several effects stack.
+    Stage,
+    /// The program as it goes out, every layer on it: for a layer that is off but renders (it
+    /// is the edited scene, or its card is being pictured), so its preview shows what switching
+    /// it on would do.
+    Program,
+    /// Nothing: the scene going out has only itself to read, which would feed back.
+    Black,
+}
+
+/// What the graph `key` is given: `on_air` are the live scene and the one fading out, `showing`
+/// the layers on or fading, `aside` the edited scene and the one being pictured. None for a
+/// graph that only waits (warm): nothing reads its picture.
+fn under(key: u64, on_air: [u64; 2], showing: &[(u64, Layer, LayerBlend, f32)], aside: [u64; 2]) -> Option<Under> {
+    if on_air.contains(&key) {
+        return Some(Under::Black);
+    }
+    match showing.iter().find(|l| l.0 == key) {
+        Some(l) if l.1 == Layer::Top => Some(Under::Stage),
+        // (a layer just moved underneath, until its graph is built again without the picture)
+        Some(_) => Some(Under::Black),
+        None => aside.contains(&key).then_some(Under::Program),
+    }
+}
+
+/// Copies the picture `from` into `to`: what a layer's graph reads next frame. A copy, so only
+/// between pictures of one size (a canvas resized shows the old one for a frame or two).
+fn keep(encoder: &mut wgpu::CommandEncoder, from: &wgpu::TextureView, to: &wgpu::TextureView) {
+    if from.texture().size() == to.texture().size() {
+        encoder.copy_texture_to_texture(from.texture().as_image_copy(), to.texture().as_image_copy(), to.texture().size());
+    }
+}
 
 /// Puts a layer and what's under it together, a [`LayerBlend`] each: one pipeline per blend, its
 /// constant set when built, so the passes of a frame share no uniform.
@@ -1614,6 +1673,20 @@ mod tests {
     }
 
     #[test]
+    fn each_graph_is_given_what_plays_under_it() {
+        let (live, fading, top, upper, bottom, edited, warm) = (1, 2, 3, 4, 5, 6, 7);
+        // the upper one is fading out: still showing
+        let showing = [(bottom, Layer::Bottom, LayerBlend::Screen, 1.0), (top, Layer::Top, LayerBlend::Over, 1.0), (upper, Layer::Top, LayerBlend::Over, 0.3)];
+        let given = |key| under(key, [live, fading], &showing, [edited, 0]);
+        assert_eq!((given(top), given(upper)), (Some(Under::Stage), Some(Under::Stage)), "every layer on top, what is under itself");
+        assert_eq!((given(live), given(fading)), (Some(Under::Black), Some(Under::Black)), "the scene going out never reads itself");
+        assert_eq!(given(bottom), Some(Under::Black), "nothing is under a layer underneath");
+        assert_eq!(given(edited), Some(Under::Program), "a layer that is off, edited: what it would change");
+        assert_eq!(given(warm), None, "one that only waits is left alone");
+        assert_eq!(under(top, [top, 0], &showing, [top, 0]), Some(Under::Black), "a layer launched as the scene is the program");
+    }
+
+    #[test]
     fn a_picture_keeps_its_shape_on_any_display() {
         assert_eq!(fit([1920, 1080], [1920, 1080]), None);
         assert_eq!(fit([3840, 2160], [1920, 1080]), None, "the same shape, larger");
@@ -1722,7 +1795,10 @@ mod tests {
         let kaleido = &programs[1].node;
         let kick = velo_core::Mapping { param: "zoom".into(), source: "kick".into(), amount: 0.2, attack_ms: 5.0, release_ms: 150.0, invert: false };
         let mods = vec![Modulator::new(&programs[0].node, &[], Vec::new()), Modulator::new(kaleido, &kaleido.values(|_| None), crate::routes(kaleido, &[kick], &[]))];
-        engine.send(Command::Install { key: 1, graph: Box::new(Graph { programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lazy: Vec::new() }) });
+        engine.send(Command::Install {
+            key: 1,
+            graph: Box::new(Graph { programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lazy: Vec::new(), under: None }),
+        });
         engine.send(Command::Launch { scene: 1, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
         engine.send(Command::Edit(1));
         engine.send(Command::Tempo(140.0));
@@ -1772,7 +1848,7 @@ mod tests {
         let runner = Runner::new(device, std::slice::from_ref(&program), &[NodeSpec { program: 0, inputs: vec![] }], &[], [64, 36], engine.wave_texture()).unwrap();
         runner.set_params(engine.queue(), std::slice::from_ref(&program), 0, &values);
         let mods = vec![Modulator::new(&program.node, &values, Vec::new())];
-        Box::new(Graph { programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lazy: Vec::new() })
+        Box::new(Graph { programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lazy: Vec::new(), under: None })
     }
 
     /// The newest preview's average red and blue (0..255), waiting up to 2 s for one.
@@ -1825,6 +1901,74 @@ mod tests {
         assert!(cyan(at(160, 90)), "the middle: {:?}", at(160, 90));
         assert_eq!(at(103, 119), [255, 255, 255], "the first bar is white");
         assert_eq!(at(119, 119), [255, 255, 0], "the second is yellow");
+    }
+
+    /// A layer on top built from a scene: what plays under it, its red, green and blue each
+    /// moved one on (red to blue, yellow to magenta), into the Output.
+    fn turned(compiler: &crate::compile::Compiler, key: u64) -> Box<Graph> {
+        use serde_json::json;
+        let mut s = velo_core::Session::default();
+        s.run("scene.add", json!({})).unwrap();
+        for kind in [velo_core::LIVE, velo_core::SHADER_FX, velo_core::OUTPUT] {
+            s.run("node.add", json!({ "kind": kind })).unwrap();
+        }
+        let mut scene = s.active().unwrap().clone();
+        let ids: Vec<String> = scene.nodes.iter().map(|n| n.id.clone()).collect();
+        scene.edges = vec![velo_core::Edge { from: (ids[0].clone(), 0), to: (ids[1].clone(), 0) }, velo_core::Edge { from: (ids[1].clone(), 0), to: (ids[2].clone(), 0) }];
+        scene.nodes[0].media = Some(velo_core::LIVE_PROGRAM.into());
+        scene.nodes[1].code =
+            Some("/*{ \"name\": \"Turn\", \"category\": \"effect\", \"inputs\": [{ \"id\": \"src\", \"type\": \"texture\" }] }*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f { return vec4f(textureSample(src, smp, uv).gbr, 1.0); }".into());
+        scene.layer = Layer::Top;
+        compiler.build(key, scene, [64, 36]);
+        let built = compiler.built.recv_timeout(Duration::from_secs(20)).expect("a build").1.expect("it compiles");
+        assert!(built.errors.is_empty() && built.graph.under.is_some(), "built with the picture under it: {:?}", built.errors);
+        built.graph
+    }
+
+    #[test]
+    fn a_layer_on_top_processes_what_plays_under_it() {
+        let _gpu = crate::gpu_lock();
+        let Ok(engine) = Engine::start(None) else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let compiler = crate::compile::Compiler::new(engine.device().clone(), engine.queue().clone(), engine.wave_texture().clone());
+        let (yellow, first, second) = (1, 2, 3);
+        engine.send(Command::Install { key: yellow, graph: flat(&engine, [1.0, 1.0, 0.0]) });
+        engine.send(Command::Install { key: first, graph: turned(&compiler, first) });
+        engine.send(Command::Install { key: second, graph: turned(&compiler, second) });
+        engine.send(Command::Launch { scene: yellow, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
+        let wait = |what: &str, ok: &dyn Fn([f32; 2]) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut seen = None;
+            while !seen.is_some_and(ok) {
+                assert!(Instant::now() < deadline, "{what} within 5 s: red and blue {seen:?}");
+                seen = red_blue(&engine);
+            }
+        };
+        wait("the program yellow", &|[r, b]| r > 250.0 && b < 5.0);
+        // the layer on, blend Over: the picture under it turned, in its place, once its fade is through
+        engine.send(Command::Layers(vec![(first, Layer::Top, LayerBlend::Over)]));
+        let part_way = std::cell::Cell::new(false);
+        wait("yellow turned magenta", &|[r, b]| {
+            part_way.set(part_way.get() || (b > 20.0 && b < 235.0));
+            r > 250.0 && b > 250.0
+        });
+        assert!(part_way.get(), "it fades in: a picture part of the way was seen");
+        // a second one over it reads the first's picture, not the scene's: turned twice
+        engine.send(Command::Layers(vec![(first, Layer::Top, LayerBlend::Over), (second, Layer::Top, LayerBlend::Over)]));
+        wait("magenta turned cyan", &|[r, b]| r < 5.0 && b > 250.0);
+        // both off: the scene as it is, and nothing left of them
+        engine.send(Command::Layers(Vec::new()));
+        wait("yellow again", &|[r, b]| r > 250.0 && b < 5.0);
+        // off but edited: its preview shows what it would do to the program, which stays as it is
+        engine.send(Command::Edit(first));
+        wait("the preview magenta", &|[r, b]| r > 250.0 && b > 250.0);
+        engine.send(Command::Edit(0));
+        wait("the program still yellow", &|[r, b]| r > 250.0 && b < 5.0);
+        // launched as the scene it has nothing under it: black, not what it last read
+        engine.send(Command::Launch { scene: first, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
+        wait("black", &|[r, b]| r < 5.0 && b < 5.0);
     }
 
     #[test]

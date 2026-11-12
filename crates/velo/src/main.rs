@@ -2342,28 +2342,38 @@ impl App {
         }
     }
 
-    /// A Live node's source: the NDI sources and Spout senders there are right now, to pick from
-    /// (the list looks again by itself every few seconds), and why one can't be reached.
+    /// A Live node's source: what plays under the layer its scene is, or one of the NDI sources
+    /// and Spout senders there are right now (the list looks again by itself every few
+    /// seconds), and why one can't be reached.
     fn live_section(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str) {
         let current = self.session.active().and_then(|s| s.node(node)).and_then(|n| n.media.clone());
+        // the program is always there to pick, and shown in words: it is no feed with a name
+        let program = current.as_deref() == Some(velo_core::LIVE_PROGRAM);
+        let on_top = self.session.active().is_some_and(|s| s.layer == Layer::Top);
+        let named = |source: &str| if source == velo_core::LIVE_PROGRAM { tr!("What plays under this layer").to_string() } else { source.to_string() };
         let failed = current.as_ref().and_then(|_| self.live.as_ref()?.media(node)).and_then(|l| l.get()?.as_ref().err().cloned());
         let mut sources = velo_engine::input::sources();
         // the one chosen stays in the list, found or not
-        if let Some(chosen) = current.as_ref().filter(|c| !sources.contains(c)) {
+        if let Some(chosen) = current.as_ref().filter(|c| !sources.contains(c) && !program) {
             sources.insert(0, chosen.clone());
         }
+        sources.insert(0, velo_core::LIVE_PROGRAM.to_string());
         let mut pick = None;
         kit::section(ui, t, icons::BROADCAST, tr!("LIVE SOURCE"), false, |ui| {
-            match (&failed, sources.is_empty()) {
+            match (&failed, program) {
                 (Some(e), _) => kit::warning(ui, t, e),
-                (None, true) => kit::hint(ui, t, tr!("Looking for sources…")),
+                (None, true) if on_top => kit::hint(ui, t, tr!("The picture under this layer, a frame late: wire it through effects into the Output and set the layer's blend to Over, and the layer changes everything under it.")),
+                (None, true) => kit::warning(ui, t, tr!("Black until this scene is a layer on top (the scene's menu, Layer): only then is something under it.")),
+                // (the program is always listed: alone, nothing else was found yet)
+                (None, false) if sources.len() == 1 => kit::hint(ui, t, tr!("Looking for sources…")),
                 (None, false) => kit::hint(ui, t, tr!("Pick an NDI source, a Spout sender or a camera: what it sends, as it sends it.")),
             };
             ui.add_space(t.gap);
-            // one list to choose from: none, then what's there
-            let r = kit::select(ui, t, Some(icons::BROADCAST), current.as_deref().unwrap_or(tr!("None")));
+            // one list to choose from: none, what plays under the layer, then what's there
+            let names: Vec<String> = sources.iter().map(|s| named(s)).collect();
+            let r = kit::select(ui, t, Some(icons::BROADCAST), &current.as_deref().map_or(tr!("None").to_string(), named));
             kit::menu(t, &r).show(|ui| {
-                let items: Vec<(&str, &str)> = std::iter::once(("", tr!("None"))).chain(sources.iter().map(|s| ("", s.as_str()))).collect();
+                let items: Vec<(&str, &str)> = std::iter::once(("", tr!("None"))).chain(names.iter().map(|s| ("", s.as_str()))).collect();
                 let chosen = current.as_ref().and_then(|c| sources.iter().position(|s| s == c)).map_or(0, |i| i + 1);
                 match kit::choose(ui, t, &items, Some(chosen)) {
                     Some(0) => pick = Some(String::new()),
