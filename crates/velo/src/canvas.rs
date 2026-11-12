@@ -200,6 +200,43 @@ impl Menu {
     }
 }
 
+/// Find a node: the words typed, which of the nodes they match is shown, and whether the field
+/// has yet to take the keyboard.
+pub struct Find {
+    query: String,
+    at: usize,
+    focus: bool,
+}
+
+impl Find {
+    /// Open with `words` typed, on their first match (`VELO_DEMO_FIND`, screenshots).
+    pub fn with(words: &str) -> Self {
+        Self { query: words.to_string(), at: 0, focus: true }
+    }
+}
+
+impl Find {
+    /// The field takes the keyboard again (the key that opens it, pressed while it's open).
+    pub fn refocus(&mut self) {
+        self.focus = true;
+    }
+}
+
+impl Default for Find {
+    fn default() -> Self {
+        Self { query: String::new(), at: 0, focus: true }
+    }
+}
+
+/// The nodes of `scene` whose name or kind holds `words`, whatever the case, in its order.
+fn found(scene: &Scene, words: &str) -> Vec<String> {
+    let words = words.trim().to_lowercase();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    scene.nodes.iter().filter(|n| n.name.to_lowercase().contains(&words) || n.kind.to_lowercase().contains(&words)).map(|n| n.id.clone()).collect()
+}
+
 /// The canvas' UI state: the view per scene and the selection. Not saved, not undoable.
 #[derive(Default)]
 pub struct State {
@@ -232,6 +269,8 @@ pub struct State {
     pub menu: Option<Menu>,
     /// Asked for by a key or a button; done where the canvas knows its size.
     pub open_menu: bool,
+    /// The search over the canvas, while it's open.
+    pub find: Option<Find>,
     pub zoom_to: Option<ZoomTo>,
     reveal: Option<String>,
     /// Under the pointer last frame (the keymap's canvas keys work then).
@@ -2788,6 +2827,44 @@ impl App {
             Some(Act::Fit) => st.zoom_to = Some(ZoomTo::Fit),
             Some(Act::Arrange) => st.arrange = true,
             _ => {}
+        }
+        // Find: the matching nodes one at a time, selected and brought into view; Enter goes to
+        // the next (Shift: the one before), Esc closes
+        if let Some(mut find) = st.find.take() {
+            let hits = found(scene, &find.query);
+            let (mut go, mut close) = (false, false);
+            kit::pill(ui.ctx(), &t, "find", view.center_top() + vec2(0.0, t.pad), Align2::CENTER_TOP, |ui| {
+                ui.horizontal(|ui| {
+                    let r = ui.add(kit::field(&mut find.query).hint_text(format!("{}  {}", icons::MAGNIFYING_GLASS, tr!("Find a node…"))).desired_width(220.0));
+                    if std::mem::take(&mut find.focus) {
+                        r.request_focus();
+                    }
+                    if r.changed() {
+                        (find.at, go) = (0, true);
+                    }
+                    let (enter, back, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
+                    if enter && r.lost_focus() && !hits.is_empty() {
+                        find.at = (find.at + if back { hits.len() - 1 } else { 1 }) % hits.len();
+                        go = true;
+                        r.request_focus();
+                    }
+                    close = esc;
+                    let count = match (find.query.trim().is_empty(), hits.len()) {
+                        (true, _) => String::new(),
+                        (false, 0) => tr!("No match").to_string(),
+                        (false, n) => format!("{} / {n}", find.at.min(n - 1) + 1),
+                    };
+                    ui.label(RichText::new(count).small().color(t.fg_muted));
+                });
+            });
+            if go && let Some(id) = hits.get(find.at.min(hits.len().saturating_sub(1))) {
+                (st.selected, st.reveal) = (vec![id.clone()], Some(id.clone()));
+                (st.wire, st.map) = (None, None);
+                ui.ctx().request_repaint();
+            }
+            if !close {
+                st.find = Some(find);
+            }
         }
         let corner = view.right_bottom() - vec2(t.pad, t.pad);
         kit::pill(ui.ctx(), &t, "zoom", corner, Align2::RIGHT_BOTTOM, |ui| {

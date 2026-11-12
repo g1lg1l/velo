@@ -21,8 +21,9 @@ const fn cmd(group: &'static str, id: &'static str, label: &'static str) -> Comm
 }
 
 /// In the shortcut sheet's order: the canvas first, it's where you work.
-pub const COMMANDS: [Command; 52] = [
+pub const COMMANDS: [Command; 53] = [
     cmd("Nodes", "canvas.add", "Add a node"),
+    cmd("Nodes", "canvas.find", "Find a node"),
     cmd("Nodes", "canvas.home", "Zoom to fit"),
     cmd("Nodes", "canvas.zoom_selection", "Zoom to selection"),
     cmd("Nodes", "canvas.zoom_100", "Zoom to 100%"),
@@ -124,6 +125,9 @@ impl Preset {
             (Preset::Velo, "scene.remove") => vec![k(C, Key::Backspace)],
             // TouchDesigner's: Tab for the node menu, H for home; then Figma's view keys
             (Preset::Velo, "canvas.add") => vec![k(N, Key::Tab)],
+            // Cmd F, and Ctrl F on a Mac too
+            (Preset::Velo, "canvas.find") if cfg!(target_os = "macos") => vec![k(C, Key::F), k(Modifiers::CTRL, Key::F)],
+            (Preset::Velo, "canvas.find") => vec![k(C, Key::F)],
             (Preset::Velo, "canvas.home") => vec![k(N, Key::H), k(S, Key::Num1)],
             (Preset::Velo, "canvas.zoom_selection") => vec![k(S, Key::Num2)],
             (Preset::Velo, "canvas.zoom_100") => vec![k(S, Key::Num0)],

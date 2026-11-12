@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use dispatch2::DispatchQueue;
 use objc2::rc::{Retained, autoreleasepool};
-use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
+use objc2_core_foundation::CFRetained;
 use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
 use objc2_av_foundation::{
     AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession, AVCaptureVideoDataOutput,
@@ -140,15 +141,12 @@ impl Decoder {
 // ---------------------------------------------------------------------------------------------
 // Cameras
 
-/// A camera's newest frame, from the capture queue to its reader thread.
-#[derive(Default)]
-struct Shot {
-    pixels: Vec<u8>,
-    size: [u32; 2],
-    fresh: bool,
-}
+/// A camera's newest frame, held (not copied) from the capture queue to its reader thread.
+struct Held(CFRetained<CVPixelBuffer>);
+// SAFETY: a pixel buffer may be read from any thread; it's only locked and read, by one at a time
+unsafe impl Send for Held {}
 
-type Slot = Arc<(Mutex<Shot>, Condvar)>;
+type Slot = Arc<(Mutex<Option<Held>>, Condvar)>;
 
 define_class!(
     // SAFETY: NSObject has no subclassing requirements, and Grabber has no Drop
@@ -160,14 +158,13 @@ define_class!(
     unsafe impl NSObjectProtocol for Grabber {}
 
     unsafe impl AVCaptureVideoDataOutputSampleBufferDelegate for Grabber {
-        /// On the capture queue: the frame copied out, the one before it not yet taken replaced.
+        /// On the capture queue: the frame kept, the one before it not yet taken let go.
         #[unsafe(method(captureOutput:didOutputSampleBuffer:fromConnection:))]
         fn frame(&self, _output: &AVCaptureOutput, sample: &CMSampleBuffer, _connection: &AVCaptureConnection) {
             let Some(image) = (unsafe { sample.image_buffer() }) else { return };
-            let (shot, came) = &**self.ivars();
-            let Ok(mut shot) = shot.lock() else { return };
-            if let Some(size) = rows(&image, &mut shot.pixels) {
-                (shot.size, shot.fresh) = (size, !shot.pixels.is_empty());
+            let (newest, came) = &**self.ivars();
+            if let Ok(mut newest) = newest.lock() {
+                *newest = Some(Held(image));
                 came.notify_one();
             }
         }
@@ -180,6 +177,12 @@ fn devices() -> Vec<(String, Retained<AVCaptureDevice>)> {
     unsafe { AVCaptureDevice::devicesWithMediaType(video) }.iter().map(|d| (unsafe { d.localizedName() }.to_string(), d)).collect()
 }
 
+/// Whether macOS is still to say if Velo may use the camera: it asks the first time one opens,
+/// and a camera's first frame waits for the answer.
+pub fn asking() -> bool {
+    unsafe { AVMediaTypeVideo }.is_some_and(|video| unsafe { AVCaptureDevice::authorizationStatusForMediaType(video) } == AVAuthorizationStatus::NotDetermined)
+}
+
 /// The cameras macOS has, by name.
 pub fn cameras() -> Vec<String> {
     autoreleasepool(|_| devices().into_iter().map(|d| d.0).collect())
@@ -187,13 +190,29 @@ pub fn cameras() -> Vec<String> {
 
 /// The camera called `name` (or whose name holds it), read until `stop` says so, each frame's
 /// size, BGRA rows and bytes a row to `each`. Err when there's none by that name, or macOS
-/// won't open it. The first time, macOS asks whether Velo may use the camera: no frame comes
-/// until the answer.
+/// won't open it. The first time, macOS asks whether Velo may use the camera: this waits for
+/// the answer ([`asking`] says so meanwhile).
 pub fn camera(name: &str, stop: impl Fn() -> bool, mut each: impl FnMut([u32; 2], &[u8], usize)) -> Result<(), String> {
     let video = unsafe { AVMediaTypeVideo }.ok_or("no video on this Mac")?;
+    const REFUSED: &str = "macOS doesn't let Velo use the camera: allow it in System Settings, Privacy & Security, Camera";
     let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(video) };
     if status == AVAuthorizationStatus::Denied || status == AVAuthorizationStatus::Restricted {
-        return Err("macOS doesn't let Velo use the camera: allow it in System Settings, Privacy & Security, Camera".into());
+        return Err(REFUSED.into());
+    }
+    if status == AVAuthorizationStatus::NotDetermined {
+        let (tx, answer) = std::sync::mpsc::channel();
+        let answered = block2::RcBlock::new(move |yes: Bool| {
+            let _ = tx.send(yes.as_bool());
+        });
+        unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(video, &answered) };
+        loop {
+            match answer.recv_timeout(Duration::from_millis(100)) {
+                Ok(true) => break,
+                Ok(false) => return Err(REFUSED.into()),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !stop() => {}
+                Err(_) => return Ok(()),
+            }
+        }
     }
     let all = devices();
     let (_, device) = all.iter().find(|d| d.0 == name).or_else(|| all.iter().find(|d| d.0.contains(name))).ok_or_else(|| format!("no camera called {name:?}"))?;
@@ -215,18 +234,23 @@ pub fn camera(name: &str, stop: impl Fn() -> bool, mut each: impl FnMut([u32; 2]
         session.addOutput(&output);
         session.startRunning();
     }
-    let mut frame = Vec::new();
     while !stop() {
-        let (shot, came) = &*slot;
-        let Ok(shot) = shot.lock() else { break };
+        let (newest, came) = &*slot;
+        let Ok(waiting) = newest.lock() else { break };
         // woken now and then to see whether to stop
-        let Ok((mut shot, _)) = came.wait_timeout_while(shot, Duration::from_millis(100), |s| !s.fresh) else { break };
-        if std::mem::take(&mut shot.fresh) {
-            std::mem::swap(&mut frame, &mut shot.pixels);
-            let size = shot.size;
-            drop(shot);
-            each(size, &frame, size[0] as usize * 4);
+        let Ok((mut newest, _)) = came.wait_timeout_while(waiting, Duration::from_millis(100), |n| n.is_none()) else { break };
+        let Some(Held(image)) = newest.take() else { continue };
+        drop(newest);
+        if unsafe { CVPixelBufferLockBaseAddress(&image, CVPixelBufferLockFlags::ReadOnly) } != 0 {
+            continue;
         }
+        let (w, h) = (CVPixelBufferGetWidth(&image), CVPixelBufferGetHeight(&image));
+        let (base, stride) = (CVPixelBufferGetBaseAddress(&image) as *const u8, CVPixelBufferGetBytesPerRow(&image));
+        if !base.is_null() && stride >= w * 4 && h > 0 {
+            // the buffer's own rows, read in place: the one copy is the reader's
+            each([w as u32, h as u32], unsafe { std::slice::from_raw_parts(base, stride * (h - 1) + w * 4) }, stride);
+        }
+        unsafe { CVPixelBufferUnlockBaseAddress(&image, CVPixelBufferLockFlags::ReadOnly) };
     }
     unsafe {
         session.stopRunning();

@@ -312,6 +312,10 @@ struct App {
     space: Option<(f64, bool)>,
     /// `VELO_DEMO_SCENES`: a scene to select once the first one is live, and whether to launch it.
     demo_drop: Option<(String, bool)>,
+    /// When the last UI frame started: the next one never comes sooner than the display needs.
+    painted: Instant,
+    /// What the last frame waited for that, in seconds: not the UI's cost.
+    waited: f32,
     // files
     file: Option<PathBuf>,
     saved: Project,
@@ -367,6 +371,8 @@ impl App {
             assigning: None,
             space: None,
             demo_drop: None,
+            painted: Instant::now(),
+            waited: 0.0,
             file: None,
             saved: Project::default(),
             autosaved: Project::default(),
@@ -398,6 +404,10 @@ impl App {
                     }
                 }
             }
+        }
+        // VELO_DEMO_FIND=words: the canvas' search open with them typed (screenshots)
+        if let Ok(words) = std::env::var("VELO_DEMO_FIND") {
+            app.canvas.find = Some(canvas::Find::with(&words));
         }
         // VELO_DEMO_EDIT=n: scene n selected once the first one is live: edited, not live (tests)
         if let Some(n) = std::env::var("VELO_DEMO_EDIT").ok().and_then(|n| n.parse::<usize>().ok())
@@ -758,6 +768,7 @@ impl App {
                 }
             }
             "canvas.add" => self.canvas.open_menu = true,
+            "canvas.find" => self.canvas.find.get_or_insert_default().refocus(),
             "canvas.home" => self.canvas.zoom_to = Some(canvas::ZoomTo::Fit),
             "canvas.zoom_selection" => self.canvas.zoom_to = Some(canvas::ZoomTo::Selection),
             "canvas.zoom_100" => self.canvas.zoom_to = Some(canvas::ZoomTo::Level(1.0)),
@@ -2287,11 +2298,17 @@ impl App {
                 (None, false) => kit::hint(ui, t, tr!("Pick an NDI source, a Spout sender or a camera: what it sends, as it sends it.")),
             };
             ui.add_space(t.gap);
-            for source in &sources {
-                if kit::button(ui, t, Some(icons::BROADCAST), source, current.as_deref() == Some(source.as_str())).clicked() {
-                    pick = Some(source.clone());
+            // one list to choose from: none, then what's there
+            let r = kit::select(ui, t, Some(icons::BROADCAST), current.as_deref().unwrap_or(tr!("None")));
+            kit::menu(t, &r).show(|ui| {
+                let items: Vec<(&str, &str)> = std::iter::once(("", tr!("None"))).chain(sources.iter().map(|s| ("", s.as_str()))).collect();
+                let chosen = current.as_ref().and_then(|c| sources.iter().position(|s| s == c)).map_or(0, |i| i + 1);
+                match kit::choose(ui, t, &items, Some(chosen)) {
+                    Some(0) => pick = Some(String::new()),
+                    Some(i) => pick = Some(sources[i - 1].clone()),
+                    None => {}
                 }
-            }
+            });
         });
         if let Some(source) = pick {
             self.run("node.set_media", json!({ "node": node, "media": source }));
@@ -3263,6 +3280,8 @@ impl App {
             assigning: None,
             space: None,
             demo_drop: None,
+            painted: Instant::now(),
+            waited: 0.0,
             file: None,
             saved: Project::default(),
             autosaved: Project::default(),
@@ -3290,9 +3309,23 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = ctx.input(|i| i.time);
+        // never faster than a display shows: a window macOS isn't showing (covered, on another
+        // Space) gets no vsync, and anything that asks for a repaint every frame (a card beating
+        // with the music) would spin a core. 120 a second in front, 60 behind another app.
+        let least = Duration::from_micros(if ctx.input(|i| i.focused) { 8_000 } else { 16_000 });
+        let waited = std::mem::take(&mut self.waited);
+        if std::env::var_os("VELO_CAPTURE_TO").is_none()
+            && let Some(wait) = least.checked_sub(self.painted.elapsed())
+        {
+            let before = Instant::now();
+            std::thread::sleep(wait);
+            self.waited = before.elapsed().as_secs_f32();
+        }
+        self.painted = Instant::now();
         let started = Instant::now();
+        // the frame before this one, without what it waited
         if let Some(cpu) = frame.info().cpu_usage {
-            self.cpu.push(now, cpu, self.cpu.last_layout);
+            self.cpu.push(now, (cpu - waited).max(0.0), self.cpu.last_layout);
         }
         if std::env::var_os("VELO_CAPTURE_TO").is_some() && now > 4.8 && !self.cpu.reported {
             self.cpu.reported = true;

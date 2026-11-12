@@ -4485,12 +4485,14 @@ name = "velo-engine"
 version = "0.9.4-beta"
 dependencies = [
  "ab_glyph",
+ "block2 0.6.2",
  "dispatch2",
  "image",
  "libloading 0.8.9",
  "naga",
  "objc2 0.6.5",
  "objc2-av-foundation",
+ "objc2-core-foundation",
  "objc2-core-media",
  "objc2-core-video",
  "objc2-foundation 0.3.2",

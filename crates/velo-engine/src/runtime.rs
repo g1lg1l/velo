@@ -27,7 +27,7 @@ const PREVIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const PREVIEW_EVERY: Duration = Duration::from_millis(16);
 /// Each node's picture for the canvas' cards: this small, in a grid of this many, this often.
 pub const THUMB: [u32; 2] = [128, 72];
-pub const THUMBS: [u32; 2] = [8, 4];
+pub const THUMBS: [u32; 2] = [12, 8];
 const THUMBS_EVERY: Duration = Duration::from_millis(100);
 /// How many frames a graph renders before its card's picture is taken: its feedback and its
 /// files' first frames in.
@@ -650,8 +650,10 @@ impl Timing {
             if result.is_ok() {
                 if let Ok(view) = buffer.slice(..).get_mapped_range() {
                     let at = |k: usize| view.get(k * 8..k * 8 + 8).and_then(|b| <[u8; 8]>::try_from(b).ok()).map_or(0, u64::from_le_bytes);
-                    for (n, slot) in status.costs.0.iter().enumerate().take(nodes) {
-                        let ms = at(2 * n + 1).saturating_sub(at(2 * n)) as f32 * period / 1e6;
+                    let spans: Vec<(u64, u64)> = (0..nodes).map(|n| (at(2 * n), at(2 * n + 1))).collect();
+                    let scale = shared(&spans, (1e8 / period.max(1e-6)) as u64);
+                    for (slot, (from, to)) in status.costs.0.iter().zip(&spans) {
+                        let ms = to.saturating_sub(*from) as f32 * period / 1e6 * scale;
                         slot.store(ms.to_bits(), Relaxed);
                     }
                 }
@@ -661,6 +663,24 @@ impl Timing {
             state.store(FREE, Relaxed);
         });
     }
+}
+
+/// What to scale the nodes' spans by so they add up to the time the GPU was busy with them: it
+/// runs passes side by side (Apple's do), so the spans overlap and add up to several frames.
+/// `spans` are each node's first tick and last; one that ended more than `stale` ticks before
+/// the latest wasn't drawn this frame (asleep) and isn't counted. 1 when nothing overlaps.
+fn shared(spans: &[(u64, u64)], stale: u64) -> f32 {
+    let latest = spans.iter().map(|s| s.1).max().unwrap_or(0);
+    let mut fresh: Vec<(u64, u64)> = spans.iter().copied().filter(|&(from, to)| to > from && to + stale >= latest).collect();
+    fresh.sort_unstable();
+    let sum: u64 = fresh.iter().map(|(from, to)| to - from).sum();
+    // the busy time: the spans put end to end where they overlap
+    let (mut busy, mut end) = (0u64, 0u64);
+    for (from, to) in fresh {
+        busy += to.saturating_sub(from.max(end));
+        end = end.max(to);
+    }
+    if sum > busy && busy > 0 { busy as f32 / sum as f32 } else { 1.0 }
 }
 
 struct Output {
@@ -962,6 +982,12 @@ impl Thread {
                 aside.owed += delta;
             } else if apart {
                 aside.rendered(now);
+            }
+            // a graph going out is pictured as it is, at once
+            if let Some((key, left)) = &mut peek
+                && (*key == show.live || *key == fading)
+            {
+                *left = 1;
             }
             let peeked = peek.map_or(0, |p| p.0);
             let renders = |key: &u64| !(resting && *key == edit) && ([show.live, fading, edit].contains(key) || layers.iter().any(|l| l.0 == *key)) || (*key == peeked && peeked != 0);
@@ -1518,6 +1544,17 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
 mod tests {
     use super::*;
     use crate::{BUILTINS, NodeSpec, ShaderNode};
+
+    #[test]
+    fn overlapping_node_spans_add_up_to_the_busy_time() {
+        // apart: as measured
+        assert_eq!(shared(&[(0, 10), (10, 30)], 1000), 1.0);
+        // three side by side over the same 10 ticks, and one alone for 10: 40 ticks of spans, 20 busy
+        assert_eq!(shared(&[(100, 110), (100, 110), (100, 110), (110, 120)], 1000), 0.5);
+        // one asleep, its ticks from long ago, isn't counted
+        assert_eq!(shared(&[(5000, 5010), (5000, 5010), (0, 900)], 1000), 0.5);
+        assert_eq!(shared(&[], 1000), 1.0);
+    }
 
     #[test]
     fn the_edited_scene_rests_once_a_frame_goes_over_budget() {

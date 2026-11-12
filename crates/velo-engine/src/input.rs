@@ -66,8 +66,26 @@ pub fn open(source: &str) -> Result<Media, String> {
     let (kind, name) = (kind.to_string(), name.to_string());
     let (tx, rx) = channel();
     std::thread::Builder::new().name("velo live".into()).spawn(move || read(&kind, &name, tx)).map_err(|e| e.to_string())?;
-    let (feed, first) = rx.recv_timeout(FIRST_FRAME).map_err(|_| format!("nothing came from {source} in {} s", FIRST_FRAME.as_secs()))??;
+    let first = loop {
+        match rx.recv_timeout(FIRST_FRAME) {
+            // the system is asking whether Velo may use the camera: as long as the answer takes
+            Err(_) if asking(source) => {}
+            first => break first,
+        }
+    };
+    let (feed, first) = first.map_err(|_| format!("nothing came from {source} in {} s", FIRST_FRAME.as_secs()))??;
     Ok(Media { size: feed.size, frames: vec![first], ends: vec![1.0], movie: None, video: None, live: Some(feed), model: None })
+}
+
+/// Whether `source` (or its kind) is a camera the system is still asking leave for (macOS).
+fn asking(source: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    return source.starts_with("camera") && crate::video::asking();
+    #[cfg(not(target_os = "macos"))]
+    return {
+        let _ = source;
+        false
+    };
 }
 
 type First = Result<(Arc<Feed>, Vec<u8>), String>;
@@ -79,9 +97,15 @@ fn read(kind: &str, name: &str, first: Sender<First>) {
     // `open` gave up (it dropped its end), or nobody holds the feed any more
     let gone = Cell::new(false);
     let mut spare = Vec::new();
-    let started = Instant::now();
-    // `open` is long gone when the first frame still hasn't come
-    let stop = || gone.get() || feed.borrow().as_ref().is_some_and(|f| f.strong_count() == 0) || (feed.borrow().is_none() && started.elapsed() > FIRST_FRAME + Duration::from_secs(2));
+    let started = Cell::new(Instant::now());
+    // `open` is long gone when the first frame still hasn't come (the wait starts once the
+    // system has let the camera be used)
+    let stop = || {
+        if asking(kind) {
+            started.set(Instant::now());
+        }
+        gone.get() || feed.borrow().as_ref().is_some_and(|f| f.strong_count() == 0) || (feed.borrow().is_none() && started.get().elapsed() > FIRST_FRAME + Duration::from_secs(2))
+    };
     let each = |size: [u32; 2], pixels: &[u8], stride: usize| {
         if size[0] == 0 || size[1] == 0 {
             return;

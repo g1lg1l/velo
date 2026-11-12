@@ -245,7 +245,7 @@ struct Past {
 /// A graph, ready to render frames: textures allocated, bind groups built. Nothing in
 /// [`Runner::render`] allocates or compiles.
 /// The most nodes of a graph whose cost is measured.
-pub const MAX_TIMED: usize = 64;
+pub const MAX_TIMED: usize = 96;
 
 pub struct Runner {
     size: [u32; 2],

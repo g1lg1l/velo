@@ -32,6 +32,9 @@ objc2-core-media = { version = "0.3.2", features = ["objc2-core-video"] }
 objc2-core-video = "0.3.2"
 # the queue a camera's frames come on (in the tree already through the bindings above)
 dispatch2 = "0.3.1"
+# the block macOS answers the camera permission through, and the frames it hands over held
+block2 = "0.6.2"
+objc2-core-foundation = "0.3.2"
 
 # the same through Media Foundation (`windows` is in the tree already through wgpu, cpal and
 # midir: only more of its modules)

@@ -183,6 +183,8 @@ pub struct Live {
     /// The scene rendering a moment for its card's picture (one at a time), and the scenes
     /// that had their turn: one with nothing to show keeps its wash.
     peek: Option<Peek>,
+    /// When the scene going out was last pictured for its card.
+    shot_at: Instant,
     peeked: std::collections::HashSet<String>,
     /// The video memory the system lets Velo hold, where it says (Windows), and the graphs held
     /// with what their pictures take, as of the last sync.
@@ -236,6 +238,7 @@ impl Live {
             thumbs: None,
             shots: HashMap::new(),
             peek: None,
+            shot_at: Instant::now(),
             peeked: Default::default(),
             budget: None,
             held: (0, 0),
@@ -288,6 +291,17 @@ impl Live {
         {
             let key = self.slot(&scene.id).key;
             self.peek = Some(Peek { scene: scene.id.clone(), key, since: Instant::now(), sent: false });
+        }
+        // the scene going out: its card's picture again now and then, as it looks on air (the
+        // edited one's comes with its nodes')
+        let live = self.engine.status.live.load(Relaxed);
+        if self.peek.is_none()
+            && live != self.edit
+            && self.shot_at.elapsed() > SHOT_EVERY
+            && let Some(slot) = self.slots.iter().find(|s| s.key == live)
+        {
+            self.shot_at = Instant::now();
+            self.peek = Some(Peek { scene: slot.scene.clone(), key: live, since: Instant::now(), sent: false });
         }
         // the layers switched on, held and rendered every frame
         let on: Vec<&Scene> = project.scenes.iter().filter(|s| s.layer != velo_core::Layer::Scene && !self.off.contains(&s.id)).collect();
@@ -738,6 +752,9 @@ struct Peek {
 
 /// How long a card's picture may take to build, and then to come, before its scene's turn ends.
 const PEEK_WAIT: Duration = Duration::from_secs(10);
+
+/// How often the scene going out is pictured again for its card.
+const SHOT_EVERY: Duration = Duration::from_secs(2);
 
 /// A scene's card's picture, new or replaced.
 fn set_shot(shots: &mut HashMap<String, egui::TextureHandle>, ctx: &egui::Context, scene: &str, image: egui::ColorImage) {

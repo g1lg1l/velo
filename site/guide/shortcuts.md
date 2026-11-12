@@ -26,6 +26,7 @@ The keys you play with.
 | <kbd>Tab</kbd> | Add a node |
 | <kbd>H</kbd> or <kbd>Shift</kbd> <kbd>1</kbd> | Zoom to fit |
 | <kbd>Shift</kbd> <kbd>2</kbd> | Zoom to selection |
+| <kbd>Cmd/Ctrl</kbd> <kbd>F</kbd> | Find a node by name or kind: Enter goes to the next match, Shift Enter to the one before, Esc closes |
 | <kbd>Shift</kbd> <kbd>0</kbd> | Zoom to 100 % |
 | <kbd>Ctrl</kbd> <kbd>=</kbd> | Zoom in |
 | <kbd>Ctrl</kbd> <kbd>-</kbd> | Zoom out |
