@@ -992,9 +992,21 @@ fn turn_at(t: f32, n: usize, order: i32, long: impl Fn(usize) -> f32) -> (i64, f
 fn deck(round: usize, n: usize) -> Vec<usize> {
     let mut deck: Vec<usize> = (0..n).collect();
     for i in (1..n).rev() {
-        deck.swap(i, (mix(mix(round as u64) ^ i as u64) % (i as u64 + 1)) as usize);
+        deck.swap(i, (mix(mix(round as u64 ^ shuffle_seed()) ^ i as u64) % (i as u64 + 1)) as usize);
     }
     deck
+}
+
+/// Where this run's shuffles start: new each time Velo starts, so a show opened again doesn't
+/// deal the same words and pictures in the same order; the same for the whole run, so a list
+/// rebuilt mid-show carries on where it was. `VELO_SHUFFLE_SEED` pins it (tests, screenshots).
+fn shuffle_seed() -> u64 {
+    static SEED: OnceLock<u64> = OnceLock::new();
+    *SEED.get_or_init(|| {
+        std::env::var("VELO_SHUFFLE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)
+        })
+    })
 }
 
 /// splitmix64's finalizer: a well mixed hash of x.
