@@ -384,7 +384,21 @@ fn the_catalog_is_consistent() {
         let (ins, outs) = (k.inputs.len(), k.outputs.len());
         match k.category {
             // a generator reads no picture, bar Particles' and Mesh's: emit and sprite, skin feed them, they aren't what they show
-            Category::Generator => assert_eq!((ins, outs), (if k.id == PARTICLES { 2 } else if k.id == MESH { 1 } else { 0 }, 1), "{}", k.id),
+            Category::Generator => assert_eq!(
+                (ins, outs),
+                (
+                    if k.id == PARTICLES {
+                        2
+                    } else if k.id == MESH {
+                        1
+                    } else {
+                        0
+                    },
+                    1
+                ),
+                "{}",
+                k.id
+            ),
             Category::Effect => assert!(ins >= 1 && outs == 1, "{}", k.id),
             Category::Composite | Category::Control => assert!(ins >= 2 && outs == 1, "{}", k.id),
             Category::Output => assert!(ins >= 1 && outs == 0, "{}", k.id),
@@ -720,12 +734,12 @@ fn a_format_4_project_opens_with_its_bindings_as_they_were() {
     let mut project: Project = ron::from_str(old).unwrap();
     let bindings = project.bindings.clone();
     project.migrate();
-    assert_eq!((project.format, &project.bindings), (5, &bindings));
+    assert_eq!((project.format, &project.bindings), (FORMAT, &bindings));
     assert_eq!(bindings[0].control, Control::Midi { port: None, channel: 0, msg: MidiMsg::Cc(21) });
     // what format 5 adds: a key, which a format-4 Velo has no name for (it refuses the file by its number)
     project.bindings.push(Binding { control: Control::Key("4".into()), target: Target::Macro(3), behavior: Behavior::Toggle });
     let text = ron::ser::to_string(&project).unwrap();
-    assert!(text.starts_with("(format:5,") && text.contains(r#"(control:Key("4"),target:Macro(3),behavior:Toggle)"#), "{text}");
+    assert!(text.starts_with(&format!("(format:{FORMAT},")) && text.contains(r#"(control:Key("4"),target:Macro(3),behavior:Toggle)"#), "{text}");
     assert_eq!(ron::from_str::<Project>(&text).unwrap(), project);
 }
 
@@ -1051,4 +1065,147 @@ fn a_canvas_past_4k_is_brought_down_its_shape_kept() {
     assert!(u64::from(w) * u64::from(h) <= crate::CANVAS_PIXELS && w == h);
     let (w, h) = crate::fit_canvas(8192, 1024);
     assert!(u64::from(w) * u64::from(h) <= crate::CANVAS_PIXELS && (w as f32 / h as f32 - 8.0).abs() < 0.05);
+}
+
+#[test]
+fn a_format_5_project_opens_unchanged_and_the_shared_signals_round_trip() {
+    // format 5: no shared signals. Nothing to change but the number
+    let old = r#"(format: 5, scenes: [(id: "s_1", name: "Drop", nodes: [
+        (id: "n_a", kind: "velo.audio", name: "Audio In", pos: (0.0, 0.0)),
+        (id: "n_k", kind: "velo.kaleido", name: "Kaleido", pos: (300.0, 0.0), mappings: [(param: "zoom", source: "n_a/4", amount: 0.5, attack_ms: 5.0, release_ms: 150.0)]),
+    ], edges: [])], bindings: [(control: Key("4"), target: Macro(3), behavior: Toggle)])"#;
+    let mut project: Project = ron::from_str(old).unwrap();
+    let before = project.clone();
+    project.migrate();
+    assert_eq!(project.format, FORMAT);
+    assert_eq!((&project.scenes, &project.bindings), (&before.scenes, &before.bindings), "as it was");
+    assert!(project.shared.bare() && project.shared.id == SHARED);
+    let text = ron::ser::to_string(&project).unwrap();
+    assert!(text.starts_with("(format:6,") && !text.contains("shared"), "an unused shared graph isn't written: {text}");
+    // a shared Beat Kick a scene maps: written, and read back the same
+    let mut s = Session::with_project(project);
+    ok(&mut s, "node.add", json!({ "scene": SHARED, "kind": BEAT_KICK, "pos": [0, 0] }));
+    let kick = s.project.shared.nodes[0].id.clone();
+    ok(&mut s, "mapping.add", json!({ "node": "n_k", "param": "spin", "source": format!("shared:{kick}") }));
+    let text = ron::ser::to_string_pretty(&s.project, Default::default()).unwrap();
+    assert!(text.contains(&format!("source: \"shared:{kick}/0\"")) && text.contains("shared: ("), "{text}");
+    assert_eq!(ron::from_str::<Project>(&text).unwrap(), s.project);
+    // a hand-edited shared graph is the shared graph whatever it calls itself
+    let mut edited: Project = ron::from_str(&text.replace("id: \"shared\"", "id: \"s_x\"")).unwrap();
+    edited.migrate();
+    assert_eq!(edited.shared.id, SHARED);
+}
+
+#[test]
+fn operators_edit_the_shared_signals_and_scenes_map_them() {
+    let mut s = session();
+    let scene = s.active_scene.clone().unwrap();
+    let kaleido = add(&mut s, "velo.kaleido", 0.0);
+    let shared = |s: &mut Session, op: &str, props: Value| {
+        let mut props = props;
+        props["scene"] = json!(SHARED);
+        s.run(op, props)
+    };
+    shared(&mut s, "node.add", json!({ "kind": AUDIO })).unwrap();
+    shared(&mut s, "node.add", json!({ "kind": GAIN })).unwrap();
+    let [audio, gain] = [0, 1].map(|i| s.project.shared.nodes[i].id.clone());
+    assert!(s.project.graphs().flat_map(|g| &g.nodes).filter(|n| n.id == audio).count() == 1, "ids are unique across every graph");
+    // pictures, outputs and Probes stay in scenes
+    for kind in ["velo.noise", OUTPUT, PROBE, "velo.nope"] {
+        assert!(shared(&mut s, "node.add", json!({ "kind": kind })).is_err(), "{kind}");
+    }
+    assert!(shared(&mut s, "node.replace", json!({ "node": gain, "kind": "velo.blur" })).is_err());
+    shared(&mut s, "edge.connect", json!({ "from": [audio, 1], "to": [gain, 0] })).unwrap();
+    shared(&mut s, "group.add", json!({ "nodes": [audio, gain], "name": "Bass" })).unwrap();
+    shared(&mut s, "note.add", json!({ "pos": [0, -100], "text": "THE KICK" })).unwrap();
+    shared(&mut s, "node.set_param", json!({ "node": gain, "param": "gain", "value": 4.0 })).unwrap();
+    assert_eq!(s.project.shared.edges.len(), 1);
+    assert_eq!(s.project.scenes[0].nodes.len(), 1, "the scene didn't change");
+    // it isn't a scene: no launching, macros, renaming, moving or deleting it
+    for (op, props) in [
+        ("scene.rename", json!({ "name": "X" })),
+        ("scene.remove", json!({})),
+        ("scene.set_layer", json!({ "layer": "Top" })),
+        ("scene.set_launch", json!({ "quantize": "Off" })),
+        ("macro.set", json!({ "index": 0, "value": 1.0 })),
+        ("scene.duplicate", json!({})),
+    ] {
+        assert!(shared(&mut s, op, props).is_err(), "{op}");
+    }
+    // selected, it's what the operators edit by default
+    ok(&mut s, "scene.select", json!({ "scene": SHARED }));
+    assert_eq!(s.active().map(|g| g.id.as_str()), Some(SHARED));
+    ok(&mut s, "node.add", json!({ "kind": SMOOTH }));
+    assert_eq!(s.project.shared.nodes.len(), 3);
+    assert!(s.run("mapping.add", json!({ "node": gain, "param": "gain", "source": "kick" })).is_err(), "nothing in it takes a mapping");
+    ok(&mut s, "scene.select", json!({ "scene": scene }));
+    // a scene maps one of its outputs by "shared:id" (its first) or "shared:id/port"
+    ok(&mut s, "mapping.add", json!({ "node": kaleido, "param": "zoom", "source": format!("shared:{gain}") }));
+    ok(&mut s, "mapping.add", json!({ "node": kaleido, "param": "spin", "source": format!("shared:{audio}/4") }));
+    let sources = |s: &Session| s.project.scenes[0].nodes[0].mappings.iter().map(|m| m.source.clone()).collect::<Vec<_>>();
+    assert_eq!(sources(&s), [format!("shared:{gain}/0"), format!("shared:{audio}/4")]);
+    assert_eq!(s.project.scenes[0].nodes.len(), 1, "no Audio In added to the scene for it");
+    for bad in [format!("shared:{gain}/1"), "shared:n_nope".into(), format!("shared:{kaleido}")] {
+        assert!(s.run("mapping.add", json!({ "node": kaleido, "param": "angle", "source": bad })).is_err(), "{bad}");
+    }
+    ok(&mut s, "mapping.set", json!({ "node": kaleido, "param": "zoom", "source": format!("shared:{gain}"), "amount": -0.25 }));
+    assert_eq!(s.project.scenes[0].nodes[0].mappings[0].amount, -0.25);
+    // a duplicated scene reads the same shared signals
+    ok(&mut s, "scene.duplicate", json!({}));
+    assert_eq!(s.project.scenes[1].nodes[0].mappings[0].source, format!("shared:{gain}/0"));
+    ok(&mut s, "edit.undo", json!({}));
+    // a shared node deleted: the mappings stay (they read 0) and undo brings it back
+    let before = s.project.clone();
+    shared(&mut s, "node.remove", json!({ "node": gain })).unwrap();
+    assert!(s.project.shared.node(&gain).is_none() && s.project.shared.edges.is_empty());
+    assert_eq!(sources(&s).len(), 2);
+    assert_eq!(s.undo_label(), Some("Delete Node"));
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.project, before);
+    // turned into a kind with fewer outputs, what read the ones it lost goes
+    shared(&mut s, "node.replace", json!({ "node": audio, "kind": LFO })).unwrap();
+    assert_eq!(sources(&s), [format!("shared:{gain}/0")]);
+}
+
+#[test]
+fn importing_scenes_brings_the_shared_signals_they_read_once() {
+    // the other show: Audio In → Gain → Smooth shared, an LFO nobody reads, two scenes on the Smooth
+    let mut other = session();
+    let shared = |s: &mut Session, kind: &str, y: f32| {
+        ok(s, "node.add", json!({ "scene": SHARED, "kind": kind, "pos": [0, y] }));
+        s.project.shared.nodes.last().unwrap().id.clone()
+    };
+    let (audio, gain, smooth, _lfo) = (shared(&mut other, AUDIO, 0.0), shared(&mut other, GAIN, 100.0), shared(&mut other, SMOOTH, 200.0), shared(&mut other, LFO, 300.0));
+    ok(&mut other, "edge.connect", json!({ "scene": SHARED, "from": [audio, 1], "to": [gain, 0] }));
+    ok(&mut other, "edge.connect", json!({ "scene": SHARED, "from": [gain, 0], "to": [smooth, 0] }));
+    let kaleido = add(&mut other, "velo.kaleido", 0.0);
+    ok(&mut other, "mapping.add", json!({ "node": kaleido, "param": "zoom", "source": format!("shared:{smooth}") }));
+    // one mapping of a node this show doesn't have: it stays as it is
+    let gone = Mapping { source: "shared:n_gone/0".into(), param: "spin".into(), ..other.project.scenes[0].nodes[0].mappings[0].clone() };
+    other.project.scenes[0].nodes[0].mappings.push(gone);
+    ok(&mut other, "scene.duplicate", json!({}));
+    // into a show with a shared signal of its own
+    let mut s = session();
+    ok(&mut s, "node.add", json!({ "scene": SHARED, "kind": BEAT_KICK, "pos": [0, 500] }));
+    let before = s.project.clone();
+    ok(&mut s, "scene.import", json!({ "scenes": other.project.scenes, "shared": other.project.shared }));
+    let g = &s.project.shared;
+    let kinds: Vec<&str> = g.nodes.iter().map(|n| n.kind.as_str()).collect();
+    assert_eq!(kinds, [BEAT_KICK, AUDIO, GAIN, SMOOTH], "what the scenes read and what feeds it, once; not the LFO");
+    assert_eq!(g.edges.len(), 2, "wired as they were");
+    assert!(g.nodes[1..].iter().all(|n| n.pos[1] >= 700.0), "under what was there");
+    let new_smooth = &g.nodes[3].id;
+    assert!(new_smooth != &smooth && other.project.shared.node(new_smooth).is_none());
+    for scene in &s.project.scenes[1..] {
+        let sources: Vec<&str> = scene.nodes[0].mappings.iter().map(|m| m.source.as_str()).collect();
+        assert_eq!(sources, [format!("shared:{new_smooth}/0").as_str(), "shared:n_gone/0"], "{}", scene.name);
+    }
+    assert_eq!(s.project.scenes.len(), 3);
+    // one undo step
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.project, before);
+    // without the other show's shared signals, the mappings keep their names
+    ok(&mut s, "scene.import", json!({ "scene": other.project.scenes[0] }));
+    assert_eq!(s.project.shared.nodes.len(), 1);
+    assert_eq!(s.project.scenes[1].nodes[0].mappings[0].source, format!("shared:{smooth}/0"));
 }

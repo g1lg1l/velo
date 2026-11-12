@@ -16,7 +16,7 @@ How a show is saved. The model is `velo-core` (`Project` in `lib.rs`); reading a
 
 ```
 Show.velo            a zip (a bundle is the same as a folder)
-├── project.ron      the document: canvas, scenes (nodes, wires, mappings, macros, variations, launch), bindings
+├── project.ron      the document: canvas, scenes (nodes, wires, mappings, macros, variations, launch), bindings, shared signals
 ├── shaders/         each Shader node's code: tunnel.wgsl, or name.fs for an ISF shader
 └── media/           exported to share only: the files the nodes show (§5)
 ```
@@ -36,7 +36,7 @@ Abridged from a real file:
 
 ```ron
 (
-    format: 5,
+    format: 6,
     name: "Untitled",
     canvas: (width: 1920, height: 1080, fps: 60),
     scenes: [(
@@ -54,7 +54,10 @@ Abridged from a real file:
             name: "Feedback",
             pos: (216.0, 0.0),
             params: { "decay": (0.85, 0.0, 0.0, 0.0), "zoom": (1.02, 0.0, 0.0, 0.0) },
-            mappings: [(param: "rotate", source: "n_a1b2/6", amount: 0.15, attack_ms: 5.0, release_ms: 150.0)],
+            mappings: [
+                (param: "rotate", source: "n_a1b2/6", amount: 0.15, attack_ms: 5.0, release_ms: 150.0),
+                (param: "zoom", source: "shared:n_Kq9P/0", amount: 0.1, attack_ms: 5.0, release_ms: 250.0),
+            ],
         ), (
             id: "n_vmKC",
             kind: "velo.output",
@@ -69,12 +72,26 @@ Abridged from a real file:
         (control: Midi(port: None, channel: 0, msg: Cc(21)), target: Macro(0), behavior: Absolute(takeover: Pickup)),
         (control: Key("4"), target: Macro(3), behavior: Toggle),
     ],
+    shared: (
+        id: "shared",
+        name: "Shared signals",
+        nodes: [(
+            id: "n_Kq9P",
+            kind: "velo.beatkick",
+            name: "Pump",
+            pos: (0.0, 0.0),
+            params: { "release_ms": (400.0, 0.0, 0.0, 0.0), "threshold": (0.25, 0.0, 0.0, 0.0) },
+        )],
+        edges: [],
+        launch: (transition: Crossfade, duration: 4.0, quantize: Bar),
+    ),
 )
 ```
 
 - `kind` is a built-in id (`velo.noise`, `velo.shader`, `velo.output`…). An unknown kind (from a newer Velo) loads and keeps its wires.
 - `params` holds only the values the user changed, one vec4 each (a float uses the first number); the rest keep the shader header's defaults.
-- A mapping's `source` is a signal node's output, `"<node id>/<output index>"` (here the scene's Audio In, output 6: the hat).
+- A mapping's `source` is a signal node's output, `"<node id>/<output index>"` (here the scene's Audio In, output 6: the hat), or an output of the shared signals, `"shared:<node id>/<output index>"`.
+- `shared` is the shared signal graph (graph.md §3): scene-shaped (its `id` is always `"shared"`, whatever a hand-edited file says; its `launch` means nothing), only its signal nodes run. Left out while it has no nodes, groups or notes.
 - `media` holds an Image or Video node's file (or folder of frames) and a Text node's font file, as an absolute path; `text` holds a Text node's words.
 - UI-only data lives inline and the engine ignores it: node positions, a node's emoji `icon`, a scene's cable `ties` (each `(id, pos, cables)`, a cable named by where it ends: a wire by its input, `"n_ab12/0"`, a signal's line by the node it moves and its source, `"n_cd34 n_ef56/2"`).
 - A binding's `control` is a MIDI message or, from format 5, a key of the computer's keyboard by its name (`Key("A")`, `Key("4")`, `Key("F5")`; control.md §2).
@@ -92,7 +109,8 @@ Saved, a project keeps its media where they are, by absolute path: saving stays 
 
 - **File → Export with Media** (and **Export as a project** on a scene's menu, for that scene alone, without the controller bindings) writes one file with `media/` in it: each file or folder of frames once, stored as it is (pictures and movies are packed already), the nodes' paths made `media/...`. It opens on any computer.
 - Opening such a file writes `media/` out to a folder of its own in Velo's data folder (`media/<name>-<hash>`) and points the nodes there. Only names inside `media/` are read, and nothing is written outside that folder.
-- **File → Import Scenes** adds every scene of another project (one file, bundle or RON) to the open one as one undo step (`scene.import`): new ids, a shader file of its own for each Shader node, a free name.
+- **File → Import Scenes** adds every scene of another project (one file, bundle or RON) to the open one as one undo step (`scene.import`): new ids, a shader file of its own for each Shader node, a free name. The shared signals those scenes read come along: the nodes their mappings name and everything wired into them, once for all the scenes, into this project's shared signals with new ids and free names, under what's there; the mappings follow them. A mapping of a shared node the other project doesn't have keeps its name and reads 0. (An agent calling `scene.import` without `shared` gets the scenes alone, their shared mappings reading 0.)
+- **Export as a project** of one scene keeps the whole shared signal graph, so the scene plays the same wherever it opens.
 
 ## 6. Migrations
 
@@ -104,3 +122,4 @@ A file parses into the current model (new fields have defaults), then `Project::
 | 2 | 3 | A Grid is no longer an output: where one went out, it now feeds the scene's Output node, added beside it when there's none |
 | 3 | 4 | A Shader node that reads an input (one is wired in, or its header asks for a texture) becomes a Shader FX |
 | 4 | 5 | Nothing in the file: a binding's control may now be a key (`Key("4")`), which format 4 has no name for. An older Velo refuses a format 5 file and never misreads it: by its number ("saved by a newer Velo") when no key is bound, and as not a valid project when one is, since it stops at the word it doesn't know before it gets to the number |
+| 5 | 6 | Nothing in the file: a project may now hold `shared` signals and mappings reading them (`"shared:n_ab12/0"`), which format 5 has no idea of. A format-5 Velo refuses a format 6 file by its number (it would skip `shared` and leave those mappings moving nothing) |

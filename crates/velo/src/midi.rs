@@ -470,7 +470,7 @@ impl App {
 
     /// A node's parameter by its mapping name, wherever it is in the project.
     pub fn param_ref(&self, node: &str, key: &str) -> Option<ParamRef> {
-        let scene = self.session.project.scenes.iter().find(|s| s.node(node).is_some())?;
+        let scene = self.session.project.graphs().find(|s| s.node(node).is_some())?;
         let n = scene.node(node)?;
         let (id, axis) = match key.rsplit_once('.') {
             Some((id, "x")) => (id, 0),
@@ -650,7 +650,7 @@ impl App {
     pub fn target_name(&self, target: &Target) -> String {
         match target {
             Target::Macro(i) => tr!("Macro {}", i + 1),
-            Target::Param { node, param } => match (self.session.project.scenes.iter().find_map(|s| s.node(node)), self.param_ref(node, param)) {
+            Target::Param { node, param } => match (self.session.project.graphs().find_map(|s| s.node(node)), self.param_ref(node, param)) {
                 (Some(n), Some(p)) => format!("{} · {}", n.name, i18n::t(p.info.name)),
                 _ => tr!("a deleted parameter").to_string(),
             },

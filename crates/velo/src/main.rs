@@ -444,7 +444,11 @@ impl App {
         if let Ok(words) = std::env::var("VELO_DEMO_FIND") {
             app.canvas.find = Some(canvas::Find::with(&words));
         }
-        // VELO_DEMO_EDIT=n: scene n selected once the first one is live: edited, not live (tests)
+        // VELO_DEMO_EDIT=n: scene n selected once the first one is live: edited, not live (tests);
+        // VELO_DEMO_EDIT=shared, the shared signals
+        if std::env::var("VELO_DEMO_EDIT").as_deref() == Ok(velo_core::SHARED) {
+            app.demo_drop = Some((velo_core::SHARED.into(), false));
+        }
         if let Some(n) = std::env::var("VELO_DEMO_EDIT").ok().and_then(|n| n.parse::<usize>().ok())
             && let Some(scene) = app.session.project.scenes.get(n.saturating_sub(1))
         {
@@ -1001,6 +1005,14 @@ impl App {
         }
         kit::scroll(ui, &t, "scenes", true, t.bg_panel, |ui| {
             ui.spacing_mut().item_spacing.y = if self.settings.scenes_compact { 2.0 } else { t.gap * 1.5 };
+            // the shared signals first: not a scene (never launched, layered or in the autopilot),
+            // their canvas the place for what every scene reads of the music
+            let signals = self.session.project.shared.nodes.iter().filter(|n| velo_core::shareable(&n.kind)).count();
+            let r = widgets::shared_row(ui, &t, active.as_deref() == Some(velo_core::SHARED), signals);
+            self.hint(&r, tr!("Signal nodes that run once for the whole show: every scene can map their outputs (the deck's sources). Click to edit them"));
+            if r.clicked() {
+                self.run("scene.select", json!({ "scene": velo_core::SHARED }));
+            }
             let cards: Vec<egui::Rect> = scenes.iter().enumerate().map(|(i, scene)| self.scene_card(ui, &t, i, scene, active.as_ref() == Some(&scene.id), scenes.len())).collect();
             self.scene_drop(ui, &t, &scenes, &cards);
         });
@@ -1368,6 +1380,19 @@ impl App {
     /// scene, and on which boundary. False with no scene.
     fn launch_settings(&mut self, ui: &mut egui::Ui, t: &Theme) -> bool {
         let Some(scene) = self.session.active() else { return false };
+        // the shared signals go out with every scene: what they are instead
+        if scene.id == velo_core::SHARED {
+            kit::section(ui, t, icons::BROADCAST, tr!("SHARED SIGNALS"), true, |ui| {
+                kit::hint(
+                    ui,
+                    t,
+                    tr!(
+                        "Signal nodes that run once a frame for the whole show, whichever scenes are on: the live one, one fading out, the layers, the one you edit. Every scene can map their outputs: drag one from the deck's sources onto a slider. Change a threshold here and every scene follows."
+                    ),
+                );
+            });
+            return true;
+        }
         let (id, launch) = (scene.id.clone(), scene.launch);
         let (mut set, mut close) = (None, false);
         kit::section(ui, t, icons::PLAY_CIRCLE, tr!("LAUNCH"), true, |ui| {
@@ -1419,6 +1444,8 @@ impl App {
         let Some(scene) = self.session.active() else { return };
         let (id, name, count) = (scene.id.clone(), scene.name.clone(), scene.nodes.len());
         let on_air = self.live.as_ref().is_some_and(|l| l.live_scene() == Some(id.as_str()));
+        // the shared signals: never launched or renamed
+        let shared = id == velo_core::SHARED;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), t.bar_h + 20.0), egui::Sense::hover());
         ui.painter().rect_filled(rect, 0.0, t.bg_panel);
         ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0, t.line));
@@ -1427,21 +1454,28 @@ impl App {
         let (mut launch, mut rename) = (false, false);
         if on_air {
             row.label(RichText::new(tr!("LIVE")).font(Theme::mono(t.text_xs)).extra_letter_spacing(1.0).color(t.accent));
-        } else {
+        } else if !shared {
             let tip = self.tip(tr!("Launch"), "stage.launch");
             launch = kit::button(&mut row, t, Some(icons::PLAY), tr!("Launch"), false).on_hover_text(tip).clicked();
         }
         row.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(t.gap * 2.0, 2.0);
             let (spot, _) = ui.allocate_exact_size(egui::vec2(t.control_h, t.control_h), egui::Sense::hover());
-            ui.painter().rect_filled(spot, t.radius_sm, Theme::mix(t.bg_control, t.accent, if on_air { 0.25 } else { 0.1 }));
-            kit::icon_at(ui.painter(), spot.center(), icons::STACK, 15.0, if on_air { t.accent } else { t.fg_text });
+            let (tint, icon) = if shared { (t.cat_signal, icons::BROADCAST) } else { (t.accent, icons::STACK) };
+            ui.painter().rect_filled(spot, t.radius_sm, Theme::mix(t.bg_control, tint, if on_air { 0.25 } else { 0.1 }));
+            kit::icon_at(ui.painter(), spot.center(), icon, 15.0, if on_air || shared { tint } else { t.fg_text });
             let room = ui.available_rect_before_wrap();
             let (left, mid, width) = (room.left(), room.center().y, room.width());
+            let name = if shared { tr!("Shared signals").to_string() } else { name.clone() };
             let (named, _) = kit::fit_text(ui.painter(), egui::pos2(left, mid - 8.0), egui::Align2::LEFT_CENTER, &name, t.body(), t.fg_text, width);
-            let what = if count == 1 { tr!("Scene · 1 node").to_string() } else { tr!("Scene · {} nodes", count) };
+            let what = match (shared, count) {
+                (true, 1) => tr!("Every scene's · 1 node").to_string(),
+                (true, _) => tr!("Every scene's · {} nodes", count),
+                (false, 1) => tr!("Scene · 1 node").to_string(),
+                (false, _) => tr!("Scene · {} nodes", count),
+            };
             kit::fit_text(ui.painter(), egui::pos2(left, mid + 9.0), egui::Align2::LEFT_CENTER, what, t.small(), t.fg_muted, width);
-            rename = ui.interact(named, egui::Id::unique(("scene name", &id)), egui::Sense::click()).on_hover_text(tr!("Rename…")).clicked();
+            rename = !shared && ui.interact(named, egui::Id::unique(("scene name", &id)), egui::Sense::click()).on_hover_text(tr!("Rename…")).clicked();
         });
         if launch {
             self.launch(&id);
@@ -1477,7 +1511,12 @@ impl App {
                 let wires = scene.edges.iter().filter(|e| e.from.0 == id && usize::from(e.from.1) == i).map(|e| format!("{} · {}", name_of(&e.to.0), port_name(&e.to.0, e.to.1, false)));
                 // and what it moves (a signal's dashed wires)
                 let moves = scene.nodes.iter().flat_map(|n| n.mappings.iter().filter(move |m| velo_core::signal_output(&m.source) == Some((id, i as u8))).map(move |m| format!("{} · {}", n.name, param_name(n, &m.param))));
-                (p.to_string(), wires.chain(moves).collect())
+                // a shared signal's, in every scene
+                let shared = (scene.id == velo_core::SHARED).then_some(&self.session.project.scenes).into_iter().flatten();
+                let everywhere = shared.flat_map(|s| {
+                    s.nodes.iter().flat_map(move |n| n.mappings.iter().filter(move |m| velo_core::shared_output(&m.source) == Some((id, i as u8))).map(move |m| format!("{} · {} · {}", s.name, n.name, param_name(n, &m.param))))
+                });
+                (p.to_string(), wires.chain(moves).chain(everywhere).collect())
             })
             .collect();
         let (node_id, kind_id) = (node.id.clone(), node.kind.clone());
@@ -1592,7 +1631,8 @@ impl App {
     /// live, each dragged onto a slider to map it.
     fn deck(&mut self, ui: &mut egui::Ui) {
         let t = self.theme.clone();
-        let scene = self.session.active().map(|s| (s.id.clone(), s.macros.clone(), s.variations.clone()));
+        // (the shared signals have no macros or variations: only the sources show)
+        let scene = self.session.active().filter(|s| s.id != velo_core::SHARED).map(|s| (s.id.clone(), s.macros.clone(), s.variations.clone()));
         // another scene's: it waited for a value there
         if self.assigning.as_ref().is_some_and(|(at, _)| scene.as_ref().is_none_or(|s| *at != s.0)) {
             self.assigning = None;
@@ -1601,7 +1641,7 @@ impl App {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = t.pad;
                 // the sources as wide as they need, up to half the deck; the macros the rest
-                let count = SOURCES.len() + self.session.active().map_or(0, |s| s.nodes.iter().filter(|n| n.kind == velo_core::LFO).count());
+                let count = SOURCES.len() + self.session.active().filter(|s| s.id != velo_core::SHARED).map_or(0, |s| s.nodes.iter().filter(|n| n.kind == velo_core::LFO).count()) + shared_sources(&self.session.project).len();
                 let sources_w = (count as f32 * (widgets::METER_W + t.gap) + 2.0 * t.pad).min(ui.available_width() * 0.5);
                 if let Some((id, macros, variations)) = &scene {
                     ui.vertical(|ui| {
@@ -1687,8 +1727,11 @@ impl App {
         let lfos: Vec<(String, String, f32)> = self
             .session
             .active()
+            .filter(|s| s.id != velo_core::SHARED)
             .map(|s| s.nodes.iter().filter(|n| n.kind == velo_core::LFO).map(|n| (n.id.clone(), n.name.clone(), velo_engine::signal::Lfo::from_params(|p| n.params.get(p).map(|v| v[0])).at(beats))).collect())
             .unwrap_or_default();
+        // the shared signals' outputs, every scene's to map, marked as shared
+        let shared: Vec<(String, String, f32)> = shared_sources(&self.session.project).into_iter().map(|(key, name)| (key.clone(), name, self.live.as_ref().map_or(0.0, |l| l.level(&key)))).collect();
         Self::deck_head(ui, t, icons::WAVEFORM, tr!("SOURCES"), tr!("What moves with the music: drag one onto any slider and the music moves it"), |_| ());
         let Some(values) = values else {
             ui.label(RichText::new(tr!("The audio's levels, the beat and LFOs show here once the engine runs.")).small().color(t.fg_muted));
@@ -1718,6 +1761,13 @@ impl App {
             }
             for (id, name, value) in &lfos {
                 widgets::source_meter(ui, t, id, name, *value, widgets::Meter::Level, height).on_hover_text(tr!("{}: drag it onto any slider and the music moves it", name));
+            }
+            if !shared.is_empty() {
+                ui.add_space(t.pad);
+            }
+            for (key, name, value) in &shared {
+                let shown = format!("{} {name}", icons::BROADCAST);
+                widgets::source_meter(ui, t, key, &shown, *value, widgets::Meter::Level, height).on_hover_text(tr!("{}, a shared signal: drag it onto any slider of any scene", name));
             }
         });
     }
@@ -1997,7 +2047,9 @@ impl App {
         let tip = self.tip(tr!("Hide the preview"), "stage.preview");
         // the program while the selected scene is the live one, else that scene alone, with
         // its Launch button (or its countdown, once launched)
-        let (scene, name) = self.session.active().map(|s| (s.id.clone(), s.name.clone())).unwrap_or_default();
+        // (while the shared signals are edited it shows the program: the live scene's)
+        let shown = self.session.active().filter(|s| s.id != velo_core::SHARED).or_else(|| self.live.as_ref().and_then(|l| l.live_scene()).and_then(|id| self.session.project.scene(id)));
+        let (scene, name) = shown.map(|s| (s.id.clone(), s.name.clone())).unwrap_or_default();
         let on_air = self.live.as_ref().is_none_or(|l| l.live_scene() == Some(scene.as_str()));
         let armed = self.live.as_ref().and_then(|l| l.armed(&scene));
         let launch_tip = self.tip(tr!("Launch"), "stage.launch");
@@ -2482,7 +2534,7 @@ impl App {
     /// (`mapping.add`); its badges open the mapping's settings; the band and the live dot show
     /// what the engine does with it.
     fn node_params(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str, first: bool) {
-        let Some(n) = self.session.project.scenes.iter().find_map(|s| s.node(node)).cloned() else { return };
+        let Some(n) = self.session.project.graphs().find_map(|s| s.node(node)).cloned() else { return };
         // an Audio In: its input first, the top bar's own (one input for now)
         let audio = n.kind == velo_core::AUDIO;
         if audio {
@@ -2541,7 +2593,9 @@ impl App {
             }
             ui.horizontal(|ui| {
                 add = kit::button(ui, t, Some(icons::PLUS), tr!("Add an item"), false).on_hover_text(tr!("Another turn of words: it shows them one at a time, as its Order, Clock and Every say")).clicked();
-                import = kit::button(ui, t, Some(icons::FILE_PLUS), tr!("From a file…"), false).on_hover_text(tr!("Items from a .txt (a line each, or a block between empty lines) or a .csv (a row each, its cells on lines): they replace these")).clicked();
+                import = kit::button(ui, t, Some(icons::FILE_PLUS), tr!("From a file…"), false)
+                    .on_hover_text(tr!("Items from a .txt (a line each, or a block between empty lines) or a .csv (a row each, its cells on lines): they replace these"))
+                    .clicked();
             });
         });
         if import {
@@ -2606,8 +2660,17 @@ impl App {
     fn signal_links(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str) {
         let Some(scene) = self.session.active().cloned() else { return };
         let Some(outputs) = scene.node(node).and_then(|n| node_kind(&n.kind)).map(|k| k.outputs) else { return };
-        let links: Vec<(&velo_core::Node, &Mapping, u8)> =
-            scene.nodes.iter().flat_map(|n| n.mappings.iter().map(move |m| (n, m))).filter_map(|(n, m)| velo_core::signal_output(&m.source).filter(|(id, _)| *id == node).map(|(_, port)| (n, m, port))).collect();
+        // what it moves: in its scene; a shared signal's, in every scene (named with its scene)
+        let shared = scene.id == velo_core::SHARED;
+        let graphs: Vec<velo_core::Scene> = if shared { self.session.project.scenes.clone() } else { vec![scene.clone()] };
+        let links: Vec<(&str, String, &velo_core::Node, &Mapping, u8)> = graphs
+            .iter()
+            .flat_map(|g| g.nodes.iter().flat_map(move |n| n.mappings.iter().map(move |m| (g, n, m))))
+            .filter_map(|(g, n, m)| {
+                let from = if shared { velo_core::shared_output(&m.source) } else { velo_core::signal_output(&m.source) };
+                from.filter(|(id, _)| *id == node).map(|(_, port)| (g.id.as_str(), if shared { format!("{} · {}", g.name, n.name) } else { n.name.clone() }, n, m, port))
+            })
+            .collect();
         let mut ops = Vec::new();
         let mut close = false;
         // which outputs its card lists (one in use always shows)
@@ -2621,21 +2684,21 @@ impl App {
                     let shown = ui.add_enabled_ui(!used, |ui| widgets::toggle(ui, t, &info, f32::from(u8::from(on))).1).inner;
                     if let Some(v) = shown {
                         let mask = if v >= 0.5 { hidden & !(1 << p) } else { hidden | (1 << p) };
-                        ops.push(("node.set_param", json!({ "node": node, "param": "hidden", "value": mask as f32 }), None));
+                        ops.push(("node.set_param", json!({ "scene": scene.id, "node": node, "param": "hidden", "value": mask as f32 }), None));
                     }
                 }
             });
         }
         kit::section(ui, t, icons::PATH, tr!("MOVES"), false, |ui| {
             if links.is_empty() {
-                kit::hint(ui, t, tr!("Nothing yet. Drag from one of its outputs onto a node to choose what it moves."));
+                kit::hint(ui, t, if shared { tr!("Nothing yet. Drag one of its outputs from the deck's sources onto a slider, in any scene.") } else { tr!("Nothing yet. Drag from one of its outputs onto a node to choose what it moves.") });
             }
             // under the output each comes from: its name once, then a row for each thing it moves
             let mut by_output = links.clone();
-            by_output.sort_by_key(|l| l.2);
+            by_output.sort_by_key(|l| l.4);
             let mut heading = None;
             ui.spacing_mut().item_spacing.y = 3.0;
-            for (target, m, port) in &by_output {
+            for (at, name, target, m, port) in &by_output {
                 // "Kick → Kaleido · Zoom", the parameter as its inspector names it
                 let param_name = param_name(target, &m.param);
                 let from = if outputs.len() > 1 { outputs.get(usize::from(*port)).map_or("?", |o| source_label(o)) } else { tr!("Out") };
@@ -2647,18 +2710,22 @@ impl App {
                     let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::hover());
                     ui.painter().circle_filled(row.left_center() + egui::vec2(6.0, 0.0), 3.0, t.cat_signal);
                     ui.painter().text(row.left_center() + egui::vec2(16.0, 0.0), egui::Align2::LEFT_CENTER, from.to_uppercase(), Theme::mono(t.text_xs), t.fg_text);
-                    let count = by_output.iter().filter(|l| l.2 == *port).count();
+                    let count = by_output.iter().filter(|l| l.4 == *port).count();
                     ui.painter().text(row.right_center() - egui::vec2(4.0, 0.0), egui::Align2::RIGHT_CENTER, count.to_string(), Theme::mono(t.text_xs), t.fg_muted);
                 }
-                let r = widgets::move_row(ui, t, &target.name, &param_name, m.amount);
-                if let Some(edit) = widgets::mapping_popup(t, &r, &format!("{from} → {} · {param_name}", target.name), m) {
+                let r = widgets::move_row(ui, t, name, &param_name, m.amount);
+                if let Some(edit) = widgets::mapping_popup(t, &r, &format!("{from} → {name} · {param_name}"), m) {
+                    let before = ops.len();
                     map_ops(&edit, &target.id, m, &mut ops);
+                    // each in the scene of what it moves
+                    for op in &mut ops[before..] {
+                        op.1["scene"] = json!(at);
+                    }
                     close |= edit.done;
                 }
             }
         });
-        for (op, mut props, merge) in ops {
-            props["scene"] = json!(scene.id);
+        for (op, props, merge) in ops {
             match merge {
                 Some(key) => self.run_merge(op, props, &key),
                 None => self.run(op, props),
@@ -2670,7 +2737,7 @@ impl App {
     }
 
     fn shader_params(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str, first: bool) {
-        let Some(n) = self.session.project.scenes.iter().find_map(|s| s.node(node)).cloned() else { return };
+        let Some(n) = self.session.project.graphs().find_map(|s| s.node(node)).cloned() else { return };
         let (kind, set, mappings, code) = (n.kind.as_str(), &n.params, n.mappings.as_slice(), n.code.as_deref());
         let Some(shader) = live::shader(kind, code) else {
             let text = if velo_core::is_shader(kind) {
@@ -2702,11 +2769,7 @@ impl App {
         let (mut edits, mut slides, mut close, mut maps_ops) = (Vec::new(), Vec::new(), false, Vec::new());
         // what the sources read now (the badges glow with them), and the values the engine
         // computed for this node (the live dots)
-        let sources = self.live.as_ref().map(live::Live::sources).unwrap_or_default();
-        let level = |source: &str| match velo_core::signal_output(source) {
-            Some((id, port)) => self.live.as_ref().and_then(|l| l.signal(id, port)).unwrap_or(0.0),
-            None => SOURCES.iter().position(|s| *s == source).map_or(0.0, |i| sources[i]),
-        };
+        let level = |source: &str| self.live.as_ref().map_or(0.0, |l| l.level(source));
         let modulated = if mappings.is_empty() { None } else { self.live.as_ref().and_then(|l| l.modulated(node)) };
         // the scene's macros (a driven slider shows its macro's doing) and what MIDI drives
         let Some(scene) = self.session.active().cloned() else { return };
@@ -2837,7 +2900,7 @@ impl App {
                         }
                         // what turns its hue (a signal dropped on the node's card, picked as "Tint (hue)")
                         for m in mappings.iter().filter(|m| m.param == param.id) {
-                            let title = format!("{} → {}", mapping_source(&scene, &m.source), tr!("{} (hue)", i18n::t(infos[0].name)));
+                            let title = format!("{} → {}", mapping_source(&self.session.project, &scene, &m.source), tr!("{} (hue)", i18n::t(infos[0].name)));
                             let r = kit::button(ui, t, None, &format!("{title}   {:+.0}%", m.amount * 100.0), false);
                             if let Some(edit) = widgets::mapping_popup(t, &r, &title, m) {
                                 map_ops(&edit, node, m, &mut maps_ops);
@@ -2865,7 +2928,7 @@ impl App {
                             // what mappings call it: a vec2's axes are "offset.x" and "offset.y"
                             let key = if param.ty == ParamType::Vec2 { format!("{}.{}", param.id, ["x", "y"][axis]) } else { param.id.clone() };
                             let maps: Vec<&Mapping> = mappings.iter().filter(|m| m.param == key).collect();
-                            let labels: Vec<String> = maps.iter().map(|m| mapping_source(&scene, &m.source)).collect();
+                            let labels: Vec<String> = maps.iter().map(|m| mapping_source(&self.session.project, &scene, &m.source)).collect();
                             let views: Vec<ModView> = maps.iter().zip(&labels).map(|(m, name)| ModView { source: name, amount: m.amount, level: level(&m.source) }).collect();
                             let live = modulated.filter(|_| !maps.is_empty()).and_then(|v| v.get(index * 2 + axis).copied());
                             // driven by a macro: where the macro has it, the range it takes it through
@@ -2912,7 +2975,7 @@ impl App {
                                 }
                             }
                             for (badge, m) in out.badges.iter().zip(&maps) {
-                                if let Some(edit) = widgets::mapping_popup(t, badge, &format!("{} → {}", mapping_source(&scene, &m.source), i18n::t(info.name)), m) {
+                                if let Some(edit) = widgets::mapping_popup(t, badge, &format!("{} → {}", mapping_source(&self.session.project, &scene, &m.source), i18n::t(info.name)), m) {
                                     map_ops(&edit, node, m, &mut maps_ops);
                                     close |= edit.done;
                                 }
@@ -3232,9 +3295,26 @@ fn param_name(node: &velo_core::Node, key: &str) -> String {
 }
 
 /// A mapping's source by name: a shared one's, or a signal node's ("Audio In · Kick").
-fn mapping_source(scene: &velo_core::Scene, source: &str) -> String {
+fn mapping_source(project: &Project, scene: &velo_core::Scene, source: &str) -> String {
+    // a shared signal says so, before its name
+    if let Some((id, port)) = velo_core::shared_output(source) {
+        return format!("{} {}", icons::BROADCAST, output_name(&project.shared, id, port));
+    }
     let Some((id, port)) = velo_core::signal_output(source) else { return source_label(source).to_string() };
-    let Some(n) = scene.node(id) else { return tr!("Unknown source").to_string() };
+    output_name(scene, id, port)
+}
+
+/// The shared signals' outputs a scene can map ("shared:n_ab12/0") with their names: each node
+/// that's on (each has one output). Not an Audio In or a Beat: those read what the deck's own
+/// sources already show, and are there to feed the other shared nodes.
+fn shared_sources(project: &Project) -> Vec<(String, String)> {
+    let listed = |n: &&velo_core::Node| !n.off && velo_core::shareable(&n.kind) && n.kind != velo_core::AUDIO && n.kind != velo_core::CLOCK;
+    project.shared.nodes.iter().filter(listed).map(|n| (velo_core::shared_key(&n.id, 0), n.name.clone())).collect()
+}
+
+/// A signal node's output as a mapping shows it: its node's name, and the output's when it has several.
+fn output_name(graph: &velo_core::Scene, id: &str, port: u8) -> String {
+    let Some(n) = graph.node(id) else { return tr!("Unknown source").to_string() };
     match node_kind(&n.kind).map(|k| k.outputs).filter(|o| o.len() > 1) {
         Some(outputs) => format!("{} · {}", n.name, outputs.get(usize::from(port)).map_or("?", |o| source_label(o))),
         None => n.name.clone(),
@@ -3590,7 +3670,16 @@ impl eframe::App for App {
             if LAST.swap(now as u64 / 2, Relaxed) != now as u64 / 2 {
                 let s = &live.engine.status;
                 let (avg, worst) = self.cpu.stats();
-                eprintln!("velo: t {now:.0} s, engine {:.1} fps, frame {} µs, {} late, {} stalls; UI {:.2} ms average, {:.2} ms worst, {} frames", live.fps, s.frame_us.load(Relaxed), s.late.load(Relaxed), s.stalls.load(Relaxed), avg * 1000.0, worst * 1000.0, self.cpu.samples.len());
+                eprintln!(
+                    "velo: t {now:.0} s, engine {:.1} fps, frame {} µs, {} late, {} stalls; UI {:.2} ms average, {:.2} ms worst, {} frames",
+                    live.fps,
+                    s.frame_us.load(Relaxed),
+                    s.late.load(Relaxed),
+                    s.stalls.load(Relaxed),
+                    avg * 1000.0,
+                    worst * 1000.0,
+                    self.cpu.samples.len()
+                );
             }
         }
         // VELO_DEMO_TOAST=done|error|action: a toast fully out when the 5-s capture is taken

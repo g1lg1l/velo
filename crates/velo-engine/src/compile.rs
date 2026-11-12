@@ -377,7 +377,9 @@ fn build(
         let (node, shader) = (scene.node(id), &programs[specs[n].program].node);
         let values = shader.values(|p| node.and_then(|node| velo_core::engine_param(scene, node, p)));
         runner.set_params(queue, &programs, n, &values);
-        mods.push(Modulator::new(shader, &values, node.map_or_else(Vec::new, |node| routes(shader, &node.mappings, &signals))));
+        // shortcut: mappings of the shared signals come with the UI's next sync (it resends every
+        // route once a graph is in), a frame late at most; pass the shared plan here if that shows
+        mods.push(Modulator::new(shader, &values, node.map_or_else(Vec::new, |node| routes(shader, &node.mappings, &signals, &[]))));
     }
     // and the macros where they are, driving what they drive
     let nodes: Vec<(&str, &ShaderNode)> = plan.nodes.iter().zip(&specs).map(|((id, _), spec)| (id.as_str(), &programs[spec.program].node)).collect();

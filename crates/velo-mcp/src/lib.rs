@@ -16,6 +16,8 @@ Every edit is an operator: find them with search_operators, run them with run_op
 parameters, the audio sources, how to write a shader) and query_project. To make something new: scene.add (it becomes the selected \
 scene, which the preview shows), node.add, edge.connect into an Output, node.set_param, mapping.add. Use the existing nodes \
 whenever they can do the job; write a Shader node's WGSL only when none does. Look at the result with snapshot. \
+The project's shared signals are signal nodes every scene reads (a composite kick, an energy follower): node and edge operators \
+edit them with scene \"shared\", and any scene's mapping.add takes \"shared:<node id>/<output>\" as its source. \
 The live scene is the audience's: work on another one unless the user allowed otherwise. Everything you change until checkpoint is \
 one undo step for the user.";
 
@@ -40,8 +42,8 @@ pub fn tools() -> Value {
     json!([
         { "name": "list_nodes", "description": "Every node kind Velo has: inputs, parameters (id, type, range, default), what it does; the audio sources mappings can use; how to write a Shader node's WGSL, with an example.",
           "inputSchema": none() },
-        { "name": "query_project", "description": "Read the project: a summary (scenes, which is live, the selected one in detail: nodes, params, mappings, wires, macros), one scene with everything including shader code, or all of it.",
-          "inputSchema": object(json!({ "what": { "type": "string", "enum": ["summary", "scene", "full"] }, "scene": { "type": "string", "description": "a scene id for what=scene (default: the selected one)" } }), &[]) },
+        { "name": "query_project", "description": "Read the project: a summary (scenes, which is live, the selected one in detail: nodes, params, mappings, wires, macros; the shared signals every scene can map), one scene with everything including shader code, or all of it.",
+          "inputSchema": object(json!({ "what": { "type": "string", "enum": ["summary", "scene", "full"] }, "scene": { "type": "string", "description": "a scene id for what=scene (default: the selected one; \"shared\": the shared signals)" } }), &[]) },
         { "name": "search_operators", "description": "Find Velo operators (every edit is one) by words in their id, label or description. Returns ids, descriptions and example props.",
           "inputSchema": object(json!({ "query": { "type": "string", "description": "e.g. \"node\", \"mapping\", \"macro\", \"shader code\"; empty lists all" } }), &[]) },
         { "name": "run_operator", "description": "Run one operator with JSON props (see search_operators for examples). Answers the new node or scene's id, and for shader code whether it compiles. Edits until the next checkpoint undo together with one Ctrl+Z.",

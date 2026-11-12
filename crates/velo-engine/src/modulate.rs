@@ -57,18 +57,20 @@ fn hue_turn(c: &mut [f32; 4], turns: f32) {
 /// A node's mappings resolved against its shader. A mapping naming a parameter the shader
 /// doesn't have (or can't move: on/offs) or an unknown source is left out.
 /// Mappings resolved against a shader: the audio and clock sources by name, the graph's
-/// `signals` (its LFOs' node ids) after them.
-pub fn routes(node: &ShaderNode, mappings: &[Mapping], signals: &[String]) -> Vec<Route> {
+/// `signals` (its LFOs' node ids) after them, the shared signal graph's (`shared`, its plan's
+/// names) from [`crate::signal::SHARED`] on. A source no graph has is left out: it moves nothing.
+pub fn routes(node: &ShaderNode, mappings: &[Mapping], signals: &[String], shared: &[String]) -> Vec<Route> {
     mappings
         .iter()
         .filter_map(|m| {
             let (param, axis) = slot(node, &m.param)?;
-            // a shared source by name, or a signal node's output ("n_ab12/0"; an LFO by its id alone)
-            let key = match velo_core::signal_output(&m.source) {
-                Some((id, port)) => format!("{id}/{port}"),
-                None => m.source.clone(),
-            };
-            let source = SOURCES.iter().position(|s| *s == m.source).or_else(|| signals.iter().position(|s| *s == key).map(|i| SOURCES.len() + i))?;
+            // a shared source by name, a shared graph's output ("shared:n_ab12/0"), or a signal
+            // node's output ("n_ab12/0"; an LFO by its id alone)
+            let source = match (velo_core::shared_output(&m.source), velo_core::signal_output(&m.source)) {
+                (Some((id, port)), _) => shared.iter().position(|s| *s == format!("{id}/{port}")).map(|i| crate::signal::SHARED + i),
+                (None, Some((id, port))) => signals.iter().position(|s| *s == format!("{id}/{port}")).map(|i| SOURCES.len() + i),
+                (None, None) => SOURCES.iter().position(|s| *s == m.source),
+            }?;
             Some(Route { param, axis, source, amount: m.amount, attack: m.attack_ms / 1000.0, release: m.release_ms / 1000.0, invert: m.invert, level: 0.0 })
         })
         .collect()
@@ -405,9 +407,9 @@ mod tests {
     #[test]
     fn mappings_resolve_to_parameters_axes_and_sources() {
         let feedback = shader("feedback");
-        let r = routes(&feedback, &[mapping("zoom", "kick", 0.5), mapping("drift.y", "bar_phase", -1.0), mapping("nope", "kick", 1.0), mapping("zoom", "cowbell", 1.0)], &[]);
+        let r = routes(&feedback, &[mapping("zoom", "kick", 0.5), mapping("drift.y", "bar_phase", -1.0), mapping("nope", "kick", 1.0), mapping("zoom", "cowbell", 1.0)], &[], &[]);
         assert_eq!(r.iter().map(|r| (r.param, r.axis, r.source)).collect::<Vec<_>>(), [(1, 0, 4), (3, 1, 8)], "unknown parameters and sources are left out");
-        assert!(routes(&shader("color"), &[mapping("invert", "kick", 1.0)], &[]).is_empty(), "on/offs don't take mappings");
+        assert!(routes(&shader("color"), &[mapping("invert", "kick", 1.0)], &[], &[]).is_empty(), "on/offs don't take mappings");
     }
 
     #[test]
@@ -416,18 +418,18 @@ mod tests {
         let node = shader("kaleido");
         let zoom = node.params.iter().position(|p| p.id == "zoom").unwrap();
         let base = node.values(|p| (p == "zoom").then_some([1.0, 0.0, 0.0, 0.0]));
-        let mut m = Modulator::new(&node, &base, routes(&node, &[mapping("zoom", "kick", 0.2)], &[]));
+        let mut m = Modulator::new(&node, &base, routes(&node, &[mapping("zoom", "kick", 0.2)], &[], &[]));
         m.step(&kick(0.0), 0.016);
         assert_eq!(m.values()[zoom][0], 1.0, "silence: the base");
         m.step(&kick(1.0), 0.016);
         assert!((m.values()[zoom][0] - (1.0 + 0.2 * 3.75)).abs() < 1e-5, "{}", m.values()[zoom][0]);
         // two sources add up, and the sum stops at the range's end
-        m.set_routes(routes(&node, &[mapping("zoom", "kick", 0.9), mapping("zoom", "level", 0.9)], &[]));
+        m.set_routes(routes(&node, &[mapping("zoom", "kick", 0.9), mapping("zoom", "level", 0.9)], &[], &[]));
         let mut both = kick(1.0);
         both[0] = 1.0;
         m.step(&both, 0.016);
         assert_eq!(m.values()[zoom][0], 4.0);
-        m.set_routes(routes(&node, &[mapping("zoom", "kick", -1.0)], &[]));
+        m.set_routes(routes(&node, &[mapping("zoom", "kick", -1.0)], &[], &[]));
         m.step(&kick(1.0), 0.016);
         assert_eq!(m.values()[zoom][0], 0.25, "a negative amount pulls down, to the minimum");
         // the bytes are the values, and only mapped floats move
@@ -436,7 +438,7 @@ mod tests {
         assert_eq!(f32::from_ne_bytes(bytes[zoom * 16..zoom * 16 + 4].try_into().unwrap()), m.values()[zoom][0]);
         assert_eq!(m.values()[0], base[0], "segments isn't mapped");
         // inverted: full in silence
-        m.set_routes(routes(&node, &[Mapping { invert: true, ..mapping("zoom", "kick", 0.2) }], &[]));
+        m.set_routes(routes(&node, &[Mapping { invert: true, ..mapping("zoom", "kick", 0.2) }], &[], &[]));
         m.step(&kick(0.0), 0.016);
         assert!((m.values()[zoom][0] - 1.75).abs() < 1e-5);
         m.set_routes(Vec::new());
@@ -450,7 +452,7 @@ mod tests {
         let node = shader("shapes");
         let tint = node.params.iter().position(|p| p.id == "tint").unwrap();
         let base = node.values(|p| (p == "tint").then_some([1.0, 0.0, 0.0, 1.0]));
-        let mut m = Modulator::new(&node, &base, routes(&node, &[mapping("tint", "kick", 1.0 / 3.0)], &[]));
+        let mut m = Modulator::new(&node, &base, routes(&node, &[mapping("tint", "kick", 1.0 / 3.0)], &[], &[]));
         m.step(&kick(1.0), 0.016);
         let c = m.values()[tint];
         assert!(c[0] < 1e-4 && (c[1] - 1.0).abs() < 1e-4 && c[2] < 1e-4 && c[3] == 1.0, "{c:?}");
@@ -467,7 +469,7 @@ mod tests {
         let node = shader("kaleido");
         let zoom = node.params.iter().position(|p| p.id == "zoom").unwrap();
         let slow = Mapping { attack_ms: 10.0, release_ms: 100.0, ..mapping("zoom", "kick", 1.0 / 3.75) };
-        let mut m = Modulator::new(&node, &node.values(|_| None), routes(&node, std::slice::from_ref(&slow), &[]));
+        let mut m = Modulator::new(&node, &node.values(|_| None), routes(&node, std::slice::from_ref(&slow), &[], &[]));
         let level = |m: &Modulator| m.values()[zoom][0] - 1.0;
         // one attack time in: 1 - 1/e of the way up
         for _ in 0..10 {
@@ -485,7 +487,7 @@ mod tests {
         assert!((level(&m) - (-1.0f32).exp()).abs() < 1e-3, "{}", level(&m));
         // changing the amount keeps the smoothed level: no restart
         let before = level(&m);
-        m.set_routes(routes(&node, &[Mapping { amount: 2.0 / 3.75, ..slow }], &[]));
+        m.set_routes(routes(&node, &[Mapping { amount: 2.0 / 3.75, ..slow }], &[], &[]));
         m.step(&kick(0.0), 0.0);
         assert!((level(&m) - 2.0 * before).abs() < 1e-4);
     }
@@ -512,7 +514,7 @@ mod tests {
         // kaleido zoom: 0.25..4; macro 0 takes it from 1 to 3, the kick adds 0.2 of the range
         let node = shader("kaleido");
         let zoom = node.params.iter().position(|p| p.id == "zoom").unwrap();
-        let mut mods = vec![Modulator::new(&node, &node.values(|_| None), routes(&node, &[mapping("zoom", "kick", 0.2)], &[]))];
+        let mut mods = vec![Modulator::new(&node, &node.values(|_| None), routes(&node, &[mapping("zoom", "kick", 0.2)], &[], &[]))];
         let mut macros: [Macro; MACROS] = Default::default();
         macros[0].targets = vec![target("n", "zoom", 1.0, 3.0)];
         let mut m = Macros::new([0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], macro_routes(&[("n", &node)], &macros));
@@ -626,7 +628,7 @@ mod tests {
     #[test]
     fn an_lfo_is_a_source_after_the_audio_and_the_clock() {
         let kaleido = shader("kaleido");
-        let r = routes(&kaleido, &[mapping("zoom", "n_lfo2", 0.5), mapping("spin", "n_gone", 0.5)], &["n_lfo1/0".into(), "n_lfo2/0".into()]);
+        let r = routes(&kaleido, &[mapping("zoom", "n_lfo2", 0.5), mapping("spin", "n_gone", 0.5)], &["n_lfo1/0".into(), "n_lfo2/0".into()], &[]);
         assert_eq!(r.len(), 1, "a gone LFO maps nothing");
         assert_eq!(r[0].source, SOURCES.len() + 1);
     }

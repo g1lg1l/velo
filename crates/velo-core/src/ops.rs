@@ -234,10 +234,14 @@ struct MapRef {
 
 /// The node's mappings and the index of the one `m` names, if it has it.
 fn mapping<'a>(s: &'a mut Session, m: &MapRef) -> Result<(&'a mut Vec<Mapping>, Option<usize>), String> {
-    let scene = s.scene_mut(m.scene.as_deref())?;
+    let scene = s.graph_mut(m.scene.as_deref())?;
     let i = node_index(scene, &m.node)?;
-    // a shared source ("kick") names its Audio In's or Beat's output
-    let source = scene.signal_key(&m.source).unwrap_or_else(|| m.source.clone());
+    // a shared source ("kick") names its Audio In's or Beat's output; a shared graph's output
+    // ("shared:n_ab12") is kept with its port
+    let source = match shared_output(&m.source) {
+        Some((id, port)) => shared_key(id, port),
+        None => scene.signal_key(&m.source).unwrap_or_else(|| m.source.clone()),
+    };
     let list = &mut scene.nodes[i].mappings;
     let at = list.iter().position(|x| x.param == m.param && x.source == source);
     Ok((list, at))
@@ -363,16 +367,29 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "scene.import",
         label: "Import Scene",
-        description: "Add a scene from another project, given whole as `scene` (as a project file holds it), after the others, and select it: it gets new ids, its own shader files and a free name.",
+        description: "Add scenes from another project, given whole as `scene` (or several as `scenes`, as a project file holds them), after the others, and select the last: each gets new ids, its own shader files and a free name. With `shared`, that project's shared signal graph, the shared signals the scenes read come along into this project's (new ids, once for all of them); without it, mappings of shared signals keep their names and read 0 until this project has such a node.",
         example: r#"{"scene": {"id": "s_ab12", "name": "Drop", "nodes": [], "edges": []}}"#,
         undo: true,
         poll: always,
         exec: |s, v| {
-            let scene: Scene = serde_json::from_value(v.get("scene").cloned().ok_or("a scene is required")?).map_err(|e| format!("bad scene: {e}"))?;
-            let copy = adopt(&s.project, scene, None);
-            let id = copy.id.clone();
-            s.project.scenes.push(copy);
-            s.active_scene = Some(id);
+            let bad = |e: serde_json::Error| format!("bad scene: {e}");
+            let mut scenes: Vec<Scene> = match (v.get("scenes"), v.get("scene")) {
+                (Some(list), _) => serde_json::from_value(list.clone()).map_err(bad)?,
+                (None, Some(one)) => vec![serde_json::from_value(one.clone()).map_err(bad)?],
+                (None, None) => Vec::new(),
+            };
+            if scenes.is_empty() {
+                return Err("a scene is required".into());
+            }
+            if let Some(from) = v.get("shared") {
+                let from: Scene = serde_json::from_value(from.clone()).map_err(|e| format!("bad shared graph: {e}"))?;
+                import_shared(&mut s.project, &mut scenes, &from);
+            }
+            for scene in scenes {
+                let copy = adopt(&s.project, scene, None);
+                s.active_scene = Some(copy.id.clone());
+                s.project.scenes.push(copy);
+            }
             Ok(())
         },
     },
@@ -448,13 +465,18 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "scene.select",
         label: "Select Scene",
-        description: "Show a scene in the editor, by its id.",
+        description: "Show a scene in the editor, by its id; \"shared\" opens the shared signals' canvas.",
         example: r#"{"scene": "s_7Kq2"}"#,
         undo: false,
-        poll: has_scenes,
+        poll: always,
         exec: |s, v| {
             let SceneRef { scene, .. } = props(v)?;
-            let i = s.scene_index(Some(scene.as_deref().ok_or("scene is required")?))?;
+            let scene = scene.ok_or("scene is required")?;
+            if scene == SHARED {
+                s.active_scene = Some(scene);
+                return Ok(());
+            }
+            let i = s.scene_index(Some(&scene))?;
             s.active_scene = Some(s.project.scenes[i].id.clone());
             Ok(())
         },
@@ -520,7 +542,7 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "node.add",
         label: "Add Node",
-        description: "Add a node of a kind (\"velo.noise\", \"velo.blur\"…) at a canvas position, in the selected scene unless scene has an id.",
+        description: "Add a node of a kind (\"velo.noise\", \"velo.blur\"…) at a canvas position, in the selected scene unless scene has an id (\"shared\": the shared signals, which take signal nodes only, no Probe).",
         example: r#"{"kind": "velo.noise", "pos": [0, 0]}"#,
         undo: true,
         poll: has_scenes,
@@ -530,15 +552,18 @@ pub static OPERATORS: &[Operator] = &[
                 params.entry("hidden".into()).or_insert([AUDIO_HIDDEN, 0.0, 0.0, 0.0]);
             }
             let info = node_kind(&kind).ok_or_else(|| format!("unknown node kind {kind}"))?;
-            let id = new_id("n_", |id| s.project.scenes.iter().any(|c| c.node(id).is_some()));
-            let scene = s.scene_mut(scene_id.as_deref())?;
+            let id = new_id("n_", |id| s.project.graphs().any(|c| c.node(id).is_some()));
+            let scene = s.graph_mut(scene_id.as_deref())?;
+            if scene.id == SHARED && !shareable(&kind) {
+                return Err(format!("the shared signals take signal nodes only (no Probe: there's no picture to read), not {}", info.label));
+            }
             let base = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| info.label.to_string());
             let taken = |name: &str| scene.nodes.iter().any(|n| n.name == name);
             let name = if taken(&base) { (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).unwrap_or(base) } else { base };
             // an ISF shader (GLSL) keeps ISF's extension, so editors know it
             let isf = code.as_deref().is_some_and(|c| c.contains("void main") && !c.contains("fn main_image"));
             let file = is_shader(&kind).then(|| shader_file(&s.project, &name, if isf { "fs" } else { "wgsl" }));
-            let scene = s.scene_mut(scene_id.as_deref())?;
+            let scene = s.graph_mut(scene_id.as_deref())?;
             let text = first_text(&kind).map(|first| text.unwrap_or(first));
             scene.nodes.push(Node { id, kind, name, off: false, pos, params, mappings, code, file, media, text, icon: short_icon(&icon) });
             Ok(())
@@ -553,7 +578,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let NodeRef { node, pos, nodes, by, scene, .. } = props(v)?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             match (node, pos, by) {
                 (Some(node), Some(pos), _) => {
                     let i = node_index(scene, &node)?;
@@ -583,7 +608,7 @@ pub static OPERATORS: &[Operator] = &[
             if cables.is_empty() {
                 return Err("cables are required".into());
             }
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let id = new_id("t_", |id| scene.ties.iter().any(|t| t.id == id));
             scene.ties.push(Tie { id, pos, cables });
             Ok(())
@@ -599,7 +624,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let TieRef { tie, pos, scene } = props(v)?;
             let pos = pos.ok_or("pos is required")?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             scene.ties.iter_mut().find(|t| t.id == tie).ok_or_else(|| format!("no tie {tie}"))?.pos = pos;
             Ok(())
         },
@@ -613,7 +638,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let TieRef { tie, scene, .. } = props(v)?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let before = scene.ties.len();
             scene.ties.retain(|t| t.id != tie);
             if scene.ties.len() == before {
@@ -631,7 +656,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let GroupProps { nodes, name, scene, .. } = props(v)?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let nodes: Vec<String> = nodes.into_iter().filter(|n| scene.node(n).is_some()).collect();
             if nodes.is_empty() {
                 return Err("nodes of this scene are required".into());
@@ -656,7 +681,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let GroupProps { group, name, scene, .. } = props(v)?;
             let (group, name) = (group.ok_or("group is required")?, name.ok_or("name is required")?);
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             scene.groups.iter_mut().find(|g| g.id == group).ok_or_else(|| format!("no group {group}"))?.name = name;
             Ok(())
         },
@@ -671,7 +696,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let GroupProps { group, scene, .. } = props(v)?;
             let group = group.ok_or("group is required")?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let before = scene.groups.len();
             scene.groups.retain(|g| g.id != group);
             if scene.groups.len() == before {
@@ -690,7 +715,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let NoteProps { pos, text, size, scene, .. } = props(v)?;
             let pos = pos.ok_or("pos is required")?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let id = new_id("x_", |id| scene.notes.iter().any(|n| n.id == id));
             scene.notes.push(Note { id, pos, text: text.unwrap_or_default(), size: size.unwrap_or(1.0).clamp(0.3, 8.0) });
             Ok(())
@@ -706,7 +731,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let NoteProps { note, pos, text, size, scene } = props(v)?;
             let note = note.ok_or("note is required")?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let n = scene.notes.iter_mut().find(|n| n.id == note).ok_or_else(|| format!("no note {note}"))?;
             if let Some(pos) = pos {
                 n.pos = pos;
@@ -730,7 +755,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let NoteProps { note, scene, .. } = props(v)?;
             let note = note.ok_or("note is required")?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let before = scene.notes.len();
             scene.notes.retain(|n| n.id != note);
             if scene.notes.len() == before {
@@ -749,7 +774,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let NodeRef { node, name, scene, .. } = props(v)?;
             let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).ok_or("name is required")?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node.ok_or("node is required")?)?;
             scene.nodes[i].name = name;
             Ok(())
@@ -767,7 +792,7 @@ pub static OPERATORS: &[Operator] = &[
             if nodes.is_empty() {
                 return Err("nodes are required".into());
             }
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             for id in nodes {
                 let i = node_index(scene, &id)?;
                 let node = &mut scene.nodes[i];
@@ -787,7 +812,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let NodeRef { node, icon, scene, .. } = props(v)?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node.ok_or("node is required")?)?;
             scene.nodes[i].icon = short_icon(&icon.ok_or("icon is required")?);
             Ok(())
@@ -803,7 +828,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let NodeRef { node, scene, .. } = props(v)?;
             let node = node.ok_or("node is required")?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
             scene.nodes.remove(i);
             scene.edges.retain(|e| e.from.0 != node && e.to.0 != node);
@@ -838,7 +863,7 @@ pub static OPERATORS: &[Operator] = &[
             if param.trim().is_empty() || slot.iter().any(|x| !x.is_finite()) {
                 return Err("a parameter id and finite values are required".into());
             }
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
             scene.nodes[i].params.insert(param, slot);
             Ok(())
@@ -853,7 +878,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let SetCode { node, code, scene } = props(v)?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
             if !is_shader(&scene.nodes[i].kind) {
                 return Err(format!("{node} isn't a Shader node"));
@@ -872,16 +897,20 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let ReplaceNode { node, kind, params, mappings, code, scene } = props(v)?;
             let new = node_kind(&kind).ok_or_else(|| format!("unknown node kind {kind}"))?;
-            let c = s.scene_index(scene.as_deref())?;
-            let i = node_index(&s.project.scenes[c], &node)?;
-            let old = s.project.scenes[c].nodes[i].clone();
+            let graph = s.graph_mut(scene.as_deref())?;
+            let i = node_index(graph, &node)?;
+            let old = graph.nodes[i].clone();
             if old.kind == kind {
                 return Ok(());
+            }
+            let shared = graph.id == SHARED;
+            if shared && !shareable(&kind) {
+                return Err(format!("the shared signals take signal nodes only (no Probe), not {}", new.label));
             }
             // a name that only said the old kind says the new one ("Blur 2" becomes "Kaleido")
             let said_kind = node_kind(&old.kind).is_some_and(|k| old.name == k.label || old.name.strip_prefix(k.label).is_some_and(|rest| rest.trim().parse::<u32>().is_ok()));
             let name = if said_kind {
-                let taken = |name: &str| s.project.scenes[c].nodes.iter().any(|n| n.id != node && n.name == name);
+                let taken = |name: &str| graph.nodes.iter().any(|n| n.id != node && n.name == name);
                 if taken(new.label) { (2..).map(|n| format!("{} {n}", new.label)).find(|n| !taken(n)).unwrap_or_else(|| new.label.into()) } else { new.label.into() }
             } else {
                 old.name.clone()
@@ -890,7 +919,14 @@ pub static OPERATORS: &[Operator] = &[
             let code = if is_shader(&kind) { old.code.clone().or(code) } else { None };
             let media = if shows_media(&kind) { old.media.clone() } else { None };
             let text = first_text(&kind).map(|first| old.text.clone().unwrap_or(first));
-            let scene = &mut s.project.scenes[c];
+            let outputs = if new.category == Category::Signal { new.outputs.len() } else { 0 };
+            // what the scenes took from a shared node's outputs, while it still has them
+            if shared {
+                for n in s.project.scenes.iter_mut().flat_map(|c| &mut c.nodes) {
+                    n.mappings.retain(|m| shared_output(&m.source).is_none_or(|(id, port)| id != node || usize::from(port) < outputs));
+                }
+            }
+            let scene = s.graph_mut(scene.as_deref())?;
             scene.nodes[i] = Node { kind, name, off: old.off && new.category != Category::Output, params, mappings, code, file, media, text, ..old };
             // the wires that still fit (each checked as if made now), the rest go
             let edges = std::mem::take(&mut scene.edges);
@@ -901,7 +937,6 @@ pub static OPERATORS: &[Operator] = &[
                 }
             }
             // what other nodes took from its outputs, while it still has them as a signal node
-            let outputs = if new.category == Category::Signal { new.outputs.len() } else { 0 };
             for n in &mut scene.nodes {
                 n.mappings.retain(|m| signal_output(&m.source).is_none_or(|(id, port)| id != node || usize::from(port) < outputs));
             }
@@ -917,7 +952,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let SetMedia { node, media, scene } = props(v)?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
             if !shows_media(&scene.nodes[i].kind) && !sets_text(&scene.nodes[i].kind) && ![MEDIA_LIST, PARTICLES, MESH, LIVE].contains(&scene.nodes[i].kind.as_str()) {
                 return Err(format!("{node} isn't an Image, Video, Live, Media List, Particles, Mesh, Text or Text List node"));
@@ -935,7 +970,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let SetText { node, text, scene } = props(v)?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
             if !sets_text(&scene.nodes[i].kind) {
                 return Err(format!("{node} isn't a Text or Text List node"));
@@ -948,7 +983,7 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "mapping.add",
         label: "Map Source",
-        description: "Let a signal node's output move one of a node's parameters, at half its range with 5 ms attack and 150 ms release. The source is \"node_id/output\" (an Audio In's 0 level to 6 hat and 7 melody, a Beat's 0 beat and 1 bar, any other signal node's 0), or level, bass, mid, high, kick, snare, hat, melody, beat, bar_phase: the scene's Audio In or Beat output of that name, the node added if the scene has none. Mapping the same source twice does nothing.",
+        description: "Let a signal node's output move one of a node's parameters, at half its range with 5 ms attack and 150 ms release. The source is \"node_id/output\" (an Audio In's 0 level to 6 hat and 7 melody, a Beat's 0 beat and 1 bar, any other signal node's 0), or level, bass, mid, high, kick, snare, hat, melody, beat, bar_phase: the scene's Audio In or Beat output of that name, the node added if the scene has none; or \"shared:node_id/output\", an output of the shared signals, which every scene can read. Mapping the same source twice does nothing.",
         example: r#"{"node": "n_ab12", "param": "zoom", "source": "kick"}"#,
         undo: true,
         poll: has_scenes,
@@ -957,14 +992,22 @@ pub static OPERATORS: &[Operator] = &[
             if m.param.trim().is_empty() {
                 return Err("a parameter id is required".into());
             }
-            let c = s.scene_index(m.scene.as_deref())?;
+            let c = s.scene_index(m.scene.as_deref()).map_err(|e| if m.scene.as_deref().or(s.active_scene.as_deref()) == Some(SHARED) { "nothing in the shared signals takes a mapping: map their outputs in a scene".into() } else { e })?;
             node_index(&s.project.scenes[c], &m.node)?;
             // a shared source ("kick") comes from the scene's Audio In or Beat, added if missing
             if let Some(key) = signal_source(&mut s.project, c, &m.source) {
                 m.source = key;
             }
-            // a signal node's output: the node in this scene, the output one it has
-            let signal = signal_output(&m.source).is_some_and(|(id, port)| s.project.scenes[c].node(id).and_then(|n| node_kind(&n.kind)).is_some_and(|k| k.category == Category::Signal && usize::from(port) < k.outputs.len()));
+            // a signal node's output: the node in this scene (or in the shared signals), the output one it has
+            let has = |graph: &Scene, id: &str, port: u8| graph.node(id).and_then(|n| node_kind(&n.kind)).is_some_and(|k| k.category == Category::Signal && usize::from(port) < k.outputs.len());
+            let shared = shared_output(&m.source).map(|(id, port)| (has(&s.project.shared, id, port), shared_key(id, port)));
+            let signal = match shared {
+                Some((ok, key)) => {
+                    m.source = key;
+                    ok
+                }
+                None => signal_output(&m.source).is_some_and(|(id, port)| has(&s.project.scenes[c], id, port)),
+            };
             if !signal {
                 return Err(format!("unknown source {}", m.source));
             }
@@ -1029,7 +1072,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let Wire { from, to, scene } = props(v)?;
             let from = from.ok_or("from is required")?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             scene.can_connect((&from.0, from.1), (&to.0, to.1))?;
             scene.edges.retain(|e| e.to != to);
             scene.edges.push(Edge { from, to });
@@ -1045,7 +1088,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let Wire { to, scene, .. } = props(v)?;
-            let scene = s.scene_mut(scene.as_deref())?;
+            let scene = s.graph_mut(scene.as_deref())?;
             let before = scene.edges.len();
             scene.edges.retain(|e| e.to != to);
             if scene.edges.len() == before { Err("nothing is wired into that input".into()) } else { Ok(()) }
@@ -1389,7 +1432,7 @@ pub(crate) fn signal_source(project: &mut Project, c: usize, source: &str) -> Op
     if let Some(key) = project.scenes[c].signal_key(source) {
         return Some(key);
     }
-    let id = new_id("n_", |id| project.scenes.iter().any(|c| c.node(id).is_some()));
+    let id = new_id("n_", |id| project.graphs().any(|c| c.node(id).is_some()));
     let nodes = &mut project.scenes[c].nodes;
     let [x, y] = nodes.iter().fold([f32::INFINITY; 2], |[x, y], n| [x.min(n.pos[0]), y.min(n.pos[1])]);
     let pos = if x.is_finite() { [x - 260.0, y] } else { [0.0, 0.0] };
@@ -1433,7 +1476,7 @@ fn adopt(p: &Project, mut scene: Scene, name: Option<String>) -> Scene {
     files.scenes.push(Scene::default());
     let mut ids: BTreeMap<String, String> = BTreeMap::new();
     for n in &mut scene.nodes {
-        let new = new_id("n_", |id| p.scenes.iter().any(|c| c.node(id).is_some()) || ids.values().any(|v| v == id));
+        let new = new_id("n_", |id| p.graphs().any(|c| c.node(id).is_some()) || ids.values().any(|v| v == id));
         ids.insert(std::mem::replace(&mut n.id, new.clone()), new);
         if let Some(file) = &n.file {
             let ext = file.rsplit_once('.').map_or("wgsl", |(_, e)| e);
@@ -1459,6 +1502,53 @@ fn adopt(p: &Project, mut scene: Scene, name: Option<String>) -> Scene {
         renamed(&mut t.node);
     }
     scene
+}
+
+/// What imported `scenes` read from their own project's shared signals (`from`) brought into this
+/// project's: the nodes their mappings name and everything wired into those, once for all the
+/// scenes, with new ids and free names, below what's there; the mappings follow them. A mapping
+/// of a node `from` doesn't have keeps its name (and reads 0).
+fn import_shared(project: &mut Project, scenes: &mut [Scene], from: &Scene) {
+    let mut wanted: Vec<&str> = Vec::new();
+    for (id, _) in scenes.iter().flat_map(|s| &s.nodes).flat_map(|n| &n.mappings).filter_map(|m| shared_output(&m.source)) {
+        if from.node(id).is_some() && !wanted.contains(&id) {
+            wanted.push(id);
+        }
+    }
+    // and what feeds them, upstream
+    let mut i = 0;
+    while i < wanted.len() {
+        let to = wanted[i];
+        for e in from.edges.iter().filter(|e| e.to.0 == to) {
+            if from.node(&e.from.0).is_some() && !wanted.contains(&e.from.0.as_str()) {
+                wanted.push(&e.from.0);
+            }
+        }
+        i += 1;
+    }
+    let picked: Vec<&Node> = from.nodes.iter().filter(|n| wanted.contains(&n.id.as_str())).collect();
+    // under what's there already, as they stood
+    let bottom = project.shared.nodes.iter().map(|n| n.pos[1]).fold(f32::NEG_INFINITY, f32::max);
+    let top = picked.iter().map(|n| n.pos[1]).fold(f32::INFINITY, f32::min);
+    let dy = if bottom.is_finite() { bottom + 200.0 - top } else { 0.0 };
+    let mut ids: BTreeMap<String, String> = BTreeMap::new();
+    for n in picked {
+        let id = new_id("n_", |id| project.graphs().any(|c| c.node(id).is_some()));
+        let taken = |name: &str| project.shared.nodes.iter().any(|n| n.name == name);
+        let name = if taken(&n.name) { (2..).map(|k| format!("{} {k}", n.name)).find(|x| !taken(x)).unwrap_or_else(|| n.name.clone()) } else { n.name.clone() };
+        ids.insert(n.id.clone(), id.clone());
+        project.shared.nodes.push(Node { id, name, pos: [n.pos[0], n.pos[1] + dy], ..n.clone() });
+    }
+    for e in &from.edges {
+        if let (Some(a), Some(b)) = (ids.get(&e.from.0), ids.get(&e.to.0)) {
+            project.shared.edges.push(Edge { from: (a.clone(), e.from.1), to: (b.clone(), e.to.1) });
+        }
+    }
+    for m in scenes.iter_mut().flat_map(|s| &mut s.nodes).flat_map(|n| &mut n.mappings) {
+        if let Some(key) = shared_output(&m.source).and_then(|(id, port)| Some(shared_key(ids.get(id)?, port))) {
+            m.source = key;
+        }
+    }
 }
 
 fn new_id(prefix: &str, taken: impl Fn(&str) -> bool) -> String {

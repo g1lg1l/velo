@@ -191,8 +191,8 @@ fn ink(on: egui::Color32) -> egui::Color32 {
 // The deck (docs/scenes.md §2), Teenage Engineering's way
 // ---------------------------------------------------------------------------
 
-pub use crate::theme::{TE_BLUE, TE_GREEN, TE_ORANGE};
 use crate::theme::TE_INK;
+pub use crate::theme::{TE_BLUE, TE_GREEN, TE_ORANGE};
 
 /// Knob `i`'s cap: blue, green, white, orange, as on the OP-1, then again.
 pub fn cap_color(t: &Theme, i: usize) -> egui::Color32 {
@@ -1442,6 +1442,32 @@ pub fn scene_row(ui: &mut Ui, t: &Theme, index: usize, name: &str, icon: &str, h
     resp
 }
 
+/// The shared signals at the top of the scenes rail: a slim row in the signals' green, with no
+/// launch key (they're never launched), saying how many signal nodes run for every scene.
+pub fn shared_row(ui: &mut Ui, t: &Theme, selected: bool, nodes: usize) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+    let k = ui.ctx().animate_bool_with_time(resp.id.with("selected"), selected, t.motion);
+    let h = kit::hover(ui, t, &resp);
+    let radius = CornerRadius::same(t.radius_sm);
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, radius, Theme::mix(t.cat_signal.gamma_multiply(0.06 + 0.04 * h), t.cat_signal.gamma_multiply(0.16), k));
+    painter.rect_stroke(rect, radius, Stroke::new(1.0, t.cat_signal.gamma_multiply(0.25 + 0.5 * k)), StrokeKind::Inside);
+    let y = rect.center().y;
+    kit::icon_at(&painter, pos2(rect.left() + 14.0, y), crate::icons::BROADCAST, 15.0, t.cat_signal);
+    let count = match nodes {
+        0 => tr!("none yet").to_string(),
+        1 => tr!("1 signal").to_string(),
+        n => tr!("{} signals", n),
+    };
+    let right = painter.text(pos2(rect.right() - 10.0, y), Align2::RIGHT_CENTER, count, Theme::mono(t.text_xs), t.fg_muted).left() - t.gap;
+    let name = tr!("Shared signals");
+    let x = rect.left() + 28.0;
+    kit::fit_text(&painter, pos2(x, y), Align2::LEFT_CENTER, name, t.body(), Theme::mix(t.fg_muted, t.fg_text, (0.55 + 0.45 * h.max(k)).min(1.0)), right - x);
+    kit::focus_ring(ui, t, &resp, t.radius_sm);
+    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, selected, name));
+    resp
+}
+
 /// The scenes rail while it has none: three ghost scene cards stacked like a hand of cards,
 /// fanning out while `spread` (the pointer is over the rail).
 pub fn scene_deck(ui: &mut Ui, t: &Theme, spread: bool) {
@@ -1521,8 +1547,9 @@ fn gradient_mesh(rect: Rect, radius: CornerRadius, at: impl Fn(Pos2) -> egui::Co
 }
 
 /// Emoji to mark a node or a scene with (ones the bundled emoji font draws).
-const EMOJI: [&str; 40] =
-    ["✨", "🔥", "🌊", "⚡", "🌀", "💫", "⭐", "🌙", "☀", "❄", "🌈", "🌸", "🍄", "🌋", "🌐", "💎", "🔮", "🌌", "🎯", "🚀", "🎨", "🎬", "📺", "💡", "🎹", "📻", "🎵", "🎶", "🎸", "🔊", "🎧", "🎤", "🔺", "🔷", "⬛", "⚪", "💀", "👾", "👽", "❤"];
+const EMOJI: [&str; 40] = [
+    "✨", "🔥", "🌊", "⚡", "🌀", "💫", "⭐", "🌙", "☀", "❄", "🌈", "🌸", "🍄", "🌋", "🌐", "💎", "🔮", "🌌", "🎯", "🚀", "🎨", "🎬", "📺", "💡", "🎹", "📻", "🎵", "🎶", "🎸", "🔊", "🎧", "🎤", "🔺", "🔷", "⬛", "⚪", "💀", "👾", "👽", "❤",
+];
 
 /// A node's or a scene's mark: its emoji, or a dot in `color`; a click opens the emoji to pick
 /// from. Returns the one picked ("" for none).

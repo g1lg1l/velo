@@ -33,7 +33,7 @@ pub enum Behavior { Absolute { takeover: Takeover }, Relative { mode: RelMode, s
 pub enum Takeover { Jump, Pickup }
 ```
 
-`binding.add` replaces the old binding of the same control and of the same target (one each); `binding.remove` takes an index or a target. Both are undoable.
+`binding.add` replaces the old binding of the same control and of the same target (one each); `binding.remove` takes an index or a target. Both are undoable. A `Param` target may be a node of the shared signals (node ids are unique in the project): one knob on a shared Beat Kick's threshold changes it for every scene, and `/velo/param/<node>/<param>` reaches it the same way.
 
 | Behavior | Control | What it does |
 |---|---|---|
