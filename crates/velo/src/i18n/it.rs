@@ -376,6 +376,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("In memory", "In memoria"),
     ("Order", "Ordine"),
     ("Clock", "Tempo"),
+    ("Hits", "Colpi"),
+    ("Hit", "Colpo"),
     ("FILES", "FILE"),
     ("Take it out", "Toglilo"),
     ("Earlier", "Prima"),

@@ -8,9 +8,9 @@ use std::sync::mpsc;
 
 use std::borrow::Cow;
 
-use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, MEDIA_LIST, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
+use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, MEDIA_LIST, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, TEXT_LIST, is_shader, node_kind, shows_media};
 
-use crate::media::{Reel, SLOTS};
+use crate::media::{Lines, Reel, SLOTS};
 
 use crate::gpu::{Lazy, topological};
 use crate::{BUILTINS, Graph, Macros, Modulator, NodeSpec, Program, Runner, ShaderError, ShaderNode, macro_routes, routes};
@@ -395,8 +395,18 @@ fn build(
             Reel::new(device, queue, id.clone(), n, &programs[specs[n].program].node, [a?, b?, c?], files, bc)
         })
         .collect();
+    // each Text List's items, counted: the line showing is picked for its shader every frame
+    let lines = plan
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(n, (id, _))| {
+            let list = scene.node(id).filter(|l| l.kind == TEXT_LIST)?;
+            Lines::new(n, &programs[specs[n].program].node, velo_core::text_items(list.text.as_deref().unwrap_or_default()).len())
+        })
+        .collect();
     let shaders = specs.iter().map(|spec| programs[spec.program].node.clone()).collect();
-    Ok(Built { graph: Box::new(Graph { programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lists, lazy }), plan, signals, shaders, errors, media })
+    Ok(Built { graph: Box::new(Graph { programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lists, lines, lazy }), plan, signals, shaders, errors, media })
 }
 
 #[cfg(test)]

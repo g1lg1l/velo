@@ -1,4 +1,5 @@
-//! Pictures from files for Image and Video nodes (docs/rendering.md §4): a still, an animated
+//! Pictures from files for Image and Video nodes (docs/rendering.md §4): a still (upright, as
+//! its EXIF orientation says; HEIC and HEIF too where the system decodes them: macOS), an animated
 //! GIF or a folder of numbered frames (an image sequence), decoded on a thread of their own into
 //! RGBA frames in memory; or a movie (HAP, or one the system plays: H.264, HEVC, on macOS ProRes too), whose
 //! frames stay in the file and are read as they come due. A graph built while a file loads shows black there and is built again once it's in;
@@ -11,7 +12,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::hap::{Format, Movie};
 
-/// What an Image or Video node takes: files by extension.
+/// What an Image or Video node takes: files by extension. HEIC and HEIF (a phone's photos) only
+/// where the system decodes them: macOS ([`system_still`]).
+#[cfg(target_os = "macos")]
+pub const EXTENSIONS: [&str; 12] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tga", "heic", "heif", "mov", "mp4", "m4v"];
+#[cfg(not(target_os = "macos"))]
 pub const EXTENSIONS: [&str; 10] = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "tga", "mov", "mp4", "m4v"];
 /// Movies: HAP in a `.mov`, or (macOS, Windows) anything the system plays.
 pub const MOVIES: [&str; 3] = ["mov", "mp4", "m4v"];
@@ -103,7 +108,7 @@ impl Media {
             }
             return if media.frames.is_empty() { Err(format!("{}: no frames", name())) } else { Ok(media) };
         }
-        let picture = image::open(path).map_err(|e| format!("{}: {e}", name()))?.to_rgba8();
+        let picture = still(path).map_err(|e| format!("{}: {e}", name()))?;
         let mut media = Self::empty();
         media.push(picture, 1.0).map_err(|e| format!("{}: {e}", name()))?;
         Ok(media)
@@ -218,6 +223,59 @@ pub fn sample(path: &Path, times: &[f64], count: usize) -> Result<Sampled, Strin
     Ok(Sampled { size: media.size, length, frames })
 }
 
+/// A still's pixels, upright: a camera keeps a photo as its sensor saw it and says in its EXIF
+/// orientation which way up it was held, so it's turned (or mirrored) as that says.
+fn still(path: &Path) -> Result<image::RgbaImage, String> {
+    #[cfg(target_os = "macos")]
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("heic") || e.eq_ignore_ascii_case("heif")) {
+        return system_still(path);
+    }
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::open(path).map_err(|e| e.to_string())?.into_decoder().map_err(|e| e.to_string())?;
+    // asked before the pixels are: decoding takes the decoder. A file that doesn't say is upright
+    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut picture = image::DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    picture.apply_orientation(orientation);
+    Ok(picture.into_rgba8())
+}
+
+/// A still the `image` crate doesn't read (HEIC, HEIF), decoded by macOS through ImageIO:
+/// upright (its orientation applied), in sRGB (a phone's photos are in Display P3), at most
+/// [`MAX_SIDE`] a side (a bigger one comes in smaller, not refused).
+#[cfg(target_os = "macos")]
+fn system_still(path: &Path) -> Result<image::RgbaImage, String> {
+    use objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFString, CFType, CFURL, CGPoint, CGRect, CGSize};
+    use objc2_core_graphics::{CGBitmapContextCreate, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo, kCGColorSpaceSRGB};
+    use objc2_image_io::{CGImageSource, kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceThumbnailMaxPixelSize};
+    // ImageIO autoreleases as it goes, and a loading thread has no pool of its own
+    objc2::rc::autoreleasepool(|_| {
+        const UNREADABLE: &str = "macOS can't read this picture";
+        let url = CFURL::from_file_path(path).ok_or(UNREADABLE)?;
+        let source = unsafe { CGImageSource::with_url(&url, None) }.ok_or(UNREADABLE)?;
+        // a "thumbnail" as big as the picture: the one call that hands it over turned as its
+        // orientation says
+        let (yes, most) = (CFBoolean::new(true), CFNumber::new_i32(MAX_SIDE as i32));
+        let keys: [&CFString; 3] = unsafe { [kCGImageSourceCreateThumbnailFromImageAlways, kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceThumbnailMaxPixelSize] };
+        let values: [&CFType; 3] = [yes, yes, &most];
+        let options = CFDictionary::from_slices(&keys, &values);
+        let picture = unsafe { source.thumbnail_at_index(0, Some(options.as_opaque())) }.ok_or(UNREADABLE)?;
+        let (w, h) = (CGImage::width(Some(&picture)), CGImage::height(Some(&picture)));
+        // drawn into our own RGBA rows, top first: whatever layout and color space it has
+        let mut pixels = vec![0u8; w * h * 4];
+        let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })).ok_or(UNREADABLE)?;
+        let context = unsafe { CGBitmapContextCreate(pixels.as_mut_ptr().cast(), w, h, 8, w * 4, Some(&space), CGImageAlphaInfo::PremultipliedLast.0) }.ok_or(UNREADABLE)?;
+        CGContext::draw_image(Some(&context), CGRect { origin: CGPoint { x: 0.0, y: 0.0 }, size: CGSize { width: w as f64, height: h as f64 } }, Some(&picture));
+        drop(context);
+        // the context's colors come multiplied by their alpha; a graph's pictures hold them plain
+        for [r, g, b, a] in pixels.as_chunks_mut::<4>().0.iter_mut().filter(|p| p[3] != 255 && p[3] != 0) {
+            for c in [r, g, b] {
+                *c = (u32::from(*c) * 255 / u32::from(*a)).min(255) as u8;
+            }
+        }
+        image::RgbaImage::from_raw(w as u32, h as u32, pixels).ok_or_else(|| UNREADABLE.to_string())
+    })
+}
+
 fn sequence(folder: &Path) -> Result<Media, String> {
     let read = std::fs::read_dir(folder).map_err(|e| format!("{}: {e}", folder.display()))?;
     let mut files: Vec<PathBuf> = read.filter_map(|e| Some(e.ok()?.path())).filter(|p| p.is_file() && p.extension().is_some_and(|e| PICTURES.iter().any(|x| e.eq_ignore_ascii_case(x)))).collect();
@@ -229,7 +287,7 @@ fn sequence(folder: &Path) -> Result<Media, String> {
     // ponytail: one frame after the other on one thread; a pool if long sequences load slowly
     for (i, file) in files.iter().enumerate() {
         let name = file.file_name().unwrap_or_default().to_string_lossy().into_owned();
-        let picture = image::open(file).map_err(|e| format!("{name}: {e}"))?.to_rgba8();
+        let picture = still(file).map_err(|e| format!("{name}: {e}"))?;
         media.push(picture, (i + 1) as f64 / SEQUENCE_FPS).map_err(|e| format!("{name}: {e}"))?;
     }
     Ok(media)
@@ -601,14 +659,18 @@ impl Loader {
 /// stays: a turn never waits, at the memory all of them take, and each plays on from where its
 /// last turn left it. A movie's turn lasts `movie_every` (beats or seconds as the clock goes),
 /// a picture's `every`; a movie shorter than its turn moves on to the next file once it has
-/// played through (`short_movie` at 0), or repeats until the turn is over (1).
+/// played through (`short_movie` at 0), or repeats until the turn is over (1). On Hits (`clock`
+/// at 2) no clock moves it: a turn lasts until `hit` next rises past a half ([`Hits`]), a movie
+/// repeating meanwhile.
 pub struct Reel {
     /// The Media List's node id and engine node, its order, clock, every, fade, load,
-    /// movie_every and short_movie parameters' indices, and those of what it tells its shader:
-    /// the slot showing and how much of the one before is still in.
+    /// movie_every, short_movie and hit parameters' indices, and those of what it tells its
+    /// shader: the slot showing and how much of the one before is still in.
     id: String,
     pub node: usize,
-    params: [usize; 7],
+    params: [usize; 8],
+    /// The hits counted so far: the turn it's on, on Hits.
+    hits: Hits,
     /// What the turns that ended early (a short movie played through) have put the list ahead
     /// of its clock by, in the clock's own beats or seconds.
     ahead: f32,
@@ -634,7 +696,7 @@ impl Reel {
     #[allow(clippy::too_many_arguments)]
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, id: String, node: usize, shader: &crate::ShaderNode, slots: [usize; SLOTS], files: Vec<String>, bc: bool) -> Option<Self> {
         let at = |param| crate::modulate::slot(shader, param).map(|s| s.0);
-        let params = [at("order")?, at("clock")?, at("every")?, at("fade")?, at("load")?, at("movie_every")?, at("short_movie")?];
+        let params = [at("order")?, at("clock")?, at("every")?, at("fade")?, at("load")?, at("movie_every")?, at("short_movie")?, at("hit")?];
         let shows = [at("_now")?, at("_fade")?];
         let movie = files.iter().map(|f| Path::new(f).extension().is_some_and(|e| MOVIES.iter().any(|m| e.eq_ignore_ascii_case(m)))).collect();
         let loader = Arc::new(Loader::default());
@@ -659,7 +721,7 @@ impl Reel {
             }
         });
         let n = files.len();
-        Some(Self { id, node, params, ahead: 0.0, began: (-1, 0.0), shows, slots, bound: [None; SLOTS], files, movie, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done })
+        Some(Self { id, node, params, hits: Hits::default(), ahead: 0.0, began: (-1, 0.0), shows, slots, bound: [None; SLOTS], files, movie, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done })
     }
 
     /// This frame, at `beats` and `time` (seconds): the turn, told to the shader with how much
@@ -672,14 +734,22 @@ impl Reel {
         if n == 0 {
             return;
         }
-        let [order, clock, every, fade, load, movie_every, short_movie] = self.params.map(value);
-        let order = order.round() as i32;
+        let [order, clock, every, fade, load, movie_every, short_movie, hit] = self.params.map(value);
+        let (order, clock) = (order.round() as i32, clock.round() as i32);
+        // counted whatever the clock: switched to Hits, it knows where `hit` stands
+        self.hits.feed(hit, beats);
         // a movie's turn as long as a picture's unless it's given its own
         let every = every.max(0.01);
         let movie_every = if movie_every > 0.0 { movie_every.max(0.01) } else { every };
         let long = |movie: bool| if movie { movie_every } else { every };
-        let t = if clock.round() as i32 == 1 { time } else { beats }.max(0.0) + self.ahead;
-        let (turn, k) = turn_at(t, n, order, |f| long(self.movie[f]));
+        let (turn, k) = if clock == 2 {
+            // on hits a turn is as long as the wait for the next: its fade is measured as if it
+            // lasted `every` beats, and it then stays as it is
+            (self.hits.count, ((beats - self.hits.at) / every).clamp(0.0, 1.0))
+        } else {
+            let t = if clock == 1 { time } else { beats }.max(0.0) + self.ahead;
+            turn_at(t, n, order, |f| long(self.movie[f]))
+        };
         let fading = fade > 0.0 && turn > 0 && k < fade;
         // the first part of each turn crossfades from the one before
         let before = if fading {
@@ -737,12 +807,14 @@ impl Reel {
             played = Some(f);
         }
         // a movie shorter than its turn, played through: on to the next file now, the rest of
-        // its turn skipped (unless it's set to repeat, or it's the only file)
+        // its turn skipped (unless it's set to repeat, it's the only file, or only a hit moves
+        // the list on)
         let f = file(turn);
         let at = self.cache[f].as_ref().map_or(0.0, |p| p.at);
         if self.began.0 != turn {
             self.began = (turn, at);
         } else if short_movie.round() as i32 == 0
+            && clock != 2
             && n > 1
             && self.movie[f]
             && let Some(length) = self.cache[f].as_ref().and_then(|p| p.media.ends.last().copied())
@@ -761,7 +833,7 @@ impl Reel {
             std::mem::swap(&mut self.broken, &mut old.broken);
             std::mem::swap(&mut self.loader, &mut old.loader);
             std::mem::swap(&mut self.done, &mut old.done);
-            (self.ahead, self.began) = (old.ahead, old.began);
+            (self.hits, self.ahead, self.began) = (old.hits, old.ahead, old.began);
         }
     }
 
@@ -779,6 +851,45 @@ impl Drop for Reel {
         }
         self.loader.wake.notify_one();
     }
+}
+
+/// A Text List as it plays: its turns counted and each one's line picked here, as a Media List
+/// picks its files (at random is the same deck, shuffled anew every round, which its shader,
+/// working every pixel out alone, can't deal), then told to the shader (textlist.wgsl).
+pub struct Lines {
+    pub node: usize,
+    /// Its order, clock and every parameters' indices, and those of what it tells its shader:
+    /// the line showing, the one before it, how far through the turn it is.
+    params: [usize; 3],
+    shows: [usize; 3],
+    /// How many items it has.
+    count: usize,
+}
+
+impl Lines {
+    /// Engine node `node` running `shader` (textlist.wgsl, none without its parameters), a
+    /// list of `count` items.
+    pub fn new(node: usize, shader: &crate::ShaderNode, count: usize) -> Option<Self> {
+        let at = |param| crate::modulate::slot(shader, param).map(|s| s.0);
+        Some(Self { node, params: [at("order")?, at("clock")?, at("every")?], shows: [at("_now")?, at("_before")?, at("_turn")?], count })
+    }
+
+    /// This frame, at `beats` and `time` (seconds). `value` is the list's parameters' values.
+    pub fn step(&self, queue: &wgpu::Queue, runner: &crate::gpu::Runner, value: impl Fn(usize) -> f32, beats: f32, time: f32) {
+        let [order, clock, every] = self.params.map(value);
+        let (line, before, k) = line_at(if clock.round() as i32 == 1 { time } else { beats }, self.count, order.round() as i32, every);
+        for (param, told) in self.shows.into_iter().zip([line as f32, before.map_or(-1.0, |b| b as f32), k]) {
+            runner.write_param(queue, self.node, param, [told, 0.0, 0.0, 0.0]);
+        }
+    }
+}
+
+/// What a Text List of `n` items shows at `t` (beats or seconds), a new one every `every`: the
+/// line, the one before it (none on the first turn) and how far through its turn it is (0 to 1).
+fn line_at(t: f32, n: usize, order: i32, every: f32) -> (usize, Option<usize>, f32) {
+    // a clock moved back (a resync, a tap) doesn't count below the first
+    let (turn, k) = turn_at(t.max(0.0), n, order, |_| every.max(0.01));
+    (pick(turn, n, order), (turn > 0).then(|| pick(turn - 1, n, order)), k)
 }
 
 /// A Media List's file, playing: on a texture of its own, a still's pixels only there.
@@ -799,6 +910,28 @@ fn open(device: &wgpu::Device, queue: &wgpu::Queue, path: &str, bc: bool) -> Res
         media.frames = Vec::new();
     }
     Ok(playing)
+}
+
+/// The times a Media List's `hit` has risen past a half (a Kick mapped onto it: its kicks),
+/// and the beat the last one came on.
+#[derive(Clone, Copy, Default)]
+struct Hits {
+    count: i64,
+    at: f32,
+    /// Whether `hit` was past a half the last time it was looked at: it counts again once it
+    /// has come back down.
+    high: bool,
+}
+
+impl Hits {
+    /// `hit` as it stands at `beats`.
+    fn feed(&mut self, hit: f32, beats: f32) {
+        let high = hit > 0.5;
+        if high && !self.high {
+            (self.count, self.at) = (self.count + 1, beats);
+        }
+        self.high = high;
+    }
 }
 
 /// How many turns a round of a list of `n` takes: each file once, or there and back.
@@ -893,6 +1026,48 @@ mod tests {
             }
         }
         assert_ne!(picks(1, 7), picks(0, 7), "at random isn't in order");
+    }
+
+    #[test]
+    fn a_hit_counts_each_rise_past_a_half() {
+        let mut hits = Hits::default();
+        // a frame a beat: nothing, a kick and its tail, a wobble under a half, a kick held, one more
+        let counted: Vec<i64> = [0.0, 0.2, 1.0, 0.8, 0.6, 0.4, 0.45, 0.1, 0.9, 0.9, 0.5, 0.51]
+            .iter()
+            .enumerate()
+            .map(|(beat, &hit)| {
+                hits.feed(hit, beat as f32);
+                hits.count
+            })
+            .collect();
+        assert_eq!(counted, [0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 3]);
+        assert_eq!(hits.at, 11.0, "the beat the last one came on");
+    }
+
+    #[test]
+    fn a_text_list_at_random_is_a_deck_shuffled_every_round() {
+        // five lines, a new one every 2 beats, looked at in the middle of each turn
+        let shown: Vec<(usize, Option<usize>, f32)> = (0..100).map(|turn| line_at(turn as f32 * 2.0 + 1.0, 5, 1, 2.0)).collect();
+        let lines: Vec<usize> = shown.iter().map(|s| s.0).collect();
+        let rounds: Vec<&[usize]> = lines.chunks(5).collect();
+        for round in &rounds {
+            let mut sorted = round.to_vec();
+            sorted.sort();
+            assert_eq!(sorted, [0, 1, 2, 3, 4], "each line once a round");
+        }
+        assert!(lines.windows(2).all(|w| w[0] != w[1]), "never the same twice running");
+        // a stride through five lines has 20 ways round, each a line apart from the last by the
+        // same step: a shuffle has more, and rounds that are no stride at all
+        let ways: std::collections::BTreeSet<&[usize]> = rounds.iter().copied().collect();
+        let stride = |r: &[usize]| r.windows(2).map(|w| (w[1] + 5 - w[0]) % 5).collect::<std::collections::BTreeSet<_>>().len() == 1;
+        assert!(ways.len() > 15 && rounds.iter().any(|r| !stride(r)), "{} ways round in 20 rounds", ways.len());
+        // the line before is the last turn's, none on the first; halfway through each turn
+        assert_eq!(shown[0].1, None);
+        assert!(shown.windows(2).all(|w| w[1].1 == Some(w[0].0)) && shown.iter().all(|s| (s.2 - 0.5).abs() < 1e-3));
+        // the other orders, and a clock moved back, as they were
+        let order = |order| (0..7).map(|turn| line_at(turn as f32 * 2.0, 3, order, 2.0).0).collect::<Vec<_>>();
+        assert_eq!((order(0), order(2)), (vec![0, 1, 2, 0, 1, 2, 0], vec![0, 1, 2, 1, 0, 1, 2]));
+        assert_eq!((line_at(-3.0, 3, 0, 2.0), line_at(5.0, 0, 1, 2.0).0), ((0, None, 0.0), 0), "below the first turn, and a list of nothing");
     }
 
     #[test]
@@ -1023,6 +1198,50 @@ mod tests {
         std::fs::write(d.join("broken.png"), "nope").unwrap();
         assert!(Media::load(&d.join("broken.png")).unwrap_err().contains("broken.png"));
         assert!(Media::load(&d.join("missing.png")).is_err());
+    }
+
+    /// Whether the still `m` is red (not blue) at x, y.
+    fn red(m: &Media, x: usize, y: usize) -> bool {
+        let p = &m.frames[0][(y * m.size[0] as usize + x) * 4..][..4];
+        p[0] > 180 && p[2] < 80
+    }
+
+    #[test]
+    fn a_photo_shows_upright_as_its_exif_says() {
+        use image::ImageEncoder;
+        let d = dir("exif");
+        // red on the left, blue on the right, as the sensor saw it
+        let picture = image::RgbImage::from_fn(16, 8, |x, _| image::Rgb(if x < 8 { [255, 0, 0] } else { [0, 0, 255] }));
+        let load = |orientation: u8| {
+            let path = d.join(format!("{orientation}.jpg"));
+            let mut encoder = image::codecs::jpeg::JpegEncoder::new(std::fs::File::create(&path).unwrap());
+            // EXIF with one entry: orientation (0x0112), a short
+            encoder.set_exif_metadata([b"MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0".as_slice(), &[orientation], &[0; 6]].concat()).unwrap();
+            encoder.write_image(&picture, 16, 8, image::ExtendedColorType::Rgb8).unwrap();
+            Media::load(&path).unwrap()
+        };
+        let m = load(1);
+        assert!(m.size == [16, 8] && red(&m, 3, 4) && !red(&m, 12, 4), "upright: as it is");
+        let m = load(6);
+        assert!(m.size == [8, 16] && red(&m, 4, 3) && !red(&m, 4, 12), "a phone held upright: a quarter turn clockwise, its left on top");
+        let m = load(3);
+        assert!(m.size == [16, 8] && red(&m, 12, 4) && !red(&m, 3, 4), "upside down: half a turn");
+        let m = load(8);
+        assert!(m.size == [8, 16] && red(&m, 4, 12) && !red(&m, 4, 3), "a quarter turn the other way: its left at the bottom");
+    }
+
+    /// The fixture: red | blue, 64×48 as stored, its orientation saying a quarter turn clockwise
+    /// (`sips -s format heic` of a JPEG with EXIF orientation 6).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_heic_loads_upright_through_the_system() {
+        let m = Media::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/turned.heic")).unwrap();
+        assert_eq!((m.size, m.count()), ([48, 64], 1));
+        assert!(red(&m, 24, 12) && !red(&m, 24, 52), "its left on top");
+        assert_eq!(m.frames[0][3], 255, "opaque");
+        let d = dir("heic");
+        std::fs::write(d.join("broken.heic"), "nope").unwrap();
+        assert!(Media::load(&d.join("broken.heic")).unwrap_err().contains("broken.heic"));
     }
 
     #[test]
