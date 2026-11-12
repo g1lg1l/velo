@@ -37,6 +37,8 @@ Operators, all undoable: `macro.set`, `macro.rename`, `macro.assign`, `macro.una
 
 **Templates.** The scenes rail's + offers an empty scene or a template (Velo, Tunnel, Kaleido Bloom, Pulse Rings, Liquid): small patches the music already moves, with named macros, built with the operators in one undo step. A new profile opens the demo: the Velo template, live.
 
+**Shared signals.** The first entry of the scenes rail, in the signals' green, is no scene: it opens the project's shared signal graph on the canvas ([graph.md](graph.md) §3), the signal nodes every scene can map (a composite kick, a pulse, a drop detector), run once a frame whatever goes out. It has no number and no launch, layer, autopilot, macros or variations, and can't be moved, renamed or deleted; while it's edited the deck shows the sources alone and the preview shows the program. A scene that maps a shared signal reads it whether it's live, fading out, a layer or edited, so a crossfade between two scenes on one shared kick pulses as one.
+
 **Order.** Drag a card in the scenes rail to another place (a line shows where it lands), or use its menu's Move (to the top, up, down, to the bottom): `scene.move`, one undo step. Number keys, OSC scene numbers and controllers launch scenes by place, so they follow the new order; the live and the selected scene stay what they were.
 
 ## 3. Launching and transitions

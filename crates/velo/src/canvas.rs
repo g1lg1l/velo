@@ -444,10 +444,11 @@ fn plane_rect(scene: &Scene, n: &velo_core::Node, pos: [f32; 2]) -> Rect {
     Rect::from_min_size(pos2(pos[0] + NODE_W - w, pos[1]), vec2(w, h))
 }
 
-/// The signals plugged into a card, a jack each under its footer: their sources, in order.
+/// The signals plugged into a card, a jack each under its footer: their sources, in order. A
+/// shared signal's jack has no line on the canvas (its node is on the shared signals' own).
 fn jacks(n: &velo_core::Node) -> Vec<&str> {
     let mut out: Vec<&str> = Vec::new();
-    for m in n.mappings.iter().filter(|m| velo_core::signal_output(&m.source).is_some()) {
+    for m in n.mappings.iter().filter(|m| velo_core::signal_output(&m.source).or_else(|| velo_core::shared_output(&m.source)).is_some()) {
         if !out.contains(&m.source.as_str()) {
             out.push(&m.source);
         }
@@ -554,12 +555,7 @@ pub fn arrange(scene: &Scene) -> Vec<(String, [f32; 2])> {
         (Some(old), Some(new)) => old.center() - new.center(),
         _ => Vec2::ZERO,
     };
-    placed
-        .into_iter()
-        .map(|(i, p)| (i, [(p[0] + shift.x).round(), (p[1] + shift.y).round()]))
-        .filter(|&(i, p)| nodes[i].pos != p)
-        .map(|(i, p)| (nodes[i].id.clone(), p))
-        .collect()
+    placed.into_iter().map(|(i, p)| (i, [(p[0] + shift.x).round(), (p[1] + shift.y).round()])).filter(|&(i, p)| nodes[i].pos != p).map(|(i, p)| (nodes[i].id.clone(), p)).collect()
 }
 
 /// How long a tie keeps its cables straight and level, side by side, and how far apart.
@@ -1826,7 +1822,13 @@ impl App {
             .map(|(i, n)| {
                 let plugged = st.plug_ins.iter().any(|((node, _), at)| node == &n.id && at.is_nan());
                 let open = st.slots.entry(n.id.clone()).or_insert(0.0);
-                *open = if plugged { 0.0 } else if opening == Some(i) { (*open + step).min(1.0) } else { (*open - step).max(0.0) };
+                *open = if plugged {
+                    0.0
+                } else if opening == Some(i) {
+                    (*open + step).min(1.0)
+                } else {
+                    (*open - step).max(0.0)
+                };
                 kit::ease(*open)
             })
             .collect();
@@ -1835,12 +1837,7 @@ impl App {
             ui.ctx().request_repaint();
         }
         // the jacks in each card's foot, the open slot under them
-        let strips: Vec<Rect> = nodes
-            .iter()
-            .zip(&rects)
-            .zip(&slots)
-            .map(|((n, r), slot)| Rect::from_min_max(r.left_bottom(), pos2(r.right(), r.bottom() + (jacks(n).len() as f32 + slot) * JACK_H * cam.zoom)))
-            .collect();
+        let strips: Vec<Rect> = nodes.iter().zip(&rects).zip(&slots).map(|((n, r), slot)| Rect::from_min_max(r.left_bottom(), pos2(r.right(), r.bottom() + (jacks(n).len() as f32 + slot) * JACK_H * cam.zoom))).collect();
         let count = |i: usize, output: bool| kinds[i].map_or(0, |k| if output { k.outputs.len() } else { shown[i] });
         // a listed output's port sits on its row; a hidden one isn't there
         let listed = |i: usize, p: u8, output: bool| !output || rows[i].as_ref().is_none_or(|l| l.contains(&p));
@@ -1884,10 +1881,8 @@ impl App {
         // a cable's line, through the ties holding it
         let route = |key: &str, a: Pos2, b: Pos2| {
             // (a tie of one cable is a bend in it: a point it passes, not a bundle to run straight through)
-            let mut through: Vec<(Pos2, f32)> = ties
-                .iter()
-                .filter_map(|(at, held, gap)| held.iter().position(|c| c == key).map(|k| (*at + vec2(0.0, (k as f32 - (held.len() - 1) as f32 / 2.0) * gap), if held.len() == 1 { BEND_RUN } else { TIE_RUN })))
-                .collect();
+            let mut through: Vec<(Pos2, f32)> =
+                ties.iter().filter_map(|(at, held, gap)| held.iter().position(|c| c == key).map(|k| (*at + vec2(0.0, (k as f32 - (held.len() - 1) as f32 / 2.0) * gap), if held.len() == 1 { BEND_RUN } else { TIE_RUN }))).collect();
             through.sort_by(|p, q| p.0.x.total_cmp(&q.0.x));
             routed(a, b, &through, cam.zoom)
         };
@@ -2528,6 +2523,11 @@ impl App {
         let width = (1.5 * cam.zoom).clamp(1.0, 2.5);
         // what a signal node's output reads now: its meters, its wires' glow
         let read = |id: &str, port: u8| scene.node(id).filter(|n| !n.off).and_then(|_| self.live.as_ref()?.signal(id, port)).unwrap_or(0.0);
+        // what a source a card is plugged into reads now: this graph's signal node's, or a shared one's
+        let heard_from = |source: &str| match velo_core::shared_output(source) {
+            Some(_) => self.live.as_ref().map_or(0.0, |l| l.level(source)),
+            None => velo_core::signal_output(source).map_or(0.0, |(id, p)| read(id, p)),
+        };
         for (e, w) in wires.iter().enumerate() {
             let (Some((a, pts)), edge) = (w, &scene.edges[e]) else { continue };
             if lifted == Some(&edge.to) {
@@ -2709,7 +2709,7 @@ impl App {
             } else if hot {
                 // what it is: the source, what it moves and how far (over the cards, at the pointer)
                 let what: Vec<String> = moved.iter().map(|m| format!("{} {:+.0}%", crate::param_name(n, &m.param), m.amount * 100.0)).collect();
-                let text = format!("{} → {}", crate::mapping_source(scene, source), what.join(" · "));
+                let text = format!("{} → {}", crate::mapping_source(&self.session.project, scene, source), what.join(" · "));
                 map_label = Some((pointer.unwrap_or_else(|| along(curve, 0.5)), text));
             }
         }
@@ -2749,7 +2749,7 @@ impl App {
             let props = chevron(i).map(|_| st.props.as_deref() == Some(n.id.as_str()));
             // (an Audio In's whole card glows with what it hears)
             let heard = if n.kind == velo_core::AUDIO { level } else { 0.0 };
-            let glow = if n.off { 0.0 } else { n.mappings.iter().filter_map(|m| velo_core::signal_output(&m.source)).map(|(id, p)| read(id, p)).fold(heard, f32::max) };
+            let glow = if n.off { 0.0 } else { n.mappings.iter().map(|m| heard_from(&m.source)).fold(heard, f32::max) };
             // what it draws: the output's the preview, any other node's its own small picture
             let full = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
             let shows = if n.off {
@@ -2763,7 +2763,23 @@ impl App {
             let cost = self.live.as_ref().and_then(|l| l.cost(&n.id)).filter(|_| !n.off);
             let asleep = !n.off && self.live.as_ref().is_some_and(|l| l.asleep(&n.id));
             let shell = Rect::from_min_max(r.min, pos2(r.right(), strips[i].bottom()));
-            let look = Look { name: &n.name, kind: kinds[i], selected: selected.contains(n.id.as_str()), off: n.off, hue: hues[i], picture: shows, soon, props, rows: rows[i].is_some(), icon: &n.icon, maps: n.mappings.len(), glow, cost, asleep, shell };
+            let look = Look {
+                name: &n.name,
+                kind: kinds[i],
+                selected: selected.contains(n.id.as_str()),
+                off: n.off,
+                hue: hues[i],
+                picture: shows,
+                soon,
+                props,
+                rows: rows[i].is_some(),
+                icon: &n.icon,
+                maps: n.mappings.len(),
+                glow,
+                cost,
+                asleep,
+                shell,
+            };
             paint_node(ui, &painter, &t, r, cam.zoom, look);
             if !n.off && n.kind == velo_core::LFO {
                 paint_lfo(&painter, &t, r, cam.zoom, &velo_engine::signal::Lfo::from_params(|p| n.params.get(p).map(|v| v[0])), beats);
@@ -2816,12 +2832,12 @@ impl App {
                     .iter()
                     .map(|s| {
                         let moves: Vec<String> = n.mappings.iter().filter(|m| &m.source == s).map(|m| crate::param_name(n, &m.param).to_string()).collect();
-                        let v = if n.off { 0.0 } else { velo_core::signal_output(s).map_or(0.0, |(id, p)| read(id, p)) };
+                        let v = if n.off { 0.0 } else { heard_from(s) };
                         let pointed = maps.iter().position(|m| m.0 == i && &m.3 == s).is_some_and(|g| hover == Some(Hit::Map(g)));
                         let chosen = st.map.as_ref().is_some_and(|(node, source)| node == &n.id && source == s);
                         let hot = ui.ctx().animate_bool_with_time(id().with(("jack", n.id.as_str(), *s)), pointed || chosen, t.motion);
                         let ring = st.plug_ins.iter().find(|((node, source), _)| node == &n.id && source == s).map_or(1.0, |(_, at)| (((now - at) / 0.5) as f32).clamp(0.0, 1.0));
-                        Jack { label: format!("{} → {}", crate::mapping_source(scene, s), moves.join(", ")), v, hot, ring }
+                        Jack { label: format!("{} → {}", crate::mapping_source(&self.session.project, scene, s), moves.join(", ")), v, hot, ring }
                     })
                     .collect();
                 paint_jacks(&painter, &t, strips[i], cam.zoom, &lines, slots[i]);
@@ -2962,7 +2978,7 @@ impl App {
             port_label(&painter, &t, port(i, j, output), names[usize::from(j)], output);
         }
         if nodes.is_empty() {
-            empty_state(&painter, &t, view);
+            empty_state(&painter, &t, view, scene.id == velo_core::SHARED);
         }
         if let Some((at, text)) = map_label {
             let galley = painter.layout_no_wrap(text, t.small(), t.fg_text);
@@ -3047,16 +3063,13 @@ impl App {
         if let Some((j, source, at)) = chosen_map {
             let n = &nodes[j];
             let moved: Vec<&velo_core::Mapping> = n.mappings.iter().filter(|m| m.source == source).collect();
-            let title = format!("{}  →  {}", crate::mapping_source(scene, &source), n.name);
+            let title = format!("{}  →  {}", crate::mapping_source(&self.session.project, scene, &source), n.name);
             // the values it doesn't move yet, to move too, or instead of one it moves
             let all = mappable(n);
             let more: Vec<&(String, String)> = all.iter().filter(|(key, _)| !moved.iter().any(|m| &m.param == key)).collect();
             // what the source reads now, for the sliders' modulation
-            let label = crate::mapping_source(scene, &source);
-            let level = match velo_core::signal_output(&source) {
-                Some((id, port)) => self.live.as_ref().and_then(|l| l.signal(id, port)).unwrap_or(0.0),
-                None => velo_core::SOURCES.iter().position(|s| *s == source).map_or(0.0, |i| self.live.as_ref().map(crate::live::Live::sources).unwrap_or_default()[i]),
-            };
+            let label = crate::mapping_source(&self.session.project, scene, &source);
+            let level = self.live.as_ref().map_or(0.0, |l| l.level(&source));
             let mut close = false;
             egui::Area::new(id().with(("mapping", &n.id, &source))).order(egui::Order::Foreground).default_pos(at + vec2(12.0, 12.0)).movable(true).constrain(true).show(ui.ctx(), |ui| {
                 kit::popover_frame(ui.ctx(), &t).inner_margin(0).show(ui, |ui| {
@@ -3544,10 +3557,12 @@ impl App {
         let words: Vec<String> = menu.query.to_lowercase().split_whitespace().map(String::from).collect();
         let wiring = menu.from.is_some();
         let into = menu.into.is_some();
+        // the shared signals take signal nodes only
+        let shared = self.session.active_scene.as_deref() == Some(velo_core::SHARED);
         let fits = |k: &&NodeKind| {
             let text = format!("{} {} {} {} {}", k.label, i18n::t(k.label), i18n::t(k.category.label()), i18n::t(k.group()), k.id).to_lowercase();
             // a dropped wire needs something with an input; one put into a wire, an output too
-            (!wiring || !k.inputs.is_empty()) && (!into || !k.outputs.is_empty()) && words.iter().all(|w| text.contains(w.as_str()))
+            (!wiring || !k.inputs.is_empty()) && (!into || !k.outputs.is_empty()) && (!shared || velo_core::shareable(k.id)) && words.iter().all(|w| text.contains(w.as_str()))
         };
         let found: Vec<&'static NodeKind> = NODE_KINDS.iter().filter(fits).collect();
         // the tabs: All, then the groups in the menu's order; one with nothing found is off
@@ -3593,14 +3608,8 @@ impl App {
             });
             let line = ui.available_rect_before_wrap();
             ui.painter().hline(line.x_range(), line.top() - 0.5, Stroke::new(1.0, t.line));
-            let (up, down, enter, tab_key) = ui.input_mut(|i| {
-                (
-                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
-                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
-                    i.consume_key(Modifiers::NONE, Key::Enter),
-                    i.consume_key(Modifiers::NONE, Key::Tab),
-                )
-            });
+            let (up, down, enter, tab_key) =
+                ui.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::ArrowUp), i.consume_key(Modifiers::NONE, Key::ArrowDown), i.consume_key(Modifiers::NONE, Key::Enter), i.consume_key(Modifiers::NONE, Key::Tab)));
             let last = matches.len().saturating_sub(1);
             menu.selected = if down {
                 (menu.selected + 1).min(last)
@@ -3953,13 +3962,14 @@ fn append_source(session: &Session, selected: &[String], from: Option<&(String, 
 }
 
 /// An empty scene says how to start: a key cap, painted (labels would take the canvas' clicks).
-fn empty_state(painter: &Painter, t: &Theme, rect: Rect) {
+fn empty_state(painter: &Painter, t: &Theme, rect: Rect, shared: bool) {
     let c = rect.center() - vec2(0.0, 24.0);
     // the V of light: the brand pack's icon, not an icon-font glyph
     let mark = Rect::from_center_size(c - vec2(0.0, 72.0), vec2(72.0, 72.0));
     painter.image(widgets::brand(painter.ctx(), widgets::ICON_256), mark, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Theme::NO_TINT);
-    painter.text(c - vec2(0.0, 10.0), Align2::CENTER_CENTER, tr!("No nodes yet"), t.body(), t.fg_text);
-    painter.text(c + vec2(0.0, 10.0), Align2::CENTER_CENTER, tr!("Press Tab to add one, or double-click anywhere."), t.body(), t.fg_muted);
+    let (title, how) = if shared { (tr!("No shared signals yet"), tr!("Press Tab to add a signal node: every scene can map its outputs.")) } else { (tr!("No nodes yet"), tr!("Press Tab to add one, or double-click anywhere.")) };
+    painter.text(c - vec2(0.0, 10.0), Align2::CENTER_CENTER, title, t.body(), t.fg_text);
+    painter.text(c + vec2(0.0, 10.0), Align2::CENTER_CENTER, how, t.body(), t.fg_muted);
     let galley = painter.layout_no_wrap("Tab".into(), Theme::mono(t.text_md), t.fg_text);
     let cap = Rect::from_center_size(c + vec2(0.0, 44.0), galley.size() + vec2(20.0, 10.0));
     painter.rect_filled(cap, CornerRadius::same(t.radius_sm), t.bg_control);
@@ -4754,6 +4764,41 @@ mod tests {
     }
 
     #[test]
+    fn the_shared_signals_open_from_the_rail_and_any_scene_maps_them() {
+        let mut h = Harness::new();
+        let scene = h.app.session.active_scene.clone().unwrap();
+        h.app.run("node.add", json!({ "scene": velo_core::SHARED, "kind": velo_core::BEAT_KICK, "name": "Pump" }));
+        let kick = h.app.session.project.shared.nodes[0].id.clone();
+        h.ctx.enable_accesskit();
+        h.frame(Vec::new());
+        // one entry on top of the scenes, never launched: a click opens its canvas
+        let row = h.widget("Shared signals").expect("the shared signals in the scenes rail");
+        h.move_to(row.center());
+        h.button(row.center(), true, NONE);
+        h.button(row.center(), false, NONE);
+        h.frame(Vec::new());
+        assert_eq!(h.app.session.active_scene.as_deref(), Some(velo_core::SHARED));
+        assert_eq!(h.scene().nodes.len(), 1, "its canvas shows its own nodes");
+        // back in the scene, its Pump dragged from the deck onto Scale maps it, marked as shared
+        h.app.run("scene.select", json!({ "scene": scene }));
+        h.frame(Vec::new());
+        h.app.canvas.selected = vec![h.id(0)];
+        h.frame(Vec::new());
+        let scale = h.widget("Scale").expect("the noise's Scale slider in the inspector");
+        egui::DragAndDrop::set_payload(&h.ctx, crate::widgets::SourceDrag(velo_core::shared_key(&kick, 0), "Pump".into()));
+        h.move_to(scale.center());
+        h.button(scale.center(), false, NONE);
+        h.frame(Vec::new());
+        assert_eq!(h.scene().nodes[0].mappings[0].source, velo_core::shared_key(&kick, 0));
+        assert_eq!(h.scene().nodes.len(), 3, "nothing added to the scene for it");
+        let label = crate::mapping_source(&h.app.session.project, h.scene(), &velo_core::shared_key(&kick, 0));
+        assert!(label.starts_with(crate::icons::BROADCAST) && label.ends_with("Pump"), "{label}");
+        assert_eq!(jacks(&h.scene().nodes[0]).len(), 1, "a jack on its card");
+        h.app.run("edit.undo", json!({}));
+        assert!(h.scene().nodes[0].mappings.is_empty());
+    }
+
+    #[test]
     fn a_dropped_csv_becomes_a_text_list_into_the_free_output_in_one_step() {
         let mut h = Harness::new();
         let path = std::env::temp_dir().join(format!("velo-credits-{}.csv", std::process::id()));
@@ -4820,7 +4865,7 @@ mod tests {
             // its settings, wherever they show: an Attack knob each
             let attacks = |h: &Harness| h.access.as_ref().map_or(0, |a| a.nodes.iter().filter(|(_, n)| n.label().is_some_and(|l| l.starts_with("Attack"))).count());
             let before = attacks(&h);
-            let chip = h.widget(&format!("{} +50%", crate::mapping_source(h.scene(), &source))).expect("the chip under the slider");
+            let chip = h.widget(&format!("{} +50%", crate::mapping_source(&h.app.session.project, h.scene(), &source))).expect("the chip under the slider");
             h.click(chip.center());
             h.frame(Vec::new());
             assert_eq!(attacks(&h), before + 1, "a click on the chip opened its settings (on its link: {on_link})");

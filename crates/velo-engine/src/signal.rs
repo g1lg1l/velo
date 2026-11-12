@@ -7,7 +7,9 @@
 //! follows its input slowly; a Quantize snaps it to steps; a Speed goes round a cycle as fast
 //! as its input says; a Delay plays its input back some beats later; a Probe reads a picture
 //! (its color comes back from the GPU, [`crate::gpu::Probe`]). Each output has a slot after the
-//! shared sources; a mapping names it as "node id/output".
+//! shared sources; a mapping names it as "node id/output". The project's shared signal graph
+//! runs once a frame into slots of its own after every scene's ([`SHARED`]), which any graph
+//! reads ("shared:node id/output").
 
 use std::collections::VecDeque;
 use std::f64::consts::TAU;
@@ -18,6 +20,11 @@ use crate::shader::{Param, ParamType};
 
 /// Signal outputs a graph can have (their values sit after the audio and clock sources).
 pub const MAX_SIGNALS: usize = 64;
+/// Where the shared signal graph's outputs start among the sources: after the audio and clock
+/// sources and a scene's own signals, so a scene's pass never writes over them.
+pub const SHARED: usize = SOURCES.len() + MAX_SIGNALS;
+/// Every source a frame has: audio and clock, a scene's signals, the shared ones.
+pub const SLOTS: usize = SHARED + MAX_SIGNALS;
 
 pub use velo_core::LFO_SHAPES as SHAPES;
 
@@ -40,9 +47,12 @@ pub fn params(kind: &str) -> Option<Vec<Param>> {
     };
     Some(match kind {
         // the defaults are velo_audio::Settings::default()'s (the app's tests check)
-        AUDIO => {
-            [Param { default: [1.0, 0.0, 0.0, 0.0], ..named("mode", &DETECT_MODES) }, p("gate", float, -60.0, -90.0, -20.0)].into_iter().chain(hit("kick", 3.0, 70.0, 300.0, 100.0, 0.45)).chain(hit("snare", 8.0, 1000.0, 8000.0, 80.0, 0.35)).chain(hit("hat", 4.0, 8000.0, 20_000.0, 50.0, 0.55)).collect()
-        }
+        AUDIO => [Param { default: [1.0, 0.0, 0.0, 0.0], ..named("mode", &DETECT_MODES) }, p("gate", float, -60.0, -90.0, -20.0)]
+            .into_iter()
+            .chain(hit("kick", 3.0, 70.0, 300.0, 100.0, 0.45))
+            .chain(hit("snare", 8.0, 1000.0, 8000.0, 80.0, 0.35))
+            .chain(hit("hat", 4.0, 8000.0, 20_000.0, 50.0, 0.55))
+            .collect(),
         // no kick while the bass is under a third; a quarter second to fall
         BEAT_KICK => vec![p("threshold", float, 0.3, 0.0, 1.0), p("release_ms", float, 250.0, 20.0, 2000.0)],
         LFO => vec![named("shape", &SHAPES), p("beats", float, 4.0, 0.25, 64.0), p("phase", float, 0.0, 0.0, 1.0)],
@@ -610,11 +620,9 @@ impl Kind {
             DELAY => Kind::Delay(v("beats", 1.0).clamp(0.25, DELAY_BEATS)),
             SPRING => Kind::Spring(Spring { time: v("time_ms", 500.0).clamp(50.0, 4000.0) / 1000.0, bounce: v("bounce", 0.5).clamp(0.0, 0.95) }),
             SLOPE => Kind::Slope(Slope { direction: index("direction", SLOPE_DIRECTIONS.len() - 1), time: v("time_ms", 100.0).clamp(10.0, 2000.0) / 1000.0 }),
-            PROBE => Kind::Probe(Probe {
-                measure: index("measure", PROBE_MEASURES.len() - 1),
-                position: node.params.get("position").map_or([0.0; 2], |v| [v[0].clamp(-1.0, 1.0), v[1].clamp(-1.0, 1.0)]),
-                size: v("size", 1.0).clamp(0.0, 1.0),
-            }),
+            PROBE => {
+                Kind::Probe(Probe { measure: index("measure", PROBE_MEASURES.len() - 1), position: node.params.get("position").map_or([0.0; 2], |v| [v[0].clamp(-1.0, 1.0), v[1].clamp(-1.0, 1.0)]), size: v("size", 1.0).clamp(0.0, 1.0) })
+            }
             _ => return None,
         })
     }
@@ -649,6 +657,31 @@ impl Signal {
 /// A scene's signal nodes in the order they run (a node after what feeds it), and the name of
 /// each output's slot ("n_ab12/0"), the slots counting on from the shared sources'.
 pub fn plan(scene: &Scene) -> (Vec<Signal>, Vec<String>) {
+    plan_from(scene, SOURCES.len())
+}
+
+/// The shared signal graph's plan: as a scene's, its slots from [`SHARED`] on.
+pub fn plan_shared(graph: &Scene) -> (Vec<Signal>, Vec<String>) {
+    plan_from(graph, SHARED)
+}
+
+/// What the signals a graph ran keep between frames handed to its new plan, node by node (by
+/// each one's first output's name) where the node is still the same kind: a shared graph that
+/// gains a node goes on without a Smooth starting over or a Beat Kick cut mid-fall.
+pub fn carry(new: &mut [Signal], new_keys: &[String], old: &mut [Signal], old_keys: &[String]) {
+    let first = |signals: &[Signal], keys: &[String], i: usize| keys.get(signals[i].slot - signals[0].slot).cloned();
+    for i in 0..new.len() {
+        let Some(key) = first(new, new_keys, i) else { continue };
+        if let Some(j) = (0..old.len()).find(|&j| first(old, old_keys, j).as_ref() == Some(&key))
+            && std::mem::discriminant(&old[j].kind) == std::mem::discriminant(&new[i].kind)
+        {
+            new[i].state = old[j].state;
+            new[i].history = std::mem::take(&mut old[j].history);
+        }
+    }
+}
+
+fn plan_from(scene: &Scene, base: usize) -> (Vec<Signal>, Vec<String>) {
     let nodes: Vec<&velo_core::Node> = scene.nodes.iter().filter(|n| !n.off && node_kind(&n.kind).is_some_and(|k| k.category == Category::Signal)).collect();
     let feeds = |n: &velo_core::Node, port: u8| scene.wire_into(&n.id, port).map(|e| e.from.clone());
     let (mut order, mut placed): (Vec<&velo_core::Node>, Vec<bool>) = (Vec::new(), vec![false; nodes.len()]);
@@ -664,8 +697,8 @@ pub fn plan(scene: &Scene) -> (Vec<Signal>, Vec<String>) {
         if keys.len() + kind.outputs() > MAX_SIGNALS {
             break;
         }
-        let slot = SOURCES.len() + keys.len();
-        let inputs = [0, 1].map(|p| feeds(n, p).and_then(|(from, port)| keys.iter().position(|k| *k == format!("{from}/{port}")).map(|i| SOURCES.len() + i)));
+        let slot = base + keys.len();
+        let inputs = [0, 1].map(|p| feeds(n, p).and_then(|(from, port)| keys.iter().position(|k| *k == format!("{from}/{port}")).map(|i| base + i)));
         keys.extend((0..kind.outputs()).map(|p| format!("{}/{p}", n.id)));
         // a Remap's range unlearned (low over high), the last inputs high: no hit on the first
         // frame; a Random from the middle, picking at once on the clock; a Probe dark till it reads;
@@ -874,12 +907,86 @@ mod tests {
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].inputs, [None, None]);
         let shader = crate::ShaderNode::parse(include_str!("../shaders/noise.wgsl")).unwrap();
-        let routes = crate::routes(&shader, &scene.nodes[3].mappings, &keys);
+        let routes = crate::routes(&shader, &scene.nodes[3].mappings, &keys, &[]);
         assert!(routes.is_empty());
         let base = shader.values(|_| None);
         let mut modulator = crate::Modulator::new(&shader, &base, routes);
         modulator.step(&[1.0; SOURCES.len() + MAX_SIGNALS], 1.0);
         assert_eq!(modulator.values(), base);
+    }
+
+    #[test]
+    fn a_shared_beat_kick_moves_two_scenes_alike_and_a_deleted_one_reads_zero() {
+        use serde_json::json;
+        let mut s = velo_core::Session::default();
+        // two scenes, each a Kaleido whose zoom follows the shared Beat Kick, and a kick of their own
+        let mut kaleidos = Vec::new();
+        for _ in 0..2 {
+            s.run("scene.add", json!({})).unwrap();
+            s.run("node.add", json!({ "kind": "velo.kaleido" })).unwrap();
+            s.run("node.add", json!({ "kind": BEAT_KICK })).unwrap();
+            kaleidos.push(s.active().unwrap().clone());
+        }
+        s.run("node.add", json!({ "scene": velo_core::SHARED, "kind": velo_core::SMOOTH })).unwrap();
+        s.run("node.add", json!({ "scene": velo_core::SHARED, "kind": BEAT_KICK })).unwrap();
+        let kick = s.project.shared.nodes[1].id.clone();
+        for scene in &s.project.scenes.clone() {
+            s.run("mapping.add", json!({ "scene": scene.id, "node": scene.nodes[0].id, "param": "zoom", "source": format!("shared:{kick}") })).unwrap();
+        }
+        let shader = crate::ShaderNode::parse(include_str!("../shaders/kaleido.wgsl")).unwrap();
+        let zoom = shader.params.iter().position(|p| p.id == "zoom").unwrap();
+        let (mut shared, shared_keys) = plan_shared(&s.project.shared);
+        assert_eq!((shared[1].slot, shared_keys[1].clone()), (SHARED + 1, format!("{kick}/0")), "after every scene's slots");
+        let mut graphs: Vec<(Vec<Signal>, crate::Modulator)> = s
+            .project
+            .scenes
+            .iter()
+            .map(|scene| {
+                let (signals, keys) = plan(scene);
+                let routes = crate::routes(&shader, &scene.nodes[0].mappings, &keys, &shared_keys);
+                assert_eq!(routes.len(), 1);
+                (signals, crate::Modulator::new(&shader, &shader.values(|_| None), routes))
+            })
+            .collect();
+        // a frame as the render thread runs it: the shared pass once, then each graph's own
+        let frame = |shared: &mut Vec<Signal>, graphs: &mut Vec<(Vec<Signal>, crate::Modulator)>, beats: f64| {
+            let mut sources = [0.0f32; SLOTS];
+            (sources[1], sources[7]) = (1.0, if beats.fract() < 0.01 { 1.0 } else { 0.0 }); // the bass up, the beat's hit
+            run(shared, &mut sources, beats, 1.0 / 60.0);
+            graphs
+                .iter_mut()
+                .map(|(own, m)| {
+                    run(own, &mut sources, beats, 1.0 / 60.0);
+                    m.step(&sources, 1.0 / 60.0)[zoom * 16..zoom * 16 + 4].to_vec()
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut seen = Vec::new();
+        for k in 0..60 {
+            let both = frame(&mut shared, &mut graphs, f64::from(k) / 30.0);
+            assert_eq!(both[0], both[1], "frame {k}: both scenes read the same kick, though each ran a kick of its own");
+            seen.push(f32::from_ne_bytes(both[0][..4].try_into().unwrap()));
+        }
+        assert!(seen.iter().any(|&z| z > 1.5) && seen.iter().any(|&z| z < 1.1), "it pulses: {seen:?}");
+        // the shared graph gains a node in front: the kick keeps what it was doing, at its new slot
+        let falling = shared[1].state;
+        s.run("node.add", json!({ "scene": velo_core::SHARED, "kind": velo_core::LFO })).unwrap();
+        s.project.shared.nodes.rotate_right(1);
+        let (mut again, keys) = plan_shared(&s.project.shared);
+        carry(&mut again, &keys, &mut shared, &shared_keys);
+        let at = keys.iter().position(|k| *k == format!("{kick}/0")).unwrap();
+        assert_eq!((at, again[at].state), (2, falling));
+        // the kick deleted: its slot isn't written, mappings still pointing there read 0 and the
+        // base comes back once its release is through; routed again, the mapping moves nothing
+        s.run("node.remove", json!({ "scene": velo_core::SHARED, "node": kick })).unwrap();
+        let (mut gone, gone_keys) = plan_shared(&s.project.shared);
+        carry(&mut gone, &gone_keys, &mut again, &keys);
+        for _ in 0..200 {
+            frame(&mut gone, &mut graphs, 0.0);
+        }
+        let base = shader.values(|_| None)[zoom][0];
+        assert!(graphs.iter().all(|(_, m)| (m.values()[zoom][0] - base).abs() < 1e-3), "back to the base");
+        assert!(crate::routes(&shader, &s.project.scenes[0].nodes[0].mappings, &[], &gone_keys).is_empty());
     }
 
     #[test]

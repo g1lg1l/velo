@@ -12,6 +12,8 @@ A **scene** is one look you can launch: "Intro", "Build", "Drop". Each scene has
 - The **+** at the top of the scenes panel starts a new scene from a template: **Velo**, **Tunnel**, **Kaleido Bloom**, **Pulse Rings** or **Liquid**. Each is a small patch already moving with the music, with named macros. <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>N</kbd> makes an empty one.
 - Double-click a card to rename it, or press <kbd>F2</kbd>.
 - Right-click a card for more: launch it, duplicate it, give it an icon, delete it (<kbd>Ctrl</kbd> <kbd>Backspace</kbd>).
+- The green **Shared signals** entry at the top isn't a scene: it holds the signal nodes every scene can use, such as one kick for the whole show ([Signals](./signals#shared-signals)). It never goes out on its own.
+- **File → Import Scenes** brings every scene of another show into this one, with the shared signals they use.
 
 ## Live and selected
 

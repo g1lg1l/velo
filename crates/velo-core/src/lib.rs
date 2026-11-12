@@ -109,7 +109,11 @@ pub const CANVAS: [ParamInfo; 3] = [canvas_param("Width", (16.0, 8192.0, 1920.0)
 // ---------------------------------------------------------------------------
 
 /// The project file format: bumped, with a migration, whenever saved files change shape.
-pub const FORMAT: u32 = 5;
+pub const FORMAT: u32 = 6;
+
+/// The shared signal graph's id (docs/graph.md §3): what operators name in `scene` to edit it, and
+/// what a mapping's source starts with when it reads one of its outputs ("shared:n_ab12/0").
+pub const SHARED: &str = "shared";
 
 /// Everything that is saved and undoable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -122,12 +126,22 @@ pub struct Project {
     /// What controllers do (docs/control.md §2): the same for every scene.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<Binding>,
+    /// Signal nodes that run once a frame for the whole show, whichever scenes render: any
+    /// scene's mappings read their outputs as "shared:n_ab12/0". Kept as a scene (id [`SHARED`])
+    /// so its canvas, groups and notes work as a scene's do; only its signal nodes run.
+    #[serde(skip_serializing_if = "Scene::bare")]
+    pub shared: Scene,
 }
 
 impl Default for Project {
     fn default() -> Self {
-        Self { format: FORMAT, name: "Untitled".into(), canvas: Canvas::default(), scenes: Vec::new(), bindings: Vec::new() }
+        Self { format: FORMAT, name: "Untitled".into(), canvas: Canvas::default(), scenes: Vec::new(), bindings: Vec::new(), shared: shared_graph() }
     }
+}
+
+/// An empty shared signal graph.
+fn shared_graph() -> Scene {
+    Scene { id: SHARED.into(), name: "Shared signals".into(), ..Default::default() }
 }
 
 impl Project {
@@ -136,7 +150,11 @@ impl Project {
     /// a Grid isn't an output any more, so where one went out it now feeds the Output node.
     /// 4 → 5: nothing to change. A binding's control may now be a key, which a format-4 Velo
     /// has no name for: it refuses the file (by its number, or at the key) and never misreads it.
+    /// 5 → 6: nothing to change either. A project may now hold a shared signal graph and mappings
+    /// reading it ("shared:n_ab12/0"): a format-5 Velo refuses the file by its number.
     pub fn migrate(&mut self) {
+        // whatever a hand-edited file calls it, the shared graph is the shared graph
+        (self.shared.id, self.shared.name) = (SHARED.into(), shared_graph().name);
         // a hand-edited canvas inside what the GPU can draw
         let c = &mut self.canvas;
         for (field, info) in [(&mut c.width, &CANVAS[0]), (&mut c.height, &CANVAS[1]), (&mut c.fps, &CANVAS[2])] {
@@ -168,8 +186,18 @@ impl Project {
         self.format = self.format.max(FORMAT);
     }
 
+    /// A scene by its id; [`SHARED`] names the shared signal graph.
     pub fn scene(&self, id: &str) -> Option<&Scene> {
+        if id == SHARED {
+            return Some(&self.shared);
+        }
         self.scenes.iter().find(|s| s.id == id)
+    }
+
+    /// Every graph of the project: the scenes, then the shared signal graph (node ids are unique
+    /// across all of them).
+    pub fn graphs(&self) -> impl Iterator<Item = &Scene> {
+        self.scenes.iter().chain(std::iter::once(&self.shared))
     }
 
     /// The binding that moves or fires `target`, if any.
@@ -321,6 +349,11 @@ pub struct Variation {
 }
 
 impl Scene {
+    /// Nothing on its canvas (how an unused shared signal graph is left out of the file).
+    pub fn bare(&self) -> bool {
+        self.nodes.is_empty() && self.notes.is_empty() && self.groups.is_empty()
+    }
+
     /// The macro driving a parameter (by its mapping name, "zoom" or "offset.x"), and how.
     pub fn driver(&self, node: &str, param: &str) -> Option<(usize, &MacroTarget)> {
         self.macros.iter().enumerate().find_map(|(i, m)| m.targets.iter().find(|t| t.node == node && t.param == param).map(|t| (i, t)))
@@ -806,7 +839,8 @@ fn decode(bytes: &[u8]) -> String {
     }
     // Windows-1252: Latin-1 but for 0x80..0x9F (the euro, curly quotes, dashes)
     const HIGH: [u16; 32] = [
-        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+        0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D,
+        0x017E, 0x0178,
     ];
     bytes.iter().map(|&b| if (0x80..0xA0).contains(&b) { char::from_u32(u32::from(HIGH[usize::from(b - 0x80)])).unwrap_or('?') } else { char::from(b) }).collect()
 }
@@ -931,6 +965,23 @@ pub fn signal_output(source: &str) -> Option<(&str, u8)> {
         None => Some((source, 0)),
     }
 }
+/// A mapping's source when it's an output of the shared signal graph: "shared:n_ab12/0" (or
+/// "shared:n_ab12", its first), as the node's id and the output's index.
+pub fn shared_output(source: &str) -> Option<(&str, u8)> {
+    signal_output(source.strip_prefix(SHARED)?.strip_prefix(':')?)
+}
+
+/// How a mapping names output `port` of the shared graph's node `id`.
+pub fn shared_key(id: &str, port: u8) -> String {
+    format!("{SHARED}:{id}/{port}")
+}
+
+/// Whether a node of this kind may sit in the shared signal graph: a signal node, but not a
+/// Probe (there is no picture there to read).
+pub fn shareable(kind: &str) -> bool {
+    node_kind(kind).is_some_and(|k| k.category == Category::Signal) && kind != PROBE
+}
+
 /// A shared source ("kick", "bar_phase") as a signal node's output: an Audio In's, a Beat's.
 pub fn shared_signal(source: &str) -> Option<(&'static str, u8)> {
     let i = SOURCES.iter().position(|s| *s == source)?;
@@ -1010,7 +1061,8 @@ pub const SOURCES: [&str; 10] = ["level", "bass", "mid", "high", "kick", "snare"
 pub struct Mapping {
     /// The shader parameter's id ("zoom"); a vec2's axis as "offset.x" / "offset.y".
     pub param: String,
-    /// One of [`SOURCES`], or a signal node's output ([`signal_output`]).
+    /// A signal node's output in its scene ([`signal_output`]) or in the shared signal graph
+    /// ([`shared_output`]).
     pub source: String,
     /// -1..1 of the parameter's range: 0.5 moves it half its travel at full level.
     pub amount: f32,
@@ -1254,14 +1306,27 @@ impl Session {
         }
     }
 
-    /// The scene named in props, or the active one (Blender-style "context").
+    /// The scene named in props, or the active one (Blender-style "context"). The shared signal
+    /// graph isn't a scene: it can't be launched, renamed, moved or given macros.
     pub(crate) fn scene_index(&self, id: Option<&str>) -> Result<usize, String> {
         let id = id.or(self.active_scene.as_deref()).ok_or("no scene is selected")?;
+        if id == SHARED {
+            return Err("the shared signals aren't a scene: they can't do that".into());
+        }
         self.project.scenes.iter().position(|s| s.id == id).ok_or_else(|| format!("no scene {id}"))
     }
 
     fn scene_mut(&mut self, id: Option<&str>) -> Result<&mut Scene, String> {
         let i = self.scene_index(id)?;
         Ok(&mut self.project.scenes[i])
+    }
+
+    /// The graph named in props (a scene, or [`SHARED`]), or the active one: what node, wire,
+    /// tie, group, note and mapping operators edit.
+    fn graph_mut(&mut self, id: Option<&str>) -> Result<&mut Scene, String> {
+        if id.or(self.active_scene.as_deref()) == Some(SHARED) {
+            return Ok(&mut self.project.shared);
+        }
+        self.scene_mut(id)
     }
 }

@@ -264,7 +264,7 @@ impl App {
                 let Some(k) = number else { return false };
                 // a node by its id, or its name with spaces as underscores, any case
                 let wanted = node.replace('_', " ");
-                let id = self.session.project.scenes.iter().flat_map(|s| &s.nodes).find(|n| n.id == *node || n.name.eq_ignore_ascii_case(&wanted)).map(|n| n.id.clone());
+                let id = self.session.project.graphs().flat_map(|s| &s.nodes).find(|n| n.id == *node || n.name.eq_ignore_ascii_case(&wanted)).map(|n| n.id.clone());
                 let Some(id) = id else { return false };
                 let target = Target::Param { node: id, param: param.to_string() };
                 if self.travel(&target).is_none() {

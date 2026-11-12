@@ -430,6 +430,11 @@ impl App {
                 "canvas": s.project.canvas,
                 "scenes": s.project.scenes.iter().map(|c| json!({ "id": c.id, "name": c.name, "nodes": c.nodes.len(), "live": live.as_deref() == Some(c.id.as_str()) })).collect::<Vec<_>>(),
                 "selected": s.active().map(|c| scene_detail(c, false)),
+                // the signal nodes every scene reads, as "shared:<node id>/<output>"
+                "shared": json!({
+                    "nodes": s.project.shared.nodes.iter().map(|n| json!({ "id": n.id, "kind": n.kind, "name": n.name, "params": n.params, "off": n.off })).collect::<Vec<_>>(),
+                    "wires": s.project.shared.edges.iter().map(|e| json!({ "from": e.from, "to": e.to })).collect::<Vec<_>>(),
+                }),
                 "bindings": s.project.bindings.len(),
                 "undo": s.undo_label(),
             }),

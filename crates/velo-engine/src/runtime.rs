@@ -171,6 +171,9 @@ pub struct Graph {
     pub under: Option<wgpu::TextureView>,
 }
 
+/// The key [`Command::Signals`] names the shared signal graph by (no scene graph has it).
+pub const SHARED_KEY: u64 = u64::MAX;
+
 /// UI → render thread. Fire and forget. Graphs go by the key the UI installs them with (one
 /// per scene graph it keeps; 0 is none).
 pub enum Command {
@@ -239,7 +242,14 @@ pub enum Command {
         beat: Option<f64>,
         at: Instant,
     },
-    /// A graph's LFOs changed (a shape, a length): their new settings, in the graph's order.
+    /// The project's shared signal graph, new or rewired ([`crate::signal::plan_shared`]): its
+    /// signals and their outputs' names. What each node kept carries over to the new plan.
+    Shared {
+        signals: Vec<crate::signal::Signal>,
+        keys: Vec<String>,
+    },
+    /// A graph's LFOs changed (a shape, a length): their new settings, in the graph's order
+    /// (key [`SHARED_KEY`]: the shared signal graph's).
     Signals {
         key: u64,
         kinds: Vec<crate::signal::Kind>,
@@ -287,6 +297,8 @@ pub struct Status {
     pub values: [AtomicU32; 32],
     /// The edited graph's signal outputs, by slot (signal::plan's order), as f32 bits.
     pub signals: Signals,
+    /// The shared signal graph's outputs, every frame, by slot (signal::plan_shared's order).
+    pub shared: Signals,
     /// What goes out, by graph key (0: none): the live graph, the one fading out under it,
     /// the launch waiting for its boundary and how far along the wait is (f32 bits).
     pub live: AtomicU64,
@@ -331,6 +343,11 @@ impl Status {
     /// The edited graph's signal output in `slot` (signal::plan's order).
     pub fn signal(&self, slot: usize) -> f32 {
         self.signals.0.get(slot).map_or(0.0, |v| f32::from_bits(v.load(Relaxed)))
+    }
+
+    /// The shared signal graph's output in `slot` (signal::plan_shared's order).
+    pub fn shared(&self, slot: usize) -> f32 {
+        self.shared.0.get(slot).map_or(0.0, |v| f32::from_bits(v.load(Relaxed)))
     }
 
     /// bpm, the beat's hit (0..1), the ramp through the bar (0..1).
@@ -786,6 +803,8 @@ impl Thread {
         let mut deadline = Instant::now();
         // the scene graphs it keeps (a dozen at most: the UI evicts), the live one and the launches
         let mut graphs: Vec<(u64, Box<Graph>)> = Vec::with_capacity(16);
+        // the shared signal graph: run once a frame before any scene's, whatever renders
+        let (mut shared, mut shared_keys): (Vec<crate::signal::Signal>, Vec<String>) = (Vec::new(), Vec::new());
         let (mut show, mut edit) = (Show::default(), 0u64);
         let mut output: Option<Output> = None;
         let mut blackout = false;
@@ -877,6 +896,12 @@ impl Thread {
                     Command::Tempo(bpm) => clock.set_bpm(start.elapsed().as_secs_f64(), bpm),
                     Command::Resync(at) => clock.resync(secs(at)),
                     Command::Follow { bpm, beat, at } => clock.follow(secs(at), bpm, beat),
+                    Command::Shared { mut signals, keys } => {
+                        crate::signal::carry(&mut signals, &keys, &mut shared, &shared_keys);
+                        // the old plan is dropped here: a few bytes, on an edit, not per frame
+                        (shared, shared_keys) = (signals, keys);
+                    }
+                    Command::Signals { key: SHARED_KEY, kinds } => crate::signal::retune(&mut shared, &kinds),
                     Command::Signals { key, kinds } => {
                         if let Some((_, g)) = graphs.iter_mut().find(|(k, _)| *k == key) {
                             crate::signal::retune(&mut g.signals, &kinds);
@@ -974,10 +999,16 @@ impl Thread {
             // sources: the audio features, then the clock (velo_core::SOURCES' order)
             let [beat_phase, bar_phase, beat] = clock.at(t);
             let features = self.features.load();
-            let mut sources = [0.0f32; velo_core::SOURCES.len() + crate::signal::MAX_SIGNALS];
+            let mut sources = [0.0f32; crate::signal::SLOTS];
             sources[..7].copy_from_slice(&features[..7]);
             sources[7..velo_core::SOURCES.len()].copy_from_slice(&[beat, bar_phase, features[11]]);
             for (slot, v) in self.status.clock.iter().zip([clock.bpm(), beat, bar_phase]) {
+                slot.store(v.to_bits(), Relaxed);
+            }
+            // the shared signals, once for every graph this frame: live, fading, layered, edited
+            // all read the same values (a slot no node writes any more reads 0)
+            crate::signal::run(&mut shared, &mut sources, clock.beats(t), delta);
+            for (slot, v) in self.status.shared.0.iter().zip(&sources[crate::signal::SHARED..]) {
                 slot.store(v.to_bits(), Relaxed);
             }
             let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -1019,7 +1050,7 @@ impl Thread {
                     timing = Some(Timing::new(&self.device, edit, nodes));
                 }
             }
-            let time_now = timed && !resting && now - last_timing >= TIMING_EVERY &&timing.as_ref().is_some_and(|x| x.key == edit && x.state.load(Relaxed) == FREE);
+            let time_now = timed && !resting && now - last_timing >= TIMING_EVERY && timing.as_ref().is_some_and(|x| x.key == edit && x.state.load(Relaxed) == FREE);
             // what renders, each graph once: the program (two graphs in a crossfade) and the
             // edited graph; the warm ones wait
             let watch = self.status.watch.load(Relaxed);
@@ -1394,7 +1425,15 @@ override BLEND: u32 = 0u;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("compose"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty, count: None };
         let texture = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("compose"), entries: &[entry(0, texture), entry(1, texture), entry(2, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)), entry(3, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None })] });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("compose"),
+            entries: &[
+                entry(0, texture),
+                entry(1, texture),
+                entry(2, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                entry(3, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }),
+            ],
+        });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("compose"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipelines = (0..LayerBlend::ALL.len())
             .map(|blend| {
@@ -1800,7 +1839,7 @@ mod tests {
         // kaleido's zoom (0.25..4, base 1) follows the kick
         let kaleido = &programs[1].node;
         let kick = velo_core::Mapping { param: "zoom".into(), source: "kick".into(), amount: 0.2, attack_ms: 5.0, release_ms: 150.0, invert: false };
-        let mods = vec![Modulator::new(&programs[0].node, &[], Vec::new()), Modulator::new(kaleido, &kaleido.values(|_| None), crate::routes(kaleido, &[kick], &[]))];
+        let mods = vec![Modulator::new(&programs[0].node, &[], Vec::new()), Modulator::new(kaleido, &kaleido.values(|_| None), crate::routes(kaleido, &[kick], &[], &[]))];
         engine.send(Command::Install {
             key: 1,
             graph: Box::new(Graph { programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lines: Vec::new(), lazy: Vec::new(), under: None }),
@@ -1975,6 +2014,58 @@ mod tests {
         // launched as the scene it has nothing under it: black, not what it last read
         engine.send(Command::Launch { scene: first, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
         wait("black", &|[r, b]| r < 5.0 && b < 5.0);
+    }
+
+    #[test]
+    fn a_shared_beat_kick_moves_the_live_scene_and_a_layer_in_the_same_frame() {
+        use serde_json::json;
+        let _gpu = crate::gpu_lock();
+        let Ok(engine) = Engine::start(None) else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // the shared signals: a Beat Kick on the bass, falling over two seconds
+        let mut s = velo_core::Session::default();
+        s.run("scene.add", json!({})).unwrap();
+        s.run("node.add", json!({ "scene": velo_core::SHARED, "kind": velo_core::BEAT_KICK })).unwrap();
+        let kick = s.project.shared.nodes[0].id.clone();
+        for (param, value) in [("release_ms", 2000.0), ("threshold", 0.0)] {
+            s.run("node.set_param", json!({ "scene": velo_core::SHARED, "node": kick, "param": param, "value": value })).unwrap();
+        }
+        let (signals, keys) = crate::signal::plan_shared(&s.project.shared);
+        // red going out, blue a layer added on top: each one's opacity pulled down by the kick
+        let dip = velo_core::Mapping { param: "opacity".into(), source: velo_core::shared_key(&kick, 0), amount: -1.0, attack_ms: 0.0, release_ms: 0.0, invert: false };
+        let (red, blue) = (1, 2);
+        for (key, rgb) in [(red, [1.0, 0.0, 0.0]), (blue, [0.0, 0.0, 1.0])] {
+            let mut graph = flat(&engine, rgb);
+            let routes = crate::routes(&graph.programs[0].node, std::slice::from_ref(&dip), &[], &keys);
+            assert_eq!(routes.len(), 1);
+            graph.mods[0].set_routes(routes);
+            engine.send(Command::Install { key, graph });
+        }
+        engine.send(Command::Shared { signals, keys });
+        engine.send(Command::Launch { scene: red, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
+        engine.send(Command::Layers(vec![(blue, Layer::Top, LayerBlend::Add)]));
+        engine.send(Command::Tempo(30.0));
+        engine.features.store([0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        // the layer faded in, then two beats of pictures: red is the program's, blue the layer's
+        std::thread::sleep(Duration::from_millis(800));
+        let (mut seen, deadline) = (Vec::new(), Instant::now() + Duration::from_secs(4));
+        while Instant::now() < deadline {
+            if let Some(rb) = red_blue(&engine) {
+                seen.push(rb);
+            }
+        }
+        assert!(seen.iter().all(|[r, b]| (r - b).abs() < 6.0), "the two scenes dip together, frame by frame: {seen:?}");
+        assert!(seen.iter().any(|[r, _]| *r < 100.0) && seen.iter().any(|[r, _]| *r > 200.0), "and they do dip: {seen:?}");
+        assert!(engine.status.shared(0) >= 0.0);
+        // the kick deleted: nothing writes its slot, the mappings read 0, both full again
+        engine.send(Command::Shared { signals: Vec::new(), keys: Vec::new() });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !red_blue(&engine).is_some_and(|[r, b]| r > 250.0 && b > 250.0) {
+            assert!(Instant::now() < deadline, "back to full red and blue within 3 s");
+        }
+        assert_eq!(engine.status.shared(0), 0.0);
     }
 
     #[test]

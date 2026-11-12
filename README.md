@@ -54,6 +54,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - Kick, snare, hat and melody come from a small neural network that runs live ([how it was trained](crates/velo-audio/models/README.md)). Each hit's threshold is a line you drag on its graph.
 - Tempo heard from the music, tapped, typed, or followed from Ableton Link or a MIDI clock.
 - Any source onto any value, with its amount, attack, release and invert. Every generator and effect also has an **Automagic** knob that plays along by itself.
+- **Shared signals**: build a composite kick, a pulse or a drop detector once, and every scene maps it. They run once a frame for the whole show, live, fading, layered or edited alike; change a threshold and every scene follows.
 
 **Makes pictures**
 - 63 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Mesh, Text, Image, Video, Live, Media List, up to 256 files streamed from disk or held in memory, movies on a clock of their own, or a new file on every kick), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze, Time Machine, Key and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (Beat Kick, LFO, Envelope, Sequencer, Sample & Hold, Random, Probe, Speed, Delay, Spring and more).

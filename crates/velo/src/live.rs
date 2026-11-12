@@ -161,9 +161,20 @@ struct Slot {
     output: Option<usize>,
 }
 
+/// The project's shared signal graph as the engine was last told: its outputs' names (what the
+/// scenes' mappings of it route to), how its nodes are wired, their settings.
+#[derive(Default, PartialEq)]
+struct Signals {
+    keys: Vec<String>,
+    wiring: Vec<[Option<usize>; 2]>,
+    kinds: Vec<velo_engine::signal::Kind>,
+}
+
 pub struct Live {
     pub engine: Rc<Engine>,
     pub shared: Rc<RefCell<Shared>>,
+    /// The shared signal graph, as last sent.
+    signals: Signals,
     compiler: Compiler,
     /// The scenes the engine holds or is getting, most recently used (edited, launched) first.
     slots: Vec<Slot>,
@@ -231,6 +242,7 @@ impl Live {
         Self {
             engine,
             shared,
+            signals: Signals::default(),
             compiler,
             slots: Vec::new(),
             keys: 0,
@@ -273,6 +285,8 @@ impl Live {
     /// build error to show.
     pub fn sync(&mut self, ctx: &egui::Context, project: &Project, selected: Option<&Scene>, preview: bool) -> Option<String> {
         let size = [project.canvas.width, project.canvas.height];
+        // the shared signals aren't a scene: while they're edited the preview shows the program
+        let selected = selected.filter(|s| s.id != velo_core::SHARED);
         // Link's session leads the beat clock: its tempo, its place in the bar, every frame
         #[cfg(feature = "link")]
         if let Some((bpm, beat, at)) = self.link.frame(self.clock()[0]) {
@@ -392,6 +406,18 @@ impl Live {
                 self.peek = None;
             }
         }
+        // the shared signals: planned again when they're rewired (each node keeps what it was
+        // doing, the engine carries it over), retuned when a setting changed. Sent before the
+        // routes below, which follow their outputs to their new slots in the same batch
+        let (plan, keys) = velo_engine::signal::plan_shared(&project.shared);
+        let wiring: Vec<[Option<usize>; 2]> = plan.iter().map(|s| s.inputs).collect();
+        let kinds: Vec<velo_engine::signal::Kind> = plan.iter().map(|s| s.kind).collect();
+        if keys != self.signals.keys || wiring != self.signals.wiring {
+            self.engine.send(Command::Shared { signals: plan, keys: keys.clone() });
+        } else if kinds != self.signals.kinds {
+            self.engine.send(Command::Signals { key: velo_engine::runtime::SHARED_KEY, kinds: kinds.clone() });
+        }
+        self.signals = Signals { keys, wiring, kinds };
         // the hot path: values and mappings only, no rebuild (drags, undo of a drag); the
         // engine computes the modulated values itself, for every graph it renders
         let morph = self.morph.take();
@@ -430,7 +456,7 @@ impl Live {
                     self.engine.send(Command::Params { key: slot.key, node: n, values: values.clone() });
                     slot.sent[n] = values;
                 }
-                let routes = routes(shader, &node.mappings, &slot.signals);
+                let routes = routes(shader, &node.mappings, &slot.signals, &self.signals.keys);
                 if slot.routed[n] != routes {
                     self.engine.send(Command::Mappings { key: slot.key, node: n, routes: routes.clone() });
                     slot.routed[n] = routes;
@@ -568,6 +594,10 @@ impl Live {
 
     /// Puts `scene` on the output `launch`'s way instead of its own.
     pub fn launch_with(&mut self, scene: &Scene, launch: Launch) {
+        // the shared signals run whatever goes out: never on the output themselves
+        if scene.id == velo_core::SHARED {
+            return;
+        }
         let key = self.slot(&scene.id).key;
         self.launched = key;
         self.engine.send(Command::Launch { scene: key, transition: launch.transition, duration_beats: launch.duration, quantize: launch.quantize });
@@ -655,11 +685,25 @@ impl Live {
         self.engine.status.watch(n)
     }
 
-    /// What a signal node's output reads now in the edited scene's graph (its card's meter).
+    /// What a signal node's output reads now: in the shared signals (node ids are unique in the
+    /// project), else in the edited scene's graph (its card's meter).
     pub fn signal(&self, node: &str, port: u8) -> Option<f32> {
+        let key = format!("{node}/{port}");
+        if let Some(at) = self.signals.keys.iter().position(|k| *k == key) {
+            return Some(self.engine.status.shared(at));
+        }
         let slot = self.slots.iter().find(|s| s.key == self.edit)?;
-        let at = slot.signals.iter().position(|k| *k == format!("{node}/{port}"))?;
+        let at = slot.signals.iter().position(|k| *k == key)?;
         Some(self.engine.status.signal(at))
+    }
+
+    /// What a mapping's source reads now: an output of the edited scene's signal nodes or of the
+    /// shared signals, or a source by name ("kick"); 0 for one that's gone.
+    pub fn level(&self, source: &str) -> f32 {
+        match velo_core::shared_output(source).or_else(|| velo_core::signal_output(source)) {
+            Some((id, port)) => self.signal(id, port).unwrap_or(0.0),
+            None => SOURCES.iter().position(|s| *s == source).map_or(0.0, |i| self.sources()[i]),
+        }
     }
 
     /// What every source reads now, in `velo_core::SOURCES`' order: the audio features, then

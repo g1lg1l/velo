@@ -92,6 +92,18 @@ A signal's cable comes out of its jack like a wire:
 - **Onto another card**: that card's values open. Pick one and the cable plugs in there; the old card lets go of it. It's one undo step.
 - **Onto nothing**: the link is gone, and the cable springs back into its output.
 
+## Shared signals
+
+A show often reads the music the same way in every scene: one kick made of the bass and the beat, a pulse, how much energy there is, a drop. Instead of building those nodes again in each scene, build them once in the **shared signals**.
+
+- **Shared signals** is the first entry in the scenes panel, in green. Click it and its canvas opens: add signal nodes with <kbd>Tab</kbd> (only signal nodes go there) and wire them as in any scene.
+- Its nodes' outputs show up on the deck's sources, marked with a 📡. Drag one onto any slider, in any scene.
+- They run once for the whole show, whichever scenes are on: the live one, one fading out, the layers, the one you edit. Two scenes crossfading on one shared kick pulse together.
+- Change a threshold in the shared signals and every scene follows. Select a shared node to see what it moves in every scene, and change any of those links from there.
+- A card moved by a shared signal has a jack for it, like any other, with no cable on the canvas: its node lives on the shared canvas.
+
+The shared signals can't be launched, made a layer or deleted. If you delete one of their nodes, the values it moved go back to where they were set; undo brings it back.
+
 ## Other signals
 
 Signals and logic nodes turn numbers into other numbers. A few to start with:

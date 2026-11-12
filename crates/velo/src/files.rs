@@ -439,7 +439,9 @@ impl App {
                 let demo = crate::templates::demo();
                 self.load_project(demo.clone(), None, demo);
                 // the first five minutes' one guide: long enough to read (screenshots go without it)
-                self.toast = std::env::var_os("VELO_CAPTURE_TO").is_none().then(||crate::shell::Toast::new(Tone::Action, tr!("The demo: play some music. The knobs below are its macros; the scenes' + starts more from a template.").into()).lasting(20.0));
+                self.toast = std::env::var_os("VELO_CAPTURE_TO")
+                    .is_none()
+                    .then(|| crate::shell::Toast::new(Tone::Action, tr!("The demo: play some music. The knobs below are its macros; the scenes' + starts more from a template.").into()).lasting(20.0));
             }
         }
     }
@@ -530,13 +532,12 @@ impl App {
             Err(e) => return self.say(Tone::Error, e),
         };
         let name = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
-        for scene in &project.scenes {
-            if let Err(e) = self.session.run_merge("scene.import", json!({ "scene": scene }), "import") {
-                self.session.close_merge();
-                return self.say(Tone::Error, e);
-            }
+        // all at once with that show's shared signals: what they read comes along, once
+        if !project.scenes.is_empty()
+            && let Err(e) = self.session.run("scene.import", json!({ "scenes": project.scenes, "shared": project.shared }))
+        {
+            return self.say(Tone::Error, e);
         }
-        self.session.close_merge();
         match (project.scenes.as_slice(), missing.is_empty()) {
             ([], _) => self.say(Tone::Error, tr!("{} has no scenes", name)),
             (_, false) => self.say(Tone::Error, tr!("Imported from {}, but these shader files are missing: {}", name, missing.join(", "))),
@@ -594,7 +595,7 @@ impl App {
             return;
         }
         let Some(dir) = self.shader_dir() else { return };
-        let Some(n) = self.session.project.scenes.iter().flat_map(|s| &s.nodes).find(|n| n.id == node) else { return };
+        let Some(n) = self.session.project.graphs().flat_map(|s| &s.nodes).find(|n| n.id == node) else { return };
         let opened = std::fs::create_dir_all(dir.join(SHADERS)).map_err(|e| e.to_string()).and_then(|_| store(&dir, n, n.code.as_deref().unwrap_or_default())).and_then(|path| launch(&self.settings.editor, &path).map(|_| path));
         match opened {
             Ok(path) => self.say(Tone::Action, tr!("Editing {} outside Velo: every save shows here", path.file_name().unwrap_or_default().to_string_lossy())),
@@ -658,11 +659,11 @@ impl App {
                 ui.label(RichText::new(tr!("Your changes will be lost if you don't save them.")).color(t.fg_muted));
                 ui.add_space(t.gap);
                 // the way out on the left, what's asked for on the right, as the system's own dialogs
-                let shown = kit::actions(ui, &t, &[
-                    (kit::Variant::Ghost, Some(crate::icons::X), tr!("Cancel")),
-                    (kit::Variant::Secondary, Some(crate::icons::TRASH), tr!("Don't Save")),
-                    (kit::Variant::Primary, Some(crate::icons::FLOPPY_DISK), tr!("Save")),
-                ]);
+                let shown = kit::actions(
+                    ui,
+                    &t,
+                    &[(kit::Variant::Ghost, Some(crate::icons::X), tr!("Cancel")), (kit::Variant::Secondary, Some(crate::icons::TRASH), tr!("Don't Save")), (kit::Variant::Primary, Some(crate::icons::FLOPPY_DISK), tr!("Save"))],
+                );
                 // (0 saves, 1 doesn't, 2 cancels)
                 shown.iter().position(egui::Response::clicked).map(|i| 2 - i)
             });
@@ -680,7 +681,9 @@ impl App {
             }
         }
         // (the start screen offers it itself, as one of the things to open)
-        if !self.start && let Some(project) = self.recovery.take() {
+        if !self.start
+            && let Some(project) = self.recovery.take()
+        {
             let (choice, closed) = kit::modal(ctx, &t, "recover", tr!("Restore unsaved work?"), 380.0, |ui| {
                 ui.label(RichText::new(tr!("Velo closed with unsaved changes last time. You can pick up where you left off.")).color(t.fg_muted));
                 ui.add_space(t.gap);

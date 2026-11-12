@@ -14,10 +14,11 @@ How a scene is built: nodes, wires, mappings, and what the render thread does wi
 | Effect strength? | **Every effect has `amount` 0..1; 0 passes its input through** | Any effect is fader-mappable and crossfadable, and bypass is `amount = 0`. |
 | Picture strength? | **Every generator (but Particles) gets `opacity` 0..1**: Velo multiplies what it draws, so 0 is gone; one that declares its own (Text) keeps it | Any picture fades the same way. |
 | When does the graph change? | **Compiled off the render thread, swapped at a frame boundary** | A structural edit never stalls a frame. |
+| Signals every scene reads? | **One shared signal graph per project**, run once a frame, its outputs mapped from any scene (`shared:n_ab12/0`) | A show that reads the music one way everywhere keeps its composite kick or drop detector in one place: one threshold changed, every scene follows. |
 
 ## 2. Structure
 
-A project is a list of scenes; a scene is `Scene { nodes, edges, launch, macros, variations, ties }` in `velo-core` (macros, variations and launching are in [scenes.md](scenes.md)). The node kinds are `NODE_KINDS`: static data, so the UI, files and tests reason about graphs without a GPU.
+A project is a list of scenes and one shared signal graph (§3, Shared signals); a scene is `Scene { nodes, edges, launch, macros, variations, ties }` in `velo-core` (macros, variations and launching are in [scenes.md](scenes.md)). The node kinds are `NODE_KINDS`: static data, so the UI, files and tests reason about graphs without a GPU.
 
 - A **node** has a stable id (`n_ab12`), a kind (`velo.noise`), a name, a position, the parameters the user changed (the rest keep the shader's defaults), its mappings, and, by kind, its code (Shader, Shader FX), its file (`media`) or its words (`text`). Unknown kinds from a newer file load and keep their wires.
 - An **edge** goes from an output to an input, each `(node id, port)`. An input takes one wire.
@@ -46,7 +47,7 @@ Nothing moves unless asked: built-in nodes start still, and the `audio` knob of 
 ```rust
 pub struct Mapping {
     pub param: String,    // "zoom", or a vec2's axis "offset.x"
-    pub source: String,   // a shared source ("kick") or a signal node's output ("n_ab12/4")
+    pub source: String,   // a signal node's output: the scene's ("n_ab12/4") or a shared one's ("shared:n_cd34/0")
     pub amount: f32,      // -1..1 of the parameter's range
     pub attack_ms: f32,   // one-pole smoothing, up and down
     pub release_ms: f32,
@@ -64,11 +65,21 @@ A mapped color turns round its hue instead: `amount` × the source's level, in t
 
 ### Sources
 
-`velo_core::SOURCES`: `level`, `bass`, `mid`, `high`, `kick`, `snare`, `hat`, `beat`, `bar_phase`, `melody`. Each is the output of a signal node: a shared source given to `mapping.add` (dragged from the deck or named by an agent) is wired from the scene's Audio In or Beat, which is added if the scene has none. Any other signal node's output is named `node id/output` (`n_ab12/1`).
+`velo_core::SOURCES`: `level`, `bass`, `mid`, `high`, `kick`, `snare`, `hat`, `beat`, `bar_phase`, `melody`. Each is the output of a signal node: a shared source given to `mapping.add` (dragged from the deck or named by an agent) is wired from the scene's Audio In or Beat, which is added if the scene has none. Any other signal node's output is named `node id/output` (`n_ab12/1`), and an output of the shared signals `shared:node id/output` (`shared:n_cd34/0`; `shared:n_cd34` is its first).
+
+### Shared signals
+
+A project has one **shared signal graph** (`Project::shared`): signal nodes and their wires, with positions, groups and notes like a scene's canvas, and nothing else (no pictures, no Output, no Probe: there is no picture to read). It runs once a frame for the whole show, and every scene's mappings can read its outputs, whichever scenes render: the live one, one fading out, the layers, the edited one. A show that reads the music the same way everywhere (a composite kick, a pulse, an energy follower, a drop detector) keeps those nodes there once, instead of a copy in each scene.
+
+- **Edited** on the node canvas like a scene: the **Shared signals** entry at the top of the scenes rail opens it (it is no scene: it can't be launched, made a layer, put in the autopilot, renamed or deleted, and has no macros). The node menu offers signal nodes only.
+- **Mapped** like any source: its outputs are on the deck's SOURCES (marked with a broadcast sign), to drag onto any slider of any scene. A card fed by one has a jack for it (`📡 Pump → Zoom`) and glows with it, with no line on the canvas, since the node lives on the shared canvas; a shared node's inspector lists what it moves in every scene, and changes it from there.
+- **Operators**: the node, wire, tie, group and note operators take `scene: "shared"` (and `scene.select` with `"shared"` makes it the edited graph, which they then default to); `node.add` refuses anything but a signal node there. Scene operators (rename, launch settings, layers, the autopilot, macros, variations) refuse it. `mapping.add` takes `"shared:n_cd34/0"` from any scene; nothing in the shared graph takes a mapping.
+- **Deleted** shared node: the mappings that read it stay (an undo brings it back whole) and read 0, so their parameters sit at their base values.
+- **Ids**: node ids are unique across the scenes and the shared graph, so a binding or OSC address naming a node finds a shared one too.
 
 ### Signal nodes
 
-Signal wires never mix with picture wires. Signal nodes run on the render thread every frame, in wiring order, into up to 64 slots per scene after the shared sources; the inspector and the cards read the edited scene's values back.
+Signal wires never mix with picture wires. Signal nodes run on the render thread every frame, in wiring order, into up to 64 slots per scene after the audio and clock sources; the shared signals run first, into 64 slots of their own after those, which no scene's pass writes over. The inspector and the cards read the edited scene's values back, and the shared signals' every frame.
 
 | Node | Outputs | What it does |
 |---|---|---|
@@ -126,9 +137,9 @@ Not yet: a Delay node (frames from the past, slit scans) needs a ring of past fr
 On the render thread (`velo_engine::runtime`), for the live scene, a scene fading out and the edited scene, each once:
 
 ```
-1. commands          new graphs, base values, mappings, macros, launches, taps (a channel)
+1. commands          new graphs, base values, mappings, macros, launches, taps, the shared signals' plan (a channel)
 2. pace and launch   the output's vsync (or a 60 Hz tick); a waiting launch lands on its boundary
-3. read sources      the latest audio features, the beat clock
+3. read sources      the latest audio features, the beat clock; then the shared signal graph, once
 4. signal pass       each graph's signal nodes in wiring order, Probes fed what they last read
 5. resolve params    macros set driven bases, mappings add on top, written to parameter buffers
 6. texture pass      media frames due, every node's pass in topological order, Probe reads
@@ -139,6 +150,8 @@ On the render thread (`velo_engine::runtime`), for the live scene, a scene fadin
 ```
 
 Steps 1 to 5 are CPU work measured in microseconds; step 6 is where the frame goes. MIDI and OSC are applied on the UI thread through operators, so they arrive in step 1.
+
+The shared signals (`signal::plan_shared`) are sent whole when they're rewired (`Command::Shared`, their outputs' names with them) and retuned in place when a setting changes; each node keeps what it was doing across a rewire (a Smooth's level, a Beat Kick's fall, matched by node id), and the UI routes every mapping of them again in the same batch, to their outputs' new slots. Nothing allocates per frame: the sources are one array on the stack, the scenes' signals after the audio and clock, the shared ones after those, and a slot no node writes any more reads 0.
 
 Steps 3 and 5 are `velo_engine::modulate`. The UI sends a node's base values (`Command::Params`) and its mappings resolved to indices (`Command::Mappings`), both without a rebuild. Each mapping keeps its own one-pole state in the engine, carried over when its settings change and reset by a rebuild. The inspected node's results come back through atomics for the slider's live dot; the UI never computes modulated values. The beat clock is a tempo and the time of beat 0, so phase is a function of time; taps and resyncs arrive carrying their `Instant`.
 
