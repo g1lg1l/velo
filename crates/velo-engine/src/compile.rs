@@ -344,17 +344,12 @@ fn build(
         }
     }
     let models: Vec<(usize, std::sync::Arc<crate::media::Media>)> = (0..plan.nodes.len()).filter_map(|n| file(n).filter(|m| m.model.is_some()).map(|m| (n, m.clone()))).collect();
-<<<<<<< HEAD
-    let media = plan.nodes.iter().zip(files).filter_map(|((id, _), l)| Some((id.clone(), l?))).collect();
+    let media = plan.nodes.iter().zip(files).zip(was_in).filter_map(|(((id, _), l), was_in)| Some((id.clone(), l?, was_in))).collect();
     let mut views: Vec<(usize, wgpu::TextureView)> = playing.iter().map(|p| (p.node, p.texture.create_view(&Default::default()))).collect();
     // what plays under the layer: one picture the render thread fills each frame, read by every
     // node that shows it as an Image node reads its file
     let under = (!plan.under.is_empty()).then(|| crate::gpu::texture_for(device, size, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
     views.extend(under.iter().flat_map(|view| plan.under.iter().map(move |&n| (n, view.clone()))));
-=======
-    let media = plan.nodes.iter().zip(files).zip(was_in).filter_map(|(((id, _), l), was_in)| Some((id.clone(), l?, was_in))).collect();
-    let views: Vec<(usize, wgpu::TextureView)> = playing.iter().map(|p| (p.node, p.texture.create_view(&Default::default()))).collect();
->>>>>>> worktree-agent-ad30398b1c1e342e7
     let runner = Runner::new(device, &programs, &specs, &views, size, wave);
     if let Some(e) = [pollster::block_on(valid.pop()), pollster::block_on(memory.pop())].into_iter().flatten().next() {
         return Err(crate::gpu_error(&e));
