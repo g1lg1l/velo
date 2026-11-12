@@ -329,6 +329,8 @@ struct App {
     splash: Option<Option<f64>>,
     /// When the splash came up (set on its first frame): what its waits count from.
     splash_from: Option<f64>,
+    /// How full the splash's bar is drawn (0..1): it moves every frame, never back.
+    splash_bar: f32,
     /// The engine and the audio input; none in headless tests (or without a GPU).
     live: Option<live::Live>,
     /// Controllers: what came in, and MIDI learn.
@@ -395,6 +397,7 @@ impl App {
             usage: usage::Usage::new(),
             splash: (std::env::var_os("VELO_CAPTURE_TO").is_none() || std::env::var_os("VELO_DEMO_SPLASH").is_some()).then_some(None),
             splash_from: None,
+            splash_bar: 0.0,
             live,
             restarted: None,
             pilot: Pilot::default(),
@@ -3599,6 +3602,7 @@ impl App {
             usage: usage::Usage::new(),
             splash: None,
             splash_from: None,
+            splash_bar: 0.0,
             live: None,
             midi: midi::Midi::default(),
             learn: midi::Learn::default(),

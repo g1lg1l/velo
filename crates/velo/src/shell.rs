@@ -965,6 +965,9 @@ impl App {
         let Some(fading) = self.splash else { return };
         let t = self.theme.clone();
         let now = ctx.input(|i| i.time);
+        if self.splash_from.is_none() {
+            self.splash_bar = 0.0;
+        }
         let waited = now - *self.splash_from.get_or_insert(now);
         let hold = std::env::var_os("VELO_DEMO_SPLASH").is_some();
         let live = self.live.as_ref();
@@ -996,6 +999,20 @@ impl App {
             return;
         }
         ctx.request_repaint();
+        // the bar: quickly up to what's done, then on slowly toward the next step without ever
+        // reaching it, so it always moves instead of waiting still and jumping a scene at a time
+        let at = (done.min(3) as f32 + if started { pictured as f32 / scenes.max(1) as f32 } else { 0.0 }) / steps.len() as f32;
+        let step = 1.0 / (steps.len() as f32 * if started { scenes.max(1) as f32 } else { 1.0 });
+        let dt = ctx.input(|i| i.stable_dt).min(0.1);
+        let ceiling = if done == steps.len() { 1.0 } else { (at + 0.85 * step).min(0.99) };
+        let bar = &mut self.splash_bar;
+        if *bar < at {
+            *bar += (at - *bar) * (dt * 8.0).min(1.0);
+        }
+        if *bar < ceiling {
+            *bar += (ceiling - *bar) * (dt * if done == steps.len() { 8.0 } else { 0.7 }).min(1.0);
+        }
+        let shown = *bar;
         let screen = ctx.content_rect();
         egui::Area::new(Id::unique("splash")).order(egui::Order::Tooltip).fixed_pos(screen.min).interactable(true).show(ctx, |ui| {
             let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
@@ -1007,9 +1024,6 @@ impl App {
             painter.image(widgets::brand(ctx, widgets::ICON_256), mark, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Theme::NO_TINT);
             painter.text(c + vec2(0.0, 72.0), Align2::CENTER_CENTER, "Velo", FontId::proportional(28.0), t.fg_text);
             painter.text(c + vec2(0.0, 98.0), Align2::CENTER_CENTER, env!("CARGO_PKG_VERSION"), Theme::mono(t.text_xs), t.fg_muted);
-            // the bar fills step by step (the last one scene by scene), eased toward where it's at
-            let at = (done.min(3) as f32 + if started { pictured as f32 / scenes.max(1) as f32 } else { 0.0 }) / steps.len() as f32;
-            let shown = ctx.animate_value_with_time(Id::unique("splash progress"), at, 0.3);
             let bar = egui::Rect::from_center_size(c + vec2(0.0, 132.0), vec2(220.0, 3.0));
             painter.rect_filled(bar, 2.0, t.bg_control);
             painter.rect_filled(egui::Rect::from_min_size(bar.min, vec2(bar.width() * shown, bar.height())), 2.0, t.accent);
