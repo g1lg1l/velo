@@ -21,7 +21,7 @@ const fn cmd(group: &'static str, id: &'static str, label: &'static str) -> Comm
 }
 
 /// In the shortcut sheet's order: the canvas first, it's where you work.
-pub const COMMANDS: [Command; 53] = [
+pub const COMMANDS: [Command; 56] = [
     cmd("Nodes", "canvas.add", "Add a node"),
     cmd("Nodes", "canvas.find", "Find a node"),
     cmd("Nodes", "canvas.home", "Zoom to fit"),
@@ -32,6 +32,7 @@ pub const COMMANDS: [Command; 53] = [
     cmd("Nodes", "canvas.select_all", "Select all nodes"),
     cmd("Nodes", "canvas.toggle", "Turn the selection off or on"),
     cmd("Nodes", "canvas.duplicate", "Duplicate the selection"),
+    cmd("Nodes", "canvas.group", "Group the selection"),
     cmd("Nodes", "canvas.delete", "Delete the selection"),
     cmd("Nodes", "canvas.import_isf", "Import an ISF shader"),
     cmd("Stage", "stage.preview", "Show or hide the preview"),
@@ -41,6 +42,8 @@ pub const COMMANDS: [Command; 53] = [
     cmd("Stage", "stage.tap", "Tap tempo"),
     cmd("Stage", "stage.learn", "MIDI learn"),
     cmd("Stage", "stage.launch", "Launch the selected scene"),
+    cmd("Stage", "stage.auto", "Auto: the autopilot on, every layer back on"),
+    cmd("Stage", "stage.drop", "Drop: the autopilot's next scene now, through a flash"),
     cmd("Stage", "stage.scene_1", "Launch scene 1"),
     cmd("Stage", "stage.scene_2", "Launch scene 2"),
     cmd("Stage", "stage.scene_3", "Launch scene 3"),
@@ -136,6 +139,7 @@ impl Preset {
             (Preset::Velo, "canvas.select_all") => vec![k(C, Key::A)],
             (Preset::Velo, "canvas.toggle") => vec![k(N, Key::E)],
             (Preset::Velo, "canvas.duplicate") => vec![k(C, Key::D)],
+            (Preset::Velo, "canvas.group") => vec![k(C, Key::G)],
             (Preset::Velo, "canvas.delete") => vec![k(N, Key::Delete), k(N, Key::Backspace)],
             (Preset::Velo, "canvas.import_isf") => vec![k(CS, Key::I)],
             // the stage keys (docs/product.md §7.6)
@@ -146,6 +150,8 @@ impl Preset {
             (Preset::Velo, "stage.tap") => vec![k(N, Key::T)],
             (Preset::Velo, "stage.learn") => vec![k(N, Key::L)],
             (Preset::Velo, "stage.launch") => vec![k(N, Key::Space)],
+            (Preset::Velo, "stage.auto") => vec![k(N, Key::Num0)],
+            (Preset::Velo, "stage.drop") => vec![k(N, Key::D)],
             (Preset::Velo, id) if id.starts_with("stage.scene_") => {
                 const DIGITS: [Key; 9] = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
                 let n: usize = id["stage.scene_".len()..].parse().unwrap_or(0);

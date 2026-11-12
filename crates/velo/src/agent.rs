@@ -456,14 +456,19 @@ impl App {
 
     /// Preferences → AI and agents.
     pub fn prefs_agents(&mut self, ui: &mut Ui, t: &Theme) {
-        kit::section(ui, t, icons::ROBOT, tr!("AGENTS (MCP)"), true, |ui| {
+        kit::page_title(ui, t, icons::ROBOT, tr!("AI and agents"), tr!("Let Claude Code, Codex or any MCP client drive Velo."));
+        kit::card(ui, t, tr!("AGENTS (MCP)"), |ui| {
             let a = &mut self.settings.agent;
             let detail = tr!("Claude Code, Codex or any MCP client can run commands, read the project, write shaders and see the preview. Each change undoes in one step.");
             kit::setting(ui, t, tr!("Let agents use Velo"), detail, |ui| kit::switch(ui, t, &mut a.enabled, tr!("Let agents use Velo")));
             ui.add_enabled_ui(a.enabled, |ui| {
+                kit::divider(ui, t);
                 kit::setting(ui, t, tr!("May change the project"), "", |ui| kit::switch(ui, t, &mut a.edit, tr!("May change the project")));
+                kit::divider(ui, t);
                 kit::setting(ui, t, tr!("May change the live scene"), tr!("Off, they leave the scene the audience sees alone."), |ui| kit::switch(ui, t, &mut a.live, tr!("May change the live scene")));
+                kit::divider(ui, t);
                 kit::setting(ui, t, tr!("May save the project"), "", |ui| kit::switch(ui, t, &mut a.files, tr!("May save the project")));
+                kit::divider(ui, t);
                 kit::setting(ui, t, tr!("Port"), "", |ui| ui.add(egui::DragValue::new(&mut a.port).range(1024..=65535)));
             });
             let status = match self.agents_connected() {
@@ -471,33 +476,34 @@ impl App {
                 Some(n) => tr!("Listening on 127.0.0.1:{} · {} connected", self.settings.agent.port, n),
                 None => tr!("Off").to_string(),
             };
-            kit::note(ui, t, Some(icons::LIGHTNING), &status, if self.agents_connected().is_some() { t.accent } else { t.fg_muted });
+            kit::callout(ui, t, icons::LIGHTNING, &status, if self.agents_connected().is_some() { t.accent } else { t.fg_muted });
+            ui.add_space(t.pad);
         });
-        kit::section(ui, t, icons::TERMINAL_WINDOW, tr!("SET UP"), false, |ui| {
-            kit::hint(ui, t, tr!("With the switch above on, other apps drive Velo through velo-mcp, the bridge that ships with it. Velo's own AI panel needs none of this."));
-            kit::hint(ui, t, tr!("Claude Code: run this once in a terminal, then start a new session. --scope user adds Velo in every folder; without it, only in the folder you ran it in."));
+        kit::card(ui, t, tr!("SET UP"), |ui| {
+            kit::para(ui, t, tr!("With the switch above on, other apps drive Velo through velo-mcp, the bridge that ships with it. Velo's own AI panel needs none of this."), t.fg_text);
+            ui.add_space(t.gap);
             let mut copied = None;
             for (text, json) in [(claude_command(), false), (mcp_json(), true)] {
-                if json {
-                    kit::hint(ui, t, tr!("Claude Desktop (Settings → Developer → Edit Config), Cursor and other MCP apps: add this to their MCP servers, then restart them."));
+                let how = if json {
+                    tr!("Claude Desktop (Settings → Developer → Edit Config), Cursor and other MCP apps: add this to their MCP servers, then restart them.")
+                } else {
+                    tr!("Claude Code: run this once in a terminal, then start a new session. --scope user adds Velo in every folder; without it, only in the folder you ran it in.")
+                };
+                kit::hint(ui, t, how);
+                ui.add_space(t.gap);
+                // the file's entry on one line here; the copy keeps its lines
+                let shown = if json { text.split_whitespace().collect::<Vec<_>>().join(" ") } else { text.clone() };
+                if kit::snippet(ui, t, &shown) {
+                    copied = Some(text.clone());
                 }
-                ui.horizontal(|ui| {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if kit::button(ui, t, Some(icons::COPY), tr!("Copy"), false).clicked() {
-                            copied = Some(text.clone());
-                        }
-                        // the file's entry on one line here; the copy keeps its lines
-                        let shown = if json { text.split_whitespace().collect::<Vec<_>>().join(" ") } else { text.clone() };
-                        ui.add(egui::Label::new(RichText::new(shown).font(Theme::mono(t.text_xs))).truncate());
-                    });
-                });
+                ui.add_space(t.pad);
             }
             if let Some(text) = copied {
                 ui.ctx().copy_text(text);
                 self.say(Tone::Done, tr!("Copied"));
             }
         });
-        kit::section(ui, t, icons::LIST_BULLETS, tr!("LOG"), false, |ui| {
+        kit::card(ui, t, tr!("LOG"), |ui| {
             // a box the section's width, framed as the code editor is
             egui::Frame::new().fill(t.bg_field).stroke(egui::Stroke::new(1.0, t.line)).corner_radius(t.radius_sm).inner_margin(egui::Margin::symmetric(t.pad as i8, t.gap as i8)).show(ui, |ui| {
                 egui::ScrollArea::vertical().max_height(180.0).min_scrolled_height(180.0).auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
@@ -511,9 +517,13 @@ impl App {
                     }
                 });
             });
-            if !self.agent.log.is_empty() && kit::button(ui, t, Some(icons::TRASH), tr!("Clear the log"), false).clicked() {
-                self.agent.log.clear();
+            if !self.agent.log.is_empty() {
+                ui.add_space(t.gap);
+                if kit::button(ui, t, Some(icons::TRASH), tr!("Clear the log"), false).clicked() {
+                    self.agent.log.clear();
+                }
             }
+            ui.add_space(t.pad);
         });
     }
 }

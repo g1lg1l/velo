@@ -1,7 +1,7 @@
 /*{
   "name": "Chromatic Aberration",
   "category": "effect",
-  "description": "Separate red and blue along a direction or away from the center with bass accents.",
+  "description": "Red and blue pulled apart along a direction or away from the center, further with the bass and snapping wide on the kick.",
   "inputs": [{ "id": "src", "type": "texture" }],
   "params": [
     { "id": "spread", "type": "float", "default": 4.0, "min": 0.0, "max": 32.0 },
@@ -16,7 +16,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let p = (uv - 0.5) * vec2f(g.aspect, 1.0) * 2.0;
     let rotated = vec2f(p.x * cos(angle) - p.y * sin(angle), p.x * sin(angle) + p.y * cos(angle));
     let direction = mix(vec2f(cos(angle), sin(angle)), rotated, radial);
-    let offset = direction * spread * (1.0 + music * g.bass) / g.resolution;
+    let offset = direction * spread * (1.0 + music * (1.5 * g.bass + 3.0 * g.kick)) / g.resolution;
     let red = textureSample(src, smp, uv + offset).r;
     let blue = textureSample(src, smp, uv - offset).b;
     return vec4f(red, original.g, blue, original.a);

@@ -40,14 +40,22 @@ fn normal(p: vec3f) -> vec3f {
 
 // how far along the ray the surface is, or -1; steps shortened, the fields aren't exact
 fn march(ro: vec3f, rd: vec3f) -> f32 {
-    var t = 0.0;
+    // only through the sphere the longest spikes reach: a ray that misses it costs nothing
+    let reach = size * 1.95;
+    let b = dot(ro, rd);
+    let h = b * b - dot(ro, ro) + reach * reach;
+    if h < 0.0 {
+        return -1.0;
+    }
+    var t = max(-b - sqrt(h), 0.0);
+    let far = -b + sqrt(h);
     for (var i = 0; i < 110; i++) {
         let d = sdf(ro + rd * t);
         if d < 0.001 {
             return t;
         }
-        t += d * 0.6;
-        if t > 6.0 {
+        t += d * 0.45;
+        if t > far {
             break;
         }
     }
@@ -57,14 +65,21 @@ fn march(ro: vec3f, rd: vec3f) -> f32 {
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let r = ray(uv, g.time * spin);
     let t = march(r[0], r[1]);
+    let flash = 1.0 + 0.9 * audio * g.kick;
+    // a glow behind the drop, so its dark edge reads against the dark
+    let q = (uv - 0.5 - position * 0.5) * vec2f(g.aspect, 1.0);
+    let halo = shine.rgb * 0.16 * exp(-length(q) * 2.2 / max(size, 0.05)) * flash;
     if t < 0.0 {
-        return vec4f(background.rgb, 1.0);
+        return vec4f(background.rgb + halo, 1.0);
     }
     let n = normal(r[0] + r[1] * t);
     let m = reflect(r[1], n);
-    // black glass: what it reflects, a soft sky above and a hard highlight
+    // black glass: what it reflects. A soft sky above, a strip light across it, a hard
+    // highlight, and its edge catching the light from behind in the shine's opposite color
     let fresnel = pow(1.0 - max(dot(-r[1], n), 0.0), 3.0);
-    let sky = shine.rgb * smoothstep(-0.1, 0.9, m.y) * (0.15 + 0.85 * fresnel);
-    let spot = shine.rgb * pow(max(dot(m, normalize(vec3f(0.5, 0.8, -0.4))), 0.0), 80.0) * 2.0;
-    return vec4f(color.rgb + (sky + spot) * (1.0 + 0.8 * audio * g.kick), 1.0);
+    let sky = shine.rgb * smoothstep(-0.2, 0.9, m.y) * (0.12 + 0.88 * fresnel);
+    let strip = shine.rgb * smoothstep(0.5, 0.56, m.y) * smoothstep(0.8, 0.74, m.y) * (0.5 + 0.5 * sin(m.x * 14.0)) * 0.5;
+    let spot = shine.rgb * pow(max(dot(m, normalize(vec3f(0.5, 0.8, -0.4))), 0.0), 80.0) * 2.5;
+    let under = shine.bgr * smoothstep(0.1, -0.8, m.y) * (0.06 + 0.7 * fresnel);
+    return vec4f(color.rgb + halo * 0.3 + (sky + strip + spot + under) * flash, 1.0);
 }

@@ -12,6 +12,14 @@
   ]
 }*/
 
+// a random number 0..1 for each whole cell
+fn hash(c: vec2f) -> f32 {
+    let n = bitcast<vec2u>(vec2i(floor(c)));
+    var h = (n.x * 1597334677u) ^ (n.y * 3812015801u);
+    h = (h ^ (h >> 16u)) * 2246822519u;
+    return f32(h ^ (h >> 13u)) / 4294967296.0;
+}
+
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     // y up, the horizon a little below the middle
     let s = vec2f((uv.x - 0.5) * g.aspect, 0.5 - uv.y);
@@ -21,8 +29,13 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     if s.y > horizon {
         let h = s.y - horizon;
         col = mix(mix(sky.rgb, sun_bottom.rgb, 0.5), sky.rgb, smoothstep(0.0, 0.45, h));
+        // stars high up, twinkling with the hats
+        let cell = floor(s * 60.0);
+        let star = hash(cell);
+        let spot = length(fract(s * 60.0) - 0.2 - 0.6 * vec2f(hash(cell + 41.0), hash(cell + 73.0)));
+        col += step(0.955, star) * (1.0 - smoothstep(0.0, 0.14, spot)) * smoothstep(0.12, 0.5, h) * (0.5 + 0.3 * sin(g.time * 2.0 + star * 90.0) + audio * g.hat);
         let c = vec2f(0.0, horizon + 0.2);
-        let radius = 0.2 * (1.0 + 0.04 * audio * g.bass);
+        let radius = 0.2 * (1.0 + 0.08 * audio * g.bass);
         let d = length(s - c);
         // bands cut across its lower half, thicker toward the bottom, sliding down
         let below = c.y + 0.02 - s.y;
@@ -32,7 +45,9 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         let open = select(1.0, smoothstep(gap, gap + e, k) * (1.0 - smoothstep(1.0 - e, 1.0, k)), below > 0.0);
         let disc = (1.0 - smoothstep(radius - aa, radius + aa, d)) * open;
         col = mix(col, mix(sun_bottom.rgb, sun_top.rgb, smoothstep(c.y - radius, c.y + radius, s.y)), disc);
-        col += sun_bottom.rgb * exp(-max(d - radius, 0.0) * 10.0) * 0.3 * (1.0 + 0.5 * audio * g.bass);
+        col += sun_bottom.rgb * exp(-max(d - radius, 0.0) * 10.0) * 0.3 * (1.0 + audio * g.bass);
+        // the grid's light on the horizon
+        col += grid.rgb * exp(-h * 60.0) * 0.3;
     } else {
         // the floor: depth grows toward the horizon, lines every unit
         let dy = horizon - s.y;
@@ -49,9 +64,11 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         // lines crowding toward the horizon turn into what they cover on average, a glow
         let dense = smoothstep(0.12, 0.35, max(fx, fz));
         let shimmer = 1.0 + 0.3 * audio * g.hat * sin(gz * 3.1 + g.time * 20.0) * (1.0 - dense);
-        let ground = sky.rgb * 0.15 + grid.rgb * mix(line, min(5.0 * (fx + fz), 0.6), dense) * shimmer * (1.0 + 0.6 * audio * g.kick);
+        var ground = sky.rgb * 0.15 + grid.rgb * mix(line * (1.0 + audio * g.kick), min(5.0 * (fx + fz), 0.6) * (1.0 + 0.3 * audio * g.kick), dense) * shimmer;
+        // the sun mirrored in the floor, a soft streak toward us
+        ground += sun_bottom.rgb * exp(-abs(s.x) * 5.0) * exp(-dy * 5.0) * 0.3 * (1.0 + audio * g.bass);
         // far off it goes into the haze the sky has at the horizon
-        col = mix(mix(sky.rgb, sun_bottom.rgb, 0.5), ground, exp(-z * 0.12));
+        col = mix(mix(sky.rgb, sun_bottom.rgb, 0.5), ground, exp(-z * 0.06)) + grid.rgb * exp(-dy * 60.0) * 0.3;
     }
     return vec4f(col, 1.0);
 }

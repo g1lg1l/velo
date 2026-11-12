@@ -28,7 +28,7 @@ The groups in the node menu:
 
 | Group | Nodes |
 |---|---|
-| **Generators** | Noise, Gradient, Shapes, Waveform, Shader (with 40 presets), Image, Video, Live (NDI, Spout and cameras in), Media List, Text, Text List, Particles, Mesh |
+| **Generators** | Noise, Gradient, Shapes, Waveform, Shader (with 76 presets), Image, Video, Live (NDI, Spout and cameras in), Media List, Text, Text List, Particles, Mesh |
 | **Effects** | Transform, Kaleido, Color, Blur, Feedback, Displace, Opacity, Levels, Threshold, Edges, Channels, Crop, Polar, UV Map, Lookup, Freeze, Time Machine, Key, Luma Blur, Shader FX (with 25 presets, from Glitch and VHS to LED Wall, God Rays and Shake) |
 | **Composite** | Blend, Mask, Merge |
 | **Control** | Switch, Grid, Layer Stack |
@@ -81,6 +81,12 @@ The bar at the bottom of the canvas, from the left:
 ### Arrange
 
 Arrange lays the graph out left to right: signals first, the Output last, each node level with what it's linked to, so linked nodes stay close. A node nothing feeds goes just before the first one it feeds. It also ties the cables that leave one output or meet at one node. The nodes slide into their places, and the whole move is one undo step.
+
+## Keeping a big graph in order
+
+- **Groups.** Select a few nodes and press <kbd>Ctrl</kbd> <kbd>G</kbd> (or right-click one, **Group**): a frame goes round them, with a name. The frame follows its nodes. Drag its title to move them all, click it to select them, double-click it to rename, right-click it to ungroup. A group changes nothing in the picture.
+- **Notes.** Right-click the empty canvas, **Write a note here**: words straight on the canvas, a title over a part of the graph or a note to self. Drag a note to move it, double-click it to edit, right-click it for its size (Large, Heading, Label) or to delete it.
+- **Bends.** Double-click a cable: it gets a point there, to drag it round whatever is in its way. Double-click the point to take it off. A bend is a [cable tie](./cable-ties) holding one cable.
 
 ### Hide the nodes
 

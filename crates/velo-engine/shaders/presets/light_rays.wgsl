@@ -35,10 +35,20 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let dir = s / max(r, 0.0001);
     let t = g.time * speed;
     // noise read around a circle: the rays go all the way round without a seam
-    let n = noise(dir * rays + vec2f(t, -t * 0.7)) * 0.65 + noise(dir * rays * 2.3 + vec2f(17.0 - t * 1.3, t * 0.5)) * 0.35;
-    let beam = pow(n, 3.0) * 2.5;
-    let fall = exp(-r / (reach * (1.0 + 0.3 * audio * g.kick)));
-    let shimmer = 1.0 + audio * g.hat * 0.5 * (noise(dir * rays * 9.0 + g.time * 8.0) - 0.5);
-    let light = (beam * fall * shimmer + exp(-r * 8.0) * 0.6) * intensity * (1.0 + 0.3 * audio * g.bass);
-    return vec4f(background.rgb + tint.rgb * light, 1.0);
+    let n = noise(dir * rays + vec2f(t, -t * 0.7)) * 0.6 + noise(dir * rays * 2.3 + vec2f(17.0 - t * 1.3, t * 0.5)) * 0.28 + noise(dir * rays * 6.1 + vec2f(t * 1.7, 31.0 + t)) * 0.12;
+    // a few strong shafts with dark between them, not an even wash
+    let beam = pow(smoothstep(0.25, 0.85, n), 2.0) * 3.2;
+    let fall = exp(-r / (reach * (1.0 + 0.4 * audio * g.kick)));
+    let shimmer = 1.0 + audio * g.hat * 0.6 * (noise(dir * rays * 9.0 + g.time * 8.0) - 0.5);
+    // dust drifting through the shafts, glinting where they're bright
+    let m = (s + vec2f(0.03 * sin(g.time * 0.2), g.time * 0.012)) * 55.0;
+    let cell = floor(m);
+    let h = hash(cell);
+    let mote = smoothstep(0.2, 0.0, length(fract(m) - 0.2 - 0.6 * vec2f(hash(cell + 13.0), hash(cell + 29.0)))) * step(0.72, h) * pow(0.5 + 0.5 * sin(g.time * (1.0 + 3.0 * h) + h * 50.0), 4.0);
+    let raw = (beam * fall * shimmer * (1.0 + 1.6 * mote) + exp(-r * 7.0) * 0.9 + exp(-r * 30.0) * 1.5) * intensity * (1.0 + 0.6 * audio * g.bass);
+    // rolled off, so loud music fills the shafts without burning them flat
+    let light = 1.7 * (1.0 - exp(-raw * 0.75));
+    // white where it's strongest, the tint where it thins
+    let col = background.rgb * (1.0 + 0.6 * fall) + tint.rgb * light + vec3f(1.0) * max(light - 1.0, 0.0) * 0.4;
+    return vec4f(col, 1.0);
 }

@@ -43,7 +43,7 @@ fn fbm(start: vec2f) -> f32 {
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let p = (uv - 0.5) * vec2f(g.aspect, 1.0) * scale;
     let t = g.time * speed;
-    let bend = warp * (1.0 + 0.15 * audio * g.bass);
+    let bend = warp * (1.0 + 0.3 * audio * g.bass);
     // noise moved by noise, moved by noise again
     let q = vec2f(fbm(p + vec2f(0.0, t)), fbm(p + vec2f(5.2, 1.3) - t * 0.8));
     let r = vec2f(fbm(p + bend * q + vec2f(1.7, 9.2) + t * 0.6), fbm(p + bend * q + vec2f(8.3, 2.8) - t * 0.5));
@@ -52,5 +52,5 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     col = mix(col, color_c.rgb, clamp(smoothstep(0.45, 0.8, r.x) * f * 1.6, 0.0, 1.0));
     col *= 0.6 + 0.8 * f;
     col += color_c.rgb * audio * g.hat * 0.25 * smoothstep(0.65, 0.75, f);
-    return vec4f(col * (1.0 + 0.2 * audio * g.kick), 1.0);
+    return vec4f(col * (1.0 + 0.4 * audio * g.kick), 1.0);
 }

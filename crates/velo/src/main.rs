@@ -47,7 +47,7 @@ use eframe::egui::{self, Event, Frame, Id, Response, RichText};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use theme::Theme;
-use velo_core::{CANVAS, Category, Curve, LAUNCH_BEATS, Layer, LayerBlend, Mapping, ParamInfo, Project, Quantize, SOURCES, Scene, Session, Target, Transition, VARIATIONS, node_kind};
+use velo_core::{CANVAS, Category, Curve, LAUNCH_BEATS, Launch, Layer, LayerBlend, Mapping, ParamInfo, Project, Quantize, SOURCES, Scene, Session, Target, Transition, VARIATIONS, node_kind};
 use velo_engine::Engine;
 use widgets::ModView;
 
@@ -146,6 +146,8 @@ struct Settings {
     demo_seen: bool,
     /// The frame-time HUD over the canvas (click the fps in the top bar).
     hud: bool,
+    /// The scenes as a list of slim rows (many fit) instead of cards with their pictures large.
+    scenes_compact: bool,
     /// The outside code editor for shader files: an app on macOS ("Visual Studio Code"), a
     /// command elsewhere ("code"); empty, the system's app for .wgsl files.
     editor: String,
@@ -300,6 +302,8 @@ struct App {
     usage: usage::Usage,
     /// The splash while Velo starts: when it began to fade, once all's ready; none once gone.
     splash: Option<Option<f64>>,
+    /// When the splash came up (set on its first frame): what its waits count from.
+    splash_from: Option<f64>,
     /// The engine and the audio input; none in headless tests (or without a GPU).
     live: Option<live::Live>,
     /// Controllers: what came in, and MIDI learn.
@@ -312,6 +316,8 @@ struct App {
     space: Option<(f64, bool)>,
     /// `VELO_DEMO_SCENES`: a scene to select once the first one is live, and whether to launch it.
     demo_drop: Option<(String, bool)>,
+    /// The start screen is up: the recent projects, a new one, one from a file, the demo.
+    start: bool,
     /// When the last UI frame started: the next one never comes sooner than the display needs.
     painted: Instant,
     /// What the last frame waited for that, in seconds: not the UI's cost.
@@ -363,6 +369,7 @@ impl App {
             cpu: Cpu::default(),
             usage: usage::Usage::new(),
             splash: (std::env::var_os("VELO_CAPTURE_TO").is_none() || std::env::var_os("VELO_DEMO_SPLASH").is_some()).then_some(None),
+            splash_from: None,
             live,
             restarted: None,
             pilot: Pilot::default(),
@@ -371,6 +378,7 @@ impl App {
             assigning: None,
             space: None,
             demo_drop: None,
+            start: false,
             painted: Instant::now(),
             waited: 0.0,
             file: None,
@@ -382,6 +390,11 @@ impl App {
             recovery_later: false,
             recovery: files::take_recovery(),
         };
+        // opened by itself, Velo always starts on the start screen, unsaved work from last time
+        // offered there (a project loading below, the first run's demo too, closes it); a
+        // screenshot run only with VELO_DEMO_START
+        let shots = std::env::var_os("VELO_CAPTURE_TO").is_some();
+        app.start = std::env::args_os().nth(1).is_none() && (!shots || std::env::var_os("VELO_DEMO_START").is_some());
         // `velo show.velo` (also what double-clicking a project file does)
         if let Some(path) = std::env::args_os().nth(1) {
             app.request(files::Pending::Open(path.into()));
@@ -530,6 +543,10 @@ impl App {
         }
         if std::env::var_os("VELO_DEMO_PREFS").is_some() {
             app.show_settings = true;
+        }
+        // VELO_DEMO_COMPACT: the scenes as the compact list (screenshots)
+        if std::env::var_os("VELO_DEMO_COMPACT").is_some() {
+            app.settings.scenes_compact = true;
         }
         // VELO_DEMO_HUD: the frame-time HUD on (screenshots)
         if std::env::var_os("VELO_DEMO_HUD").is_some() {
@@ -761,6 +778,19 @@ impl App {
                     self.launch(&scene);
                 }
             }
+            "stage.auto" => {
+                // back to playing by itself: the autopilot on, every layer on, and off a scene
+                // launched by hand that the autopilot leaves alone
+                self.settings.autopilot.on = true;
+                if let Some(live) = &mut self.live {
+                    live.off.clear();
+                }
+                if self.held_by_hand() {
+                    self.turn(None);
+                }
+            }
+            // a drop by hand, heard or not: the next scene at once, through white
+            "stage.drop" => self.turn(Some(Launch { transition: Transition::Flash, duration: 1.0, quantize: Quantize::Off })),
             id if id.starts_with("stage.scene_") => {
                 let n: usize = id["stage.scene_".len()..].parse().unwrap_or(0);
                 if let Some(scene) = n.checked_sub(1).and_then(|i| self.session.project.scenes.get(i)).map(|s| s.id.clone()) {
@@ -777,6 +807,8 @@ impl App {
             "canvas.select_all" => self.select_all_nodes(),
             "canvas.toggle" => self.toggle_nodes(),
             "canvas.duplicate" => self.duplicate_nodes(),
+            // the selected nodes framed together under a name (its title's typed on the canvas)
+            "canvas.group" if !self.canvas.selected.is_empty() => self.run("group.add", json!({ "nodes": self.canvas.selected })),
             "canvas.delete" => self.delete_selection(),
             _ => self.run(id, json!({})),
         }
@@ -787,6 +819,27 @@ impl App {
         if let (Some(live), Some(scene)) = (&mut self.live, self.session.project.scene(scene)) {
             live.launch(scene);
         }
+    }
+
+    /// A scene left out of the autopilot is on the output: launched by hand, it stays until the
+    /// autopilot is asked back (`stage.auto`) or another scene is launched.
+    fn held_by_hand(&self) -> bool {
+        let live = self.live.as_ref().and_then(|l| l.live_scene());
+        live.and_then(|id| self.session.project.scene(id)).is_some_and(|s| s.manual && s.layer == Layer::Scene)
+    }
+
+    /// The autopilot's next scene (any but the one out) launched now, `launch`'s way or its own,
+    /// whether the autopilot is on or not; its next turn counts from here.
+    fn turn(&mut self, launch: Option<Launch>) {
+        let Some(live) = &mut self.live else { return };
+        let random = (live.beats() * 7919.0).fract().abs();
+        let Some(id) = next_turn(&self.session.project.scenes, live.live_scene(), Some(random)) else { return };
+        let Some(scene) = self.session.project.scene(&id) else { return };
+        match launch {
+            Some(launch) => live.launch_with(scene, launch),
+            None => live.launch(scene),
+        }
+        self.pilot.next = None;
     }
 
     /// A dialog or menu has the keyboard.
@@ -869,6 +922,12 @@ impl App {
                     self.settings.panels.scenes = false;
                 }
                 self.autopilot_button(ui, &t);
+                // cards with their pictures large, or slim rows: more of them in view
+                let compact = self.settings.scenes_compact;
+                let (icon, tip) = if compact { (icons::SQUARES_FOUR, tr!("Show the scenes as cards")) } else { (icons::LIST_BULLETS, tr!("Show the scenes as a compact list")) };
+                if kit::icon_button(ui, &t, icon, tip, false).clicked() {
+                    self.settings.scenes_compact = !compact;
+                }
                 // a new scene: empty, or from a template
                 let plus = kit::icon_button(ui, &t, icons::PLUS, &self.tip(tr!("New scene"), "scene.add"), false);
                 kit::menu(&t, &plus).width(300.0).show(|ui| {
@@ -910,7 +969,7 @@ impl App {
             return;
         }
         kit::scroll(ui, &t, "scenes", true, t.bg_panel, |ui| {
-            ui.spacing_mut().item_spacing.y = t.gap * 1.5;
+            ui.spacing_mut().item_spacing.y = if self.settings.scenes_compact { 2.0 } else { t.gap * 1.5 };
             let cards: Vec<egui::Rect> = scenes.iter().enumerate().map(|(i, scene)| self.scene_card(ui, &t, i, scene, active.as_ref() == Some(&scene.id), scenes.len())).collect();
             self.scene_drop(ui, &t, &scenes, &cards);
         });
@@ -945,7 +1004,8 @@ impl App {
             None => widgets::CardState { selected: active, layer, ..Default::default() },
         };
         // the card itself drags (a drag-only widget over it would eat its clicks)
-        let resp = widgets::scene_card(ui, t, i, &scene.name, &scene.icon, widgets::hue_of(&scene.id), state).interact(egui::Sense::drag());
+        let draw = if self.settings.scenes_compact { widgets::scene_row } else { widgets::scene_card };
+        let resp = draw(ui, t, i, &scene.name, &scene.icon, widgets::hue_of(&scene.id), state).interact(egui::Sense::drag());
         if resp.drag_started() {
             egui::DragAndDrop::set_payload(ui.ctx(), widgets::SceneDrag(scene.id.clone()));
         }
@@ -1015,7 +1075,8 @@ impl App {
                     ui.close();
                 }
             });
-            if ui.button(format!("{}  {}", icons::TRASH, tr!("Delete"))).clicked() {
+            // a whole scene gone: held, not clicked
+            if kit::hold_button(ui, t, Some(icons::TRASH), tr!("Hold to delete"), tr!("Deleted"), 0.8) {
                 self.run("scene.remove", json!({ "scene": scene.id }));
             }
             ui.separator();
@@ -1230,6 +1291,11 @@ impl App {
                 kit::section(ui, &t, icons::SELECTION_PLUS, tr!("SELECTION"), true, |ui| {
                     ui.label(RichText::new(tr!("{} nodes selected", selected.len())).font(t.body()).color(t.fg_text));
                     kit::hint(ui, &t, &tr!("Drag one to move them all. Delete removes them, {} duplicates them.", duplicate));
+                    ui.add_space(t.gap);
+                    // framed together under a name, to keep a big graph in order
+                    if kit::button(ui, &t, Some(icons::SQUARES_FOUR), &self.tip(tr!("Group"), "canvas.group"), false).clicked() {
+                        self.command("canvas.group");
+                    }
                 });
                 return;
             }
@@ -1384,25 +1450,20 @@ impl App {
             })
             .collect();
         let (node_id, kind_id) = (node.id.clone(), node.kind.clone());
-        let wired = |ui: &mut egui::Ui, port: &str, arrow: &str, to: &[String]| {
-            ui.horizontal(|ui| {
-                ui.add_sized(egui::vec2(36.0, t.text_md + 4.0), egui::Label::new(RichText::new(port).font(Theme::mono(t.text_sm)).color(t.fg_muted)));
-                let text = if to.is_empty() { RichText::new(tr!("Not wired")).color(t.fg_muted) } else { RichText::new(format!("{arrow}  {}", to.join(", "))).color(t.fg_text) };
-                ui.add(egui::Label::new(text).truncate());
-            });
-        };
-        // what comes in and goes out, one section: past four ports a side, the wired ones and a
-        // count of the rest
+        // what comes in and goes out, one section drawn as a patch bay: the node's edge down the
+        // left, a jack a port, a cable off to what it's wired to. Past four ports a side, the
+        // wired ones and a count of the rest
         kit::section(ui, t, icons::PLUGS_CONNECTED, tr!("WIRES"), true, |ui| {
-            for (ports, arrow) in [(&inputs, "←"), (&outputs, "→")] {
-                let many = ports.len() > 4;
-                let free = ports.iter().filter(|(_, to)| to.is_empty()).count();
-                for (port, to) in ports.iter().filter(|(_, to)| !many || !to.is_empty()) {
-                    wired(ui, port, arrow, to);
-                }
-                if many && free > 0 {
-                    kit::hint(ui, t, &tr!("{} more, not wired", free));
-                }
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let sides = [(&inputs, true), (&outputs, false)];
+            let shown: Vec<(&String, &Vec<String>, bool)> = sides.iter().flat_map(|(ports, incoming)| ports.iter().filter(|(_, to)| ports.len() <= 4 || !to.is_empty()).map(|(port, to)| (port, to, *incoming))).collect();
+            for (i, (port, to, incoming)) in shown.iter().enumerate() {
+                widgets::wire_row(ui, t, port, *incoming, to, (i > 0, i + 1 < shown.len()));
+            }
+            let free: usize = sides.iter().filter(|(ports, _)| ports.len() > 4).map(|(ports, _)| ports.iter().filter(|(_, to)| to.is_empty()).count()).sum();
+            if free > 0 {
+                ui.add_space(t.gap);
+                kit::hint(ui, t, &tr!("{} more, not wired", free));
             }
         });
         if velo_core::is_shader(&kind_id) {
@@ -1774,7 +1835,8 @@ impl App {
     fn autopilot(&mut self, dt: f32, now: f64) {
         let a = self.settings.autopilot;
         let Some(live) = &self.live else { return };
-        if !a.on || self.session.project.scenes.len() < 2 || self.pilot.timed != a.timed {
+        // a scene launched by hand that takes no turns is the performer's: it stays
+        if !a.on || self.held_by_hand() || self.session.project.scenes.len() < 2 || self.pilot.timed != a.timed {
             (self.pilot.next, self.pilot.timed) = (None, a.timed);
             return;
         }
@@ -2476,7 +2538,7 @@ impl App {
         };
         let key = format!("random {node}");
         for (param, infos) in &shader.controls {
-            if matches!(param.ty, ParamType::Color | ParamType::Vec4) || live::automagic(&param.id) || ["opacity", "count", "font"].contains(&param.id.as_str()) {
+            if matches!(param.ty, ParamType::Color | ParamType::Vec4) || live::automagic(&param.id) || ["opacity", "count", "font", "inputs"].contains(&param.id.as_str()) {
                 continue;
             }
             let mut value = set.get(&param.id).copied().unwrap_or(param.default);
@@ -2525,13 +2587,28 @@ impl App {
             if links.is_empty() {
                 kit::hint(ui, t, tr!("Nothing yet. Drag from one of its outputs onto a node to choose what it moves."));
             }
-            for (target, m, port) in &links {
+            // under the output each comes from: its name once, then a row for each thing it moves
+            let mut by_output = links.clone();
+            by_output.sort_by_key(|l| l.2);
+            let mut heading = None;
+            ui.spacing_mut().item_spacing.y = 3.0;
+            for (target, m, port) in &by_output {
                 // "Kick → Kaleido · Zoom", the parameter as its inspector names it
                 let param_name = param_name(target, &m.param);
                 let from = if outputs.len() > 1 { outputs.get(usize::from(*port)).map_or("?", |o| source_label(o)) } else { tr!("Out") };
-                let title = format!("{from} → {} · {param_name}", target.name);
-                let r = kit::button(ui, t, None, &format!("{title}   {:+.0}%", m.amount * 100.0), false);
-                if let Some(edit) = widgets::mapping_popup(t, &r, &title, m) {
+                if heading != Some(*port) {
+                    if heading.is_some() {
+                        ui.add_space(t.gap);
+                    }
+                    heading = Some(*port);
+                    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 20.0), egui::Sense::hover());
+                    ui.painter().circle_filled(row.left_center() + egui::vec2(6.0, 0.0), 3.0, t.cat_signal);
+                    ui.painter().text(row.left_center() + egui::vec2(16.0, 0.0), egui::Align2::LEFT_CENTER, from.to_uppercase(), Theme::mono(t.text_xs), t.fg_text);
+                    let count = by_output.iter().filter(|l| l.2 == *port).count();
+                    ui.painter().text(row.right_center() - egui::vec2(4.0, 0.0), egui::Align2::RIGHT_CENTER, count.to_string(), Theme::mono(t.text_xs), t.fg_muted);
+                }
+                let r = widgets::move_row(ui, t, &target.name, &param_name, m.amount);
+                if let Some(edit) = widgets::mapping_popup(t, &r, &format!("{from} → {} · {param_name}", target.name), m) {
                     map_ops(&edit, &target.id, m, &mut ops);
                     close |= edit.done;
                 }
@@ -2598,8 +2675,8 @@ impl App {
         let bound: Vec<(String, String)> =
             shader.controls.iter().flat_map(|(p, infos)| (0..infos.len()).map(move |a| if p.ty == ParamType::Vec2 { format!("{}.{}", p.id, ["x", "y"][a]) } else { p.id.clone() })).filter_map(|k| Some((k.clone(), bound(&k)?))).collect();
         let (mut learn, mut forget, mut asks) = (None, None, Vec::new());
-        // a picture made from nothing (not a file's) can be thrown somewhere new
-        let random = node_kind(kind).is_some_and(|k| k.category == Category::Generator) && !velo_core::shows_media(kind) && kind != velo_core::MEDIA_LIST;
+        // what makes or changes a picture (not a file's) can be thrown somewhere new
+        let random = node_kind(kind).is_some_and(|k| matches!(k.category, Category::Generator | Category::Effect | Category::Composite)) && !velo_core::shows_media(kind) && kind != velo_core::MEDIA_LIST;
         let (mut shuffle, mut reset) = (false, false);
         // what's set apart from how the node came
         let changed = shader.controls.iter().any(|(p, _)| set.get(&p.id).is_some_and(|v| *v != p.default));
@@ -2616,7 +2693,10 @@ impl App {
             let mut switches = Vec::new();
             // Automagic first: what the node does with the music on its own
             let magic = shader.controls.iter().position(|(p, _)| live::automagic(&p.id));
-            let order = magic.into_iter().chain((0..shader.controls.len()).filter(|&i| Some(i) != magic));
+            // then what kind of thing it does (a mode, a shape: its choices), then how much
+            let choice = |i: &usize| shader.controls[*i].0.ty == ParamType::Int && !shader.controls[*i].0.names.is_empty();
+            let rest = (0..shader.controls.len()).filter(|&i| Some(i) != magic);
+            let order = magic.into_iter().chain(rest.clone().filter(choice)).chain(rest.filter(|i| !choice(i)));
             for index in order {
                 let (param, infos) = &shader.controls[index];
                 // the loop's part is the file's timeline, not two sliders
@@ -2653,7 +2733,16 @@ impl App {
                         let value = driver.map_or(value, |(_, v)| [v, 0.0, 0.0, 0.0]);
                         let choices: Vec<&str> = param.names.iter().map(|n| i18n::t(n)).collect();
                         let at = (value[0].round().max(0.0) as usize).min(choices.len() - 1);
-                        let (picked, r) = if choices.len() <= 3 {
+                        let (picked, r) = if kind == velo_core::AUDIO && param.id == "mode" {
+                            // how it hears the drums: each way said, not two words on a switch
+                            kit::label(ui, t, tr!("How it hears the drums"));
+                            let says = [
+                                (icons::SLIDERS_HORIZONTAL, tr!("A hit is a band rising past its threshold: you set each band and its line.")),
+                                (icons::ROBOT, tr!("A drum model trained on full mixes hears kick, snare and hat by itself.")),
+                            ];
+                            let items: Vec<(&str, &str, &str)> = choices.iter().zip(says).map(|(name, (icon, what))| (icon, *name, what)).collect();
+                            widgets::options(ui, t, at, &items)
+                        } else if choices.len() <= 3 {
                             kit::label(ui, t, i18n::t(infos[0].name));
                             kit::segmented_with(ui, t, at, &choices)
                         } else {
@@ -2690,9 +2779,6 @@ impl App {
                         if let Some(ask) = param_menu(t, &r, reset, Some((waiting.as_ref() == Some(&target), binding)), Some((&names, driver.map(|d| d.0)))) {
                             asks.push((ask, param.id.clone(), param.default, [infos[0].min, infos[0].max]));
                         }
-                        if kind == velo_core::AUDIO && param.id == "mode" {
-                            kit::hint(ui, t, tr!("Simple: a hit is a band rising past its threshold. Model: a drum model trained on full mixes hears kick, snare and hat. Gate: anything quieter counts as silence."));
-                        }
                         ui.add_space(t.gap);
                     }
                     ParamType::Color => {
@@ -2718,6 +2804,20 @@ impl App {
                         ui.add_space(t.gap);
                     }
                     _ => {
+                        // a small whole number nothing moves (how many inputs a Blend takes):
+                        // picked from a row of cells, one a value
+                        let moved = mappings.iter().any(|m| m.param == param.id) || scene.driver(node, &param.id).is_some() || bound.iter().any(|(k, _)| *k == param.id);
+                        if param.ty == ParamType::Int && infos[0].max - infos[0].min <= 15.0 && !moved && !learn_on && assigning.is_none() {
+                            let (r, picked) = widgets::count(ui, t, &infos[0], value[0]);
+                            if let Some(v) = picked {
+                                edits.push((param.id.clone(), [v, 0.0, 0.0, 0.0], false));
+                            }
+                            let target = Target::Param { node: node.to_string(), param: param.id.clone() };
+                            if let Some(ask) = param_menu(t, &r, value[0] != param.default[0], Some((waiting.as_ref() == Some(&target), None)), Some((&names, None))) {
+                                asks.push((ask, param.id.clone(), param.default, [infos[0].min, infos[0].max]));
+                            }
+                            continue;
+                        }
                         for (axis, info) in infos.iter().enumerate() {
                             // what mappings call it: a vec2's axes are "offset.x" and "offset.y"
                             let key = if param.ty == ParamType::Vec2 { format!("{}.{}", param.id, ["x", "y"][axis]) } else { param.id.clone() };
@@ -3191,6 +3291,7 @@ impl App {
             let at = self.center_rect.map_or(egui::pos2(900.0, 80.0), |r| r.right_top() + egui::vec2(-300.0 - t.pad, 240.0));
             egui::Window::new("inspector").title_bar(false).frame(frame).default_pos(at).default_size([300.0, 520.0]).min_size([240.0, 200.0]).resizable(true).constrain(true).show(&ctx, |ui| self.inspector(ui));
         }
+        self.start_ui(&ctx);
         self.node_menu(&ctx);
         self.preferences(&ctx);
         self.code_editor(&ctx);
@@ -3274,12 +3375,14 @@ impl App {
             cpu: Cpu::default(),
             usage: usage::Usage::new(),
             splash: None,
+            splash_from: None,
             live: None,
             midi: midi::Midi::default(),
             learn: midi::Learn::default(),
             assigning: None,
             space: None,
             demo_drop: None,
+            start: false,
             painted: Instant::now(),
             waited: 0.0,
             file: None,

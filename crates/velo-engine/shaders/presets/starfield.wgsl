@@ -35,11 +35,11 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         let d = length(fract(q) - 0.5 - at);
         // far stars small and faint, near ones bright; gone before they get too close
         let fade = z * (1.0 - smoothstep(0.85, 1.0, z));
-        let r = size * 0.05 * (0.4 + h) * (1.0 + 0.5 * audio * g.kick);
+        let r = size * 0.06 * (0.4 + h) * (1.0 + audio * g.kick);
         let star = (1.0 - smoothstep(0.0, r, d)) + exp(-d / r) * 0.5 * (1.0 - smoothstep(0.25, 0.5, d));
         let twinkle = 1.0 + audio * g.hat * (hash(cell + floor(g.time * 20.0)) - 0.5);
         let on = step(1.0 - density, fract(h * 7.31));
-        col += mix(tint.rgb, vec3f(1.0), h) * star * fade * on * twinkle;
+        col += mix(tint.rgb, vec3f(1.0), h) * star * fade * on * twinkle * 1.4;
     }
-    return vec4f(col * (1.0 + 0.3 * audio * g.bass), 1.0);
+    return vec4f(col * (1.0 + 0.6 * audio * g.bass + 0.4 * audio * g.kick), 1.0);
 }

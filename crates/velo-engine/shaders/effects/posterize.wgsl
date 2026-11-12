@@ -15,7 +15,8 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let original = textureSample(src, smp, uv);
     let gray = vec3f(dot(original.rgb, vec3f(0.2126, 0.7152, 0.0722)));
     let saturated = mix(gray, original.rgb, saturation);
-    let color = clamp((saturated - 0.5) * contrast + 0.5 + 0.08 * music * g.kick, vec3f(0.0), vec3f(1.0));
+    // the kick brightens what is lit; black stays black
+    let color = clamp(((saturated - 0.5) * contrast + 0.5) * (1.0 + 0.5 * music * g.kick), vec3f(0.0), vec3f(1.0));
     let steps = f32(max(levels - 1, 1));
     return vec4f(floor(color * steps + 0.5) / steps, original.a);
 }

@@ -1,7 +1,7 @@
 /*{
   "name": "Edge Glow",
   "category": "effect",
-  "description": "Soft luminous Sobel outlines flare with the high frequencies.",
+  "description": "Soft luminous outlines round every edge, flaring with the highs and swelling on the kick.",
   "inputs": [{ "id": "src", "type": "texture" }],
   "params": [
     { "id": "radius", "type": "float", "default": 2.0, "min": 1.0, "max": 8.0 },
@@ -14,7 +14,7 @@
 
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let original = textureSample(src, smp, uv);
-    let d = radius / g.resolution;
+    let d = radius * (1.0 + music * g.kick) / g.resolution;
     let weights = vec3f(0.2126, 0.7152, 0.0722);
     let tl = dot(textureSample(src, smp, uv + d * vec2f(-1.0, -1.0)).rgb, weights);
     let tc = dot(textureSample(src, smp, uv + d * vec2f(0.0, -1.0)).rgb, weights);
@@ -27,6 +27,6 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let gradient = vec2f(tr + 2.0 * mr + br - tl - 2.0 * ml - bl, bl + 2.0 * bc + br - tl - 2.0 * tc - tr) * 0.25;
     let edge = max(length(gradient) - threshold, 0.0);
     // A soft shoulder lights weak edges around the bright core.
-    let glow = (sqrt(edge) * 0.6 + edge * 0.4) * strength * (1.0 + 0.5 * music * g.high);
+    let glow = (sqrt(edge) * 0.6 + edge * 0.4) * strength * (1.0 + music * (1.2 * g.high + 0.8 * g.kick));
     return vec4f(original.rgb + tint.rgb * glow, original.a);
 }

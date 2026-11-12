@@ -142,7 +142,7 @@ After Bitwig's modulators and Serum's drag-to-modulate.
 
 ### 7.6 Keyboard
 
-The stage keys: `1` to `9` launch scene n · `Space` (a tap) launches the selected scene · `T` tap tempo · `B` blackout · `F` freeze · `P` show or hide the preview · `L` MIDI learn. They stay free of every other command.
+The stage keys: `1` to `9` launch scene n · `Space` (a tap) launches the selected scene · `0` auto (the autopilot on, every layer back on) · `D` drop (the autopilot's next scene now, through a flash) · `T` tap tempo · `B` blackout · `F` freeze · `P` show or hide the preview · `L` MIDI learn. They stay free of every other command.
 
 Everywhere: `Cmd+K` command palette · `Cmd+S` save · `Cmd+Shift+S` save as · `Cmd+O` open · `Cmd+N` new · `Cmd+Z` undo · `Cmd+Shift+Z` or `Cmd+Y` redo · `Cmd+I` the AI · `Cmd+Shift+H` frame-time HUD · `Cmd+Shift+T` test pattern · `Cmd+,` preferences · `F1` the shortcut sheet.
 

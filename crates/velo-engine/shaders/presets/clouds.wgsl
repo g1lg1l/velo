@@ -45,13 +45,13 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let t = g.time * speed;
     let p = (uv - 0.5) * vec2f(g.aspect, 1.0) * scale + vec2f(t, t * 0.3);
     let n = fbm(p + vec2f(0.0, t * 0.2));
-    let c = cover + 0.1 * audio * g.bass;
+    let c = cover + 0.2 * audio * g.bass;
     let low = 0.62 - 0.4 * c;
     let density = smoothstep(low, low + 0.25, n);
     // thinner toward the light: brighter there
     let toward = fbm(p + vec2f(0.0, t * 0.2) + vec2f(-0.04, -0.07));
     let lit = clamp((n - toward) * 6.0 + 0.6, 0.0, 1.0);
-    let shade = mix(shadow.rgb, cloud.rgb, lit) * (1.0 + 0.25 * audio * g.kick);
+    let shade = mix(shadow.rgb, cloud.rgb, lit) * (1.0 + 0.4 * audio * g.kick);
     let air = mix(sky.rgb * 1.15, sky.rgb * 0.75, uv.y);
     return vec4f(mix(air, shade, density), 1.0);
 }

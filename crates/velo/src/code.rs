@@ -173,11 +173,14 @@ impl App {
 
     /// Preferences → Code: which outside editor opens shader files.
     pub fn prefs_code(&mut self, ui: &mut Ui, t: &Theme) {
-        kit::section(ui, t, icons::CODE, tr!("CODE"), true, |ui| {
+        kit::card(ui, t, tr!("CODE"), |ui| {
             ui.label(RichText::new(tr!("Editor for shader files")).font(t.body()).color(t.fg_text));
+            ui.add_space(2.0);
             kit::hint(ui, t, tr!("A Shader node's code opens in it. Empty, the system picks."));
+            ui.add_space(t.gap + 2.0);
             let hint = if cfg!(target_os = "macos") { tr!("The system's choice, or an app: Visual Studio Code, Cursor, Zed…") } else { tr!("The system's choice, or a command: code, cursor, zed…") };
-            ui.add(egui::TextEdit::singleline(&mut self.settings.editor).hint_text(hint).desired_width(f32::INFINITY));
+            ui.add(kit::field(&mut self.settings.editor).hint_text(hint).desired_width(f32::INFINITY));
+            ui.add_space(t.pad);
         });
     }
 }

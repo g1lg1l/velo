@@ -78,8 +78,10 @@ pub enum Pending {
     Restart,
     /// The demo: the Velo template, live (docs/product.md's first five minutes).
     Demo,
-    /// The window's close button, with work unsaved.
+    /// The window's close button, with work unsaved; the project menu's Quit.
     Quit,
+    /// Out of the project, back to the start screen's list.
+    Start,
 }
 
 /// Where Velo keeps its settings, autosave and crash lock: `VELO_DATA` when set (a
@@ -379,10 +381,24 @@ impl App {
         self.file.as_deref().and_then(Path::file_stem).map_or(tr!("Untitled").into(), |s| s.to_string_lossy().into_owned())
     }
 
+    /// The work Velo closed with unsaved last time, open again (the start screen's Restore).
+    pub fn restore_recovery(&mut self) {
+        if let Some(project) = self.recovery.take() {
+            self.load_project(project, None, Project::default());
+        }
+    }
+
     fn load_project(&mut self, project: Project, file: Option<PathBuf>, saved: Project) {
+        // a project is open: the start screen has done its part
+        self.start = false;
         self.session = Session::with_project(project);
         if let Some(live) = &mut self.live {
             live.restart();
+        }
+        // the loading screen again while this project's scenes are built and pictured (not for
+        // a new or a one-scene project, ready at once; not in a screenshot run)
+        if self.session.project.scenes.len() > 1 && std::env::var_os("VELO_CAPTURE_TO").is_none() {
+            (self.splash, self.splash_from) = (Some(None), None);
         }
         self.saved = saved;
         self.file = file;
@@ -415,6 +431,10 @@ impl App {
             },
             Pending::Restart => self.updates.restart = true,
             Pending::Quit => self.quitting = Some(false),
+            Pending::Start => {
+                self.load_project(Project::default(), None, Project::default());
+                self.start = true;
+            }
             Pending::Demo => {
                 let demo = crate::templates::demo();
                 self.load_project(demo.clone(), None, demo);
@@ -637,8 +657,14 @@ impl App {
                 ui.label(RichText::new(tr!("Save changes to {}?", name)).strong().color(t.fg_text));
                 ui.label(RichText::new(tr!("Your changes will be lost if you don't save them.")).color(t.fg_muted));
                 ui.add_space(t.gap);
-                let shown = kit::actions(ui, &t, &[(kit::Variant::Primary, None, tr!("Save")), (kit::Variant::Secondary, None, tr!("Don't Save")), (kit::Variant::Ghost, None, tr!("Cancel"))]);
-                shown.iter().position(egui::Response::clicked)
+                // the way out on the left, what's asked for on the right, as the system's own dialogs
+                let shown = kit::actions(ui, &t, &[
+                    (kit::Variant::Ghost, Some(crate::icons::X), tr!("Cancel")),
+                    (kit::Variant::Secondary, Some(crate::icons::TRASH), tr!("Don't Save")),
+                    (kit::Variant::Primary, Some(crate::icons::FLOPPY_DISK), tr!("Save")),
+                ]);
+                // (0 saves, 1 doesn't, 2 cancels)
+                shown.iter().position(egui::Response::clicked).map(|i| 2 - i)
             });
             match if closed { Some(2) } else { choice } {
                 Some(0) if self.save() => self.perform(action),
@@ -653,12 +679,15 @@ impl App {
                 _ => self.pending = Some(action), // still open (or save was cancelled)
             }
         }
-        if let Some(project) = self.recovery.take() {
+        // (the start screen offers it itself, as one of the things to open)
+        if !self.start && let Some(project) = self.recovery.take() {
             let (choice, closed) = kit::modal(ctx, &t, "recover", tr!("Restore unsaved work?"), 380.0, |ui| {
                 ui.label(RichText::new(tr!("Velo closed with unsaved changes last time. You can pick up where you left off.")).color(t.fg_muted));
                 ui.add_space(t.gap);
-                let shown = kit::actions(ui, &t, &[(kit::Variant::Primary, None, tr!("Restore")), (kit::Variant::Secondary, None, tr!("Discard"))]);
-                shown.iter().position(egui::Response::clicked)
+                // throwing the work away can't be undone: held, not clicked
+                let restore = kit::action(ui, &t, kit::Variant::Primary, Some(crate::icons::CLOCK_COUNTER_CLOCKWISE), tr!("Restore")).clicked();
+                let discard = kit::hold_button(ui, &t, Some(crate::icons::TRASH), tr!("Hold to discard"), tr!("Discarded"), 1.0);
+                if restore { Some(0) } else { discard.then_some(1) }
             });
             match choice {
                 Some(0) => self.load_project(project, None, Project::default()),

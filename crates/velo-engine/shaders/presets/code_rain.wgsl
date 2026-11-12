@@ -45,5 +45,6 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let fade = pow(1.0 - behind / trail, 1.5);
     let head_light = smoothstep(1.5, 0.0, behind) * (1.0 + audio * g.kick);
     let color = mix(tint.rgb * fade, vec3f(0.85, 1.0, 0.9), head_light);
-    return vec4f(color * lit, 1.0);
+    // a faint light behind the glyphs, so a trail reads as one streak; the bass lifts it all
+    return vec4f((color * lit + tint.rgb * fade * 0.08) * (1.0 + 0.6 * audio * g.bass), 1.0);
 }

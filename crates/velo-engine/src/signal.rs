@@ -99,7 +99,7 @@ pub const TIME_SHAPES: [&str; 3] = ["Ramp", "Back and forth", "Wave"];
 pub const COUNT_MODES: [&str; 4] = ["Up", "Down", "Ping-pong", "Random"];
 /// How long a Sequencer's step is, in its `rate` parameter's order, and in beats.
 pub const SEQ_RATES: [&str; 5] = ["1/4 beat", "1/2 beat", "Beat", "2 beats", "Bar"];
-const SEQ_BEATS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
+pub const SEQ_BEATS: [f64; 5] = [0.25, 0.5, 1.0, 2.0, 4.0];
 /// A Compare's ways, in its `operation` parameter's order.
 pub const COMPARE_OPS: [&str; 2] = ["Above", "Below"];
 /// How a Smooth follows, in its `mode` parameter's order: at a steady speed, or slowing as it nears.

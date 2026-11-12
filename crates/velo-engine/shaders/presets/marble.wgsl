@@ -45,14 +45,14 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let t = g.time * speed;
     // the stone folded over itself, a little more with the bass
     let fold = vec2f(fbm(p + vec2f(t, 0.0)), fbm(p + vec2f(5.2, 1.3 - t)));
-    let q = p + fold * warp * 1.5 * (1.0 + 0.15 * audio * g.bass);
+    let q = p + fold * warp * 1.5 * (1.0 + 0.3 * audio * g.bass);
     let v = sin(q.x * 2.0 + q.y + fbm(q * 2.0) * 5.0);
     let fine = sin(q.x * 5.0 - q.y * 3.0 + fbm(q * 3.0 + 7.0) * 7.0);
     let veins = pow(1.0 - abs(v), 5.0) * 0.85 + pow(1.0 - abs(fine), 18.0) * 0.35;
     var col = mix(color_a.rgb, color_b.rgb, clamp(veins, 0.0, 1.0));
     col *= 0.88 + 0.16 * fbm(p * 3.0 - 4.0);
-    // a sheen sweeping over on the kick, glints with the hats
-    col += 0.15 * audio * g.kick * (1.0 - veins);
+    // the veins glow warm on the kick, glints with the hats
+    col += vec3f(1.0, 0.75, 0.4) * clamp(veins, 0.0, 1.0) * 0.6 * audio * g.kick;
     col += audio * g.hat * step(0.996, hash(s * 500.0 + floor(g.time * 10.0))) * 0.8;
     return vec4f(col, 1.0);
 }

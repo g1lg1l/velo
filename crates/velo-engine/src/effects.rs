@@ -55,7 +55,7 @@ mod tests {
             let json = source.trim_start().strip_prefix("/*").unwrap().split_once("*/").unwrap().0;
             let header: serde_json::Value = serde_json::from_str(json).unwrap();
             assert_eq!(header["inputs"], serde_json::json!([{ "id": "src", "type": "texture" }]), "{slug}");
-            assert!((2..=6).contains(&header["params"].as_array().unwrap().len()), "{slug}");
+            assert!((2..=7).contains(&header["params"].as_array().unwrap().len()), "{slug}");
             assert!(!node.name.is_empty(), "{slug}");
             assert!(!node.description.is_empty() && !node.description.contains('\n'), "{slug}");
             assert!(node.params.iter().any(|p| p.id == "music"), "{slug}");

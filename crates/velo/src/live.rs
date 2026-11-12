@@ -555,7 +555,8 @@ impl Live {
         self.launch_with(scene, scene.launch);
     }
 
-    fn launch_with(&mut self, scene: &Scene, launch: Launch) {
+    /// Puts `scene` on the output `launch`'s way instead of its own.
+    pub fn launch_with(&mut self, scene: &Scene, launch: Launch) {
         let key = self.slot(&scene.id).key;
         self.launched = key;
         self.engine.send(Command::Launch { scene: key, transition: launch.transition, duration_beats: launch.duration, quantize: launch.quantize });
@@ -578,6 +579,13 @@ impl Live {
     /// How far along its wait for the boundary a launched scene is (0..1; 0 while it builds).
     pub fn armed(&self, scene: &str) -> Option<f32> {
         self.engine.status.armed().filter(|(key, _)| self.scene_of(*key) == Some(scene)).map(|a| a.1)
+    }
+
+    /// How many of the project's scenes have their card's picture, or can't have one. Each is
+    /// built once to be pictured (its shaders compiled, its files opened), which is what makes a
+    /// project slow right after it opens: the loading screen waits for them all.
+    pub fn pictured(&self, project: &Project) -> usize {
+        project.scenes.iter().filter(|s| self.shots.contains_key(&s.id) || self.peeked.contains(&s.id)).count()
     }
 
     /// Started, and every scene it holds built (the splash waits for it).

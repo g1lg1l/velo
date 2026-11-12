@@ -24,8 +24,12 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let e = max(mix(1.0, 0.03, sharpness), crowd * 1.5);
     let band = smoothstep(-e, e, v);
     var col = mix(color_a.rgb, color_b.rgb, band);
-    col *= 0.6 + 0.6 * exp(-r * 2.0);
-    col += color_b.rgb * exp(-r * 18.0) * (0.6 + 0.6 * audio * g.kick);
-    col *= 1.0 + 0.25 * audio * g.kick + 0.05 * audio * g.hat * sin(r * 80.0 - g.time * 30.0);
+    // each arm rounded like a ribbon: brightest along its middle, and a thin light where the
+    // two colors meet
+    col *= 0.62 + 0.5 * abs(v);
+    col += color_b.rgb * exp(-abs(v) / max(e, 0.04)) * 0.3;
+    col *= 0.65 + 0.55 * exp(-r * 2.0);
+    col += color_b.rgb * exp(-r * 12.0) * (0.7 + 1.2 * audio * g.kick);
+    col *= 1.0 + 0.4 * audio * g.kick + 0.08 * audio * g.hat * sin(r * 80.0 - g.time * 30.0);
     return vec4f(col, 1.0);
 }

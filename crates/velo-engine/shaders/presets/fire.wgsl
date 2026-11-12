@@ -44,17 +44,29 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     // y up from the bottom edge
     let p = vec2f((uv.x - 0.5) * g.aspect, 1.0 - uv.y);
     let t = g.time * speed;
-    // noise rising, bent sideways by more noise
+    // noise rising, bent sideways by more noise; finer licks on top, rising faster
     let q = p * scale;
     let bend = fbm(q * 0.5 + vec2f(0.0, -t * 0.6)) - 0.5;
-    let n = fbm(vec2f(q.x + bend * turbulence * 2.0, q.y * 1.4 - t * 2.2));
-    // hottest at the bottom, thinning out toward the tips
+    let x = q.x + bend * turbulence * 2.0;
+    let big = fbm(vec2f(x, q.y * 1.4 - t * 2.2));
+    let fine = fbm(vec2f(x * 2.6 + 7.0, q.y * 2.2 - t * 3.6));
+    let n = big * (0.55 + 0.9 * fine);
     // tongues: some places along the bottom reach higher than others, and they move
     let tongues = 0.45 + noise(vec2f(q.x * 1.3, t * 0.5)) * 1.1;
-    let reach = height * tongues * (1.0 + 0.35 * audio * g.bass);
-    let heat = clamp(n * 1.8 - p.y / max(reach, 0.01) - 0.1, 0.0, 1.2) * (1.0 + 0.4 * audio * g.kick);
-    var col = color_a.rgb * smoothstep(0.05, 0.4, heat);
-    col = mix(col, color_b.rgb, smoothstep(0.4, 0.85, heat));
-    col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9, 1.3, heat);
+    let reach = height * tongues * (1.0 + 0.5 * audio * g.bass);
+    // hottest at the bottom, thinning out toward the tips
+    let heat = clamp(n * 2.0 - p.y / max(reach, 0.01) - 0.05, 0.0, 1.3) * (1.0 + 0.5 * audio * g.kick);
+    // dark red at the tips, through the two colors, to white at the heart
+    var col = color_a.rgb * smoothstep(0.0, 0.45, heat) * (0.35 + 0.9 * heat);
+    col = mix(col, color_b.rgb, smoothstep(0.4, 0.9, heat));
+    col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9, 1.3, heat) * 0.9;
+    // the glow of the bed, and sparks carried up, more of them with the hats
+    col += color_a.rgb * exp(-p.y * 7.0) * 0.35;
+    let s = vec2f(p.x * 26.0 + 2.0 * sin(p.y * 5.0 + t), p.y * 14.0 - t * 5.0);
+    let cell = floor(s);
+    let h = hash(cell);
+    let at = vec2f(hash(cell + 31.0), hash(cell + 57.0)) * 0.6 + 0.2;
+    let spark = smoothstep(0.16, 0.0, length((fract(s) - at) * vec2f(1.0, 0.55))) * step(0.93 - 0.1 * audio * g.hat, h);
+    col += color_b.rgb * spark * smoothstep(1.6, 0.2, p.y / max(height, 0.01)) * (0.5 + 0.5 * sin(g.time * 9.0 + h * 40.0)) * 1.5;
     return vec4f(col, 1.0);
 }

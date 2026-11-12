@@ -309,10 +309,14 @@ impl App {
 
     /// Preferences → OSC.
     pub fn prefs_osc(&mut self, ui: &mut Ui, t: &Theme) {
-        kit::section(ui, t, icons::BROADCAST, tr!("OSC"), true, |ui| {
+        kit::page_title(ui, t, icons::BROADCAST, tr!("Control"), tr!("Drive Velo over OSC from a phone, a lighting desk or another app."));
+        kit::card(ui, t, tr!("OSC"), |ui| {
             let o = &mut self.settings.osc;
             kit::setting(ui, t, tr!("Listen for OSC"), tr!("From TouchOSC, a lighting desk or any tool that sends OSC."), |ui| kit::switch(ui, t, &mut o.enabled, tr!("Listen for OSC")));
-            ui.add_enabled_ui(o.enabled, |ui| kit::setting(ui, t, tr!("Port"), "", |ui| ui.add(egui::DragValue::new(&mut o.port).range(1024..=65535))));
+            ui.add_enabled_ui(o.enabled, |ui| {
+                kit::divider(ui, t);
+                kit::setting(ui, t, tr!("Port"), "", |ui| ui.add(egui::DragValue::new(&mut o.port).range(1024..=65535)))
+            });
             let status = match (&self.osc, local_ip()) {
                 (Some(osc), ip) => {
                     let to = ip.map_or_else(|| format!("port {}", osc.port), |ip| format!("{ip}:{}", osc.port));
@@ -323,9 +327,10 @@ impl App {
                 }
                 (None, _) => tr!("Off").to_string(),
             };
-            kit::note(ui, t, Some(icons::BROADCAST), &status, if self.osc.is_some() { t.accent } else { t.fg_muted });
+            kit::callout(ui, t, icons::BROADCAST, &status, if self.osc.is_some() { t.accent } else { t.fg_muted });
+            ui.add_space(t.pad);
         });
-        kit::section(ui, t, icons::LIST_BULLETS, tr!("ADDRESSES"), false, |ui| {
+        kit::card(ui, t, tr!("ADDRESSES"), |ui| {
             let addresses = [
                 ("/velo/scene/macro/1 f", tr!("Macro 1 to 8 of the selected scene, 0 to 1")),
                 ("/velo/scene/launch i|s", tr!("Launches a scene, by number or name")),
@@ -346,6 +351,7 @@ impl App {
                     ui.end_row();
                 }
             });
+            ui.add_space(t.pad);
         });
     }
 }

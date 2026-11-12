@@ -425,8 +425,11 @@ pub fn slider(ui: &mut Ui, t: &Theme, info: &ParamInfo, value: f32, marks: &Mark
     let Marks { mods, live, driver, binding, icon, tint } = marks;
     let (live, binding, tint) = (*live, *binding, tint.unwrap_or(t.accent));
     let field_h = t.control_h + 4.0;
-    let has_badges = !mods.is_empty() || driver.is_some() || binding.is_some();
-    let badge_h = if has_badges { t.row_h - 6.0 + t.gap } else { 0.0 };
+    // what moves it hangs under it, a strip each the field's width, one piece with it
+    let strips = mods.len() + usize::from(driver.is_some()) + usize::from(binding.is_some());
+    let has_badges = strips > 0;
+    let strip_h = t.row_h - 6.0;
+    let badge_h = strips as f32 * strip_h;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), field_h + badge_h), Sense::click_and_drag());
     // room before whatever comes next
     ui.add_space(t.gap);
@@ -455,9 +458,21 @@ pub fn slider(ui: &mut Ui, t: &Theme, info: &ParamInfo, value: f32, marks: &Mark
 
     // dragging
     let (alt, fine, command) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift, i.modifiers.command));
+    // the far end of what the mappings add (the green band's edge) is a handle of its own:
+    // dragged, it changes the first mapping's amount, as Alt-drag anywhere does
+    let reach: f32 = mods.iter().map(|m| m.amount).sum();
+    let end_x = x_of(norm + reach);
+    let on_end = |p: Pos2| !mods.is_empty() && field.contains(p) && (p.x - end_x).abs() <= 6.0 && (p.x - x_of(norm)).abs() > 6.0;
+    let grab_id = resp.id.with("amount");
+    if resp.drag_started() {
+        let grabbed = ui.input(|i| i.pointer.press_origin()).is_some_and(on_end);
+        ui.data_mut(|d| d.insert_temp(grab_id, grabbed));
+    }
+    let on_amount = resp.dragged() && ui.data(|d| d.get_temp::<bool>(grab_id)).unwrap_or(false);
+    let end_hot = on_amount || (!resp.dragged() && resp.hover_pos().is_some_and(on_end));
     if !editing && resp.dragged() {
         let delta = resp.drag_delta().x / field.width() * if fine { 0.2 } else { 1.0 };
-        if alt && !mods.is_empty() {
+        if (alt || on_amount) && !mods.is_empty() {
             out.amount = Some((mods[0].amount + delta).clamp(-1.0, 1.0));
         } else {
             // where the drag has it, unrounded: a whole number's steps come as the pointer
@@ -486,7 +501,8 @@ pub fn slider(ui: &mut Ui, t: &Theme, info: &ParamInfo, value: f32, marks: &Mark
     resp.widget_info(|| WidgetInfo::slider(true, f64::from(out.value.unwrap_or(value)), name));
     let painter = ui.painter_at(rect.expand(4.0));
     let h = kit::hover(ui, t, &resp);
-    let round = CornerRadius::same(t.radius_sm);
+    // square at the foot where a strip hangs under it
+    let round = if has_badges { CornerRadius { nw: t.radius_sm, ne: t.radius_sm, sw: 0, se: 0 } } else { CornerRadius::same(t.radius_sm) };
     painter.rect_filled(field, round, Theme::mix(t.bg_field, t.fg_text, 0.03 + 0.03 * h));
     let origin = if info.min < 0.0 && info.max > 0.0 { info.to_norm(0.0) } else { 0.0 };
     let (a, b) = (x_of(origin.min(shown)), x_of(origin.max(shown)));
@@ -496,6 +512,15 @@ pub fn slider(ui: &mut Ui, t: &Theme, info: &ParamInfo, value: f32, marks: &Mark
         // the fill, clipped to the field's rounded corners by drawing it as the field's shape
         let clip = clipped.with_clip_rect(fill);
         clip.rect_filled(field, round, Theme::mix(t.bg_field, tint, 0.28 + 0.06 * h));
+    }
+    // a whole number's steps, a tick at each: the places the value can stop
+    if info.curve == Curve::Steps {
+        let steps = (info.max - info.min).round() as usize;
+        if (2..=32).contains(&steps) {
+            for step in 1..steps {
+                clipped.vline(x_of(step as f32 / steps as f32), field.y_range().shrink(field.height() * 0.36), Stroke::new(1.0, t.fg_text.gamma_multiply(0.16)));
+            }
+        }
     }
     // zero, for a range across it: a short tick
     if origin > 0.0 {
@@ -510,12 +535,15 @@ pub fn slider(ui: &mut Ui, t: &Theme, info: &ParamInfo, value: f32, marks: &Mark
     }
     // the modulation range with a line at its far end, lit from the value up to where the
     // sources have it now (eased), and a bright line there glowing with them
-    let reach: f32 = mods.iter().map(|m| m.amount).sum();
     if !mods.is_empty() {
-        let (a, b) = (x_of(shown), x_of(shown + reach));
+        let (a, b) = (x_of(shown), x_of(shown + out.amount.map_or(reach, |v| reach - mods[0].amount + v)));
         let band = |x: f32| Rect::from_min_max(pos2(a.min(x), field.top()), pos2(a.max(x), field.bottom()));
-        clipped.rect_filled(band(b), CornerRadius::ZERO, t.cat_signal.gamma_multiply(0.1));
-        clipped.vline(b, field.y_range().shrink(3.0), Stroke::new(1.0, t.cat_signal.gamma_multiply(0.55)));
+        clipped.rect_filled(band(b), CornerRadius::ZERO, t.cat_signal.gamma_multiply(if end_hot { 0.18 } else { 0.1 }));
+        // its edge, a handle: thicker with a grip while the pointer's on it
+        clipped.vline(b, field.y_range().shrink(3.0), Stroke::new(if end_hot { 2.5 } else { 1.0 }, t.cat_signal.gamma_multiply(if end_hot { 1.0 } else { 0.55 })));
+        if end_hot {
+            clipped.circle_filled(pos2(b, field.center().y), 3.5, t.cat_signal);
+        }
         let target = live.map_or_else(|| shown + mods.iter().map(|m| m.amount * m.level).sum::<f32>(), |v| info.to_norm(v));
         let now = x_of(eased(ui, t, resp.id.with("now"), target, false));
         clipped.rect_filled(band(now), CornerRadius::ZERO, t.cat_signal.gamma_multiply(0.22));
@@ -572,31 +600,197 @@ pub fn slider(ui: &mut Ui, t: &Theme, info: &ParamInfo, value: f32, marks: &Mark
     }
     kit::focus_ring(ui, t, &resp, t.radius_sm);
     if resp.hovered() && !editing {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        ui.ctx().set_cursor_icon(if end_hot { egui::CursorIcon::ResizeColumn } else { egui::CursorIcon::ResizeHorizontal });
     }
-    let track = field;
 
-    // badges: one per mapping, then the controller
-    if has_badges {
-        let mut x = rect.left();
-        let top = track.bottom() + t.gap;
-        for (i, m) in mods.iter().enumerate() {
-            let amount = format!("{:+.0}%", m.amount * 100.0);
-            let r = badge(ui, t, resp.id.with(("mod", i)), pos2(x, top), Some(m.level), m.source, &amount);
-            x = r.rect.right() + t.gap;
-            out.badges.push(r);
-        }
-        if let Some(d) = driver {
-            let range = format!("{} → {}", info.format(d.range[0]), info.format(d.range[1]));
-            let r = badge(ui, t, resp.id.with("macro"), pos2(x, top), None, d.label, &range);
-            x = r.rect.right() + t.gap;
-            out.badges.push(r);
-        }
-        if let Some(control) = binding {
-            out.badges.push(badge(ui, t, resp.id.with("binding"), pos2(x, top), None, control, ""));
-        }
+    // the strips: one per mapping, then the macro's, then the controller's, the last one round
+    // at the foot
+    let mut hung = 0;
+    let place = |hung: &mut usize| {
+        let r = Rect::from_min_size(pos2(field.left(), field.bottom() + *hung as f32 * strip_h), vec2(field.width(), strip_h));
+        *hung += 1;
+        (r, *hung == strips)
+    };
+    for (i, m) in mods.iter().enumerate() {
+        let amount = format!("{:+.0}%", if i == 0 { out.amount.unwrap_or(m.amount) } else { m.amount } * 100.0);
+        out.badges.push(badge(ui, t, resp.id.with(("mod", i)), place(&mut hung), Some(m.level), m.source, &amount));
+    }
+    if let Some(d) = driver {
+        let range = format!("{} → {}", info.format(d.range[0]), info.format(d.range[1]));
+        out.badges.push(badge(ui, t, resp.id.with("macro"), place(&mut hung), None, d.label, &range));
+    }
+    if let Some(control) = binding {
+        out.badges.push(badge(ui, t, resp.id.with("binding"), place(&mut hung), None, control, ""));
     }
     out
+}
+
+/// A choice between a few ways of working, each said in a line: a tile each, one under the
+/// other, with its icon, its name and what it does; the chosen one lit. The one picked, and
+/// all of them as one response.
+pub fn options(ui: &mut Ui, t: &Theme, current: usize, items: &[(&str, &str, &str)]) -> (Option<usize>, Response) {
+    let mut picked = None;
+    let mut all: Option<Response> = None;
+    for (i, (icon, title, what)) in items.iter().enumerate() {
+        let width = ui.available_width();
+        let mut job = egui::text::LayoutJob::single_section((*what).to_owned(), egui::TextFormat { font_id: t.small(), color: t.fg_muted, line_height: Some(t.text_sm + 4.0), ..Default::default() });
+        job.wrap.max_width = (width - 58.0).max(1.0);
+        let galley = ui.painter().layout_job(job);
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, (galley.size().y + t.text_md + 20.0).max(48.0)), Sense::click());
+        let on = ui.ctx().animate_bool_with_time(resp.id.with("on"), i == current, t.motion);
+        let h = kit::hover(ui, t, &resp);
+        let painter = ui.painter();
+        let radius = CornerRadius::same(t.radius_sm);
+        painter.rect_filled(rect, radius, Theme::mix(Theme::mix(t.bg_field, t.fg_text, 0.03 + 0.04 * h), Theme::mix(t.bg_field, t.accent, 0.2), on));
+        painter.rect_stroke(rect, radius, Stroke::new(1.0, t.accent.gamma_multiply(0.85 * on)), StrokeKind::Inside);
+        let tile = Rect::from_center_size(pos2(rect.left() + 24.0, rect.center().y), Vec2::splat(28.0));
+        painter.rect_filled(tile, CornerRadius::same(t.radius_sm), Theme::mix(t.fg_text.gamma_multiply(0.06), t.accent.gamma_multiply(0.25), on));
+        kit::icon_at(painter, tile.center(), icon, 15.0, Theme::mix(t.fg_muted, t.accent, on));
+        painter.text(pos2(rect.left() + 48.0, rect.top() + 9.0), Align2::LEFT_TOP, *title, t.body(), Theme::mix(t.fg_muted, t.fg_text, (0.6 + 0.4 * on.max(h)).min(1.0)));
+        painter.galley(pos2(rect.left() + 48.0, rect.top() + 9.0 + t.text_md + 3.0), galley, t.fg_muted);
+        kit::focus_ring(ui, t, &resp, t.radius_sm);
+        resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, i == current, *title));
+        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if resp.clicked() && i != current {
+            picked = Some(i);
+        }
+        ui.add_space(3.0);
+        all = Some(match all {
+            Some(a) => a | resp,
+            None => resp,
+        });
+    }
+    (picked, all.unwrap_or_else(|| ui.allocate_response(Vec2::ZERO, Sense::hover())))
+}
+
+/// One port of a node in its inspector, as a jack on a patch bay drawn in thin lines: the
+/// socket on the node's edge (a line down the left that joins its ports: `joins` says whether
+/// it runs on above and below), lit when a cable's in it; the port's name; then a cable for
+/// each thing it's wired to, off to that thing's name, an arrow on it the way the picture
+/// goes. With nothing in it: an empty socket and a stub.
+pub fn wire_row(ui: &mut Ui, t: &Theme, port: &str, incoming: bool, to: &[String], joins: (bool, bool)) {
+    const LINE: f32 = 26.0;
+    let lines = to.len().max(1);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), LINE * lines as f32), Sense::hover());
+    let painter = ui.painter_at(rect);
+    let wired = !to.is_empty();
+    let (ink, quiet) = (t.fg_text.gamma_multiply(0.9), t.fg_muted.gamma_multiply(0.55));
+    let cable = if incoming { Theme::mix(t.accent, t.fg_text, 0.15) } else { t.cat_signal };
+    let spine = rect.left() + 12.0;
+    let y = rect.top() + LINE / 2.0;
+    // the node's edge, broken where the socket sits on it
+    if joins.0 {
+        painter.vline(spine, rect.top()..=y - 7.0, Stroke::new(1.0, quiet));
+    }
+    if joins.1 {
+        painter.vline(spine, y + 7.0..=rect.bottom(), Stroke::new(1.0, quiet));
+    }
+    // the socket: a ring, and the plug's tip in it once it's wired
+    painter.circle_stroke(pos2(spine, y), 6.0, Stroke::new(1.2, if wired { ink } else { quiet }));
+    if wired {
+        painter.circle_filled(pos2(spine, y), 2.6, cable);
+    } else {
+        painter.circle_stroke(pos2(spine, y), 2.0, Stroke::new(1.0, quiet));
+    }
+    let name = painter.text(pos2(spine + 14.0, y), Align2::LEFT_CENTER, port, Theme::mono(t.text_sm), if wired { t.fg_text } else { t.fg_muted });
+    let from = (name.right() + 8.0).max(spine + 46.0);
+    let reach = from + 26.0;
+    if !wired {
+        // a stub: two dashes, nothing on the end
+        for dash in 0..2 {
+            let x = from + dash as f32 * 9.0;
+            painter.hline(x..=x + 5.0, y, Stroke::new(1.0, quiet));
+        }
+        painter.text(pos2(reach + 8.0, y), Align2::LEFT_CENTER, tr!("Not wired"), t.body(), t.fg_muted);
+        return;
+    }
+    for (line, what) in to.iter().enumerate() {
+        let at = y + line as f32 * LINE;
+        // the first cable runs straight out; the next ones drop from it and turn
+        if line > 0 {
+            painter.vline(from + 6.0, at - LINE..=at, Stroke::new(1.2, cable));
+        }
+        painter.hline(if line > 0 { from + 6.0 } else { from }..=reach, at, Stroke::new(1.2, cable));
+        // the way the picture goes: into the socket, or out to the other end
+        let (tip, back) = if incoming { (from, 5.0) } else { (reach, -5.0) };
+        if line == 0 || !incoming {
+            painter.add(Shape::convex_polygon(vec![pos2(tip, at), pos2(tip + back, at - 3.5), pos2(tip + back, at + 3.5)], cable, Stroke::NONE));
+        }
+        // the plug on the far end
+        if incoming {
+            painter.rect_filled(Rect::from_center_size(pos2(reach, at), vec2(5.0, 7.0)), CornerRadius::same(2), cable);
+        }
+        kit::fit_text(&painter, pos2(reach + 8.0, at), Align2::LEFT_CENTER, what.as_str(), t.body(), t.fg_text, rect.right() - reach - 8.0);
+    }
+}
+
+/// One thing a signal moves, a row across its panel: the node and its parameter, how far it
+/// moves it on the right, and that as a line along the row's foot. A click opens its settings.
+pub fn move_row(ui: &mut Ui, t: &Theme, target: &str, param: &str, amount: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
+    let h = kit::hover(ui, t, &resp);
+    let open = ui.ctx().animate_bool_with_time(resp.id.with("open"), egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp)), t.motion);
+    let painter = ui.painter_at(rect);
+    let radius = CornerRadius::same(t.radius_sm);
+    painter.rect_filled(rect, radius, Theme::mix(t.bg_field, t.cat_signal, 0.05 + 0.06 * h + 0.1 * open));
+    let y = rect.center().y - 1.0;
+    let right = painter.text(pos2(rect.right() - t.pad, y), Align2::RIGHT_CENTER, format!("{:+.0}%", amount * 100.0), Theme::mono(t.text_sm), Theme::mix(t.cat_signal, t.fg_text, 0.4 * h)).left() - t.pad;
+    let arrow = painter.text(pos2(rect.left() + t.pad, y), Align2::LEFT_CENTER, "→", t.body(), t.fg_muted.gamma_multiply(0.7)).right() + t.gap * 1.5;
+    // the node, then its parameter quieter, cut short together before the amount
+    let room = right - arrow;
+    let (node, _) = kit::fit_text(&painter, pos2(arrow, y), Align2::LEFT_CENTER, target, t.body(), t.fg_text, room * 0.62);
+    kit::fit_text(&painter, pos2(node.right() + t.gap, y), Align2::LEFT_CENTER, format!("· {param}"), t.body(), t.fg_muted, right - node.right() - t.gap);
+    // how far, along the foot (from the middle: a negative amount runs left)
+    let (mid, half) = (rect.center().x, rect.width() / 2.0 - t.radius_sm as f32);
+    painter.hline(mid.min(mid + half * amount.clamp(-1.0, 1.0))..=mid.max(mid + half * amount.clamp(-1.0, 1.0)), rect.bottom() - 1.5, Stroke::new(2.0, t.cat_signal.gamma_multiply(0.7)));
+    kit::focus_ring(ui, t, &resp, t.radius_sm);
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, format!("{target} {param} {:+.0}%", amount * 100.0)));
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A small whole number picked from a row of cells, one per value from the least to the most,
+/// lit up to the one chosen (how many inputs a Blend takes): its name over the row, the number
+/// on the right. Click a cell or drag across them; the value picked, when it changes.
+pub fn count(ui: &mut Ui, t: &Theme, info: &ParamInfo, value: f32) -> (Response, Option<f32>) {
+    const ROW: f32 = 24.0;
+    let (min, max) = (info.min.round() as i32, info.max.round() as i32);
+    let cells = (max - min + 1).max(1) as usize;
+    let at = (value.round() as i32 - min).clamp(0, cells as i32 - 1) as usize;
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), t.text_md + 10.0 + ROW), Sense::click_and_drag());
+    ui.add_space(t.gap);
+    let row = Rect::from_min_max(pos2(rect.left(), rect.bottom() - ROW), rect.max);
+    let gap = 3.0;
+    let w = (row.width() - gap * (cells - 1) as f32) / cells as f32;
+    let cell_at = |x: f32| (((x - row.left()) / (w + gap)).floor().max(0.0) as usize).min(cells - 1);
+    let mut picked = None;
+    if (resp.clicked() || resp.dragged())
+        && let Some(p) = resp.interact_pointer_pos()
+        && cell_at(p.x) != at
+    {
+        picked = Some((min + cell_at(p.x) as i32) as f32);
+    }
+    let shown = picked.map_or(at, |v| (v as i32 - min) as usize);
+    let over = resp.hover_pos().filter(|p| row.expand(2.0).contains(*p)).map(|p| cell_at(p.x));
+    let painter = ui.painter_at(rect);
+    let h = kit::hover(ui, t, &resp);
+    painter.text(rect.left_top() + vec2(2.0, 0.0), Align2::LEFT_TOP, i18n::t(info.name), t.body(), Theme::mix(t.fg_muted, t.fg_text, 0.4 + 0.6 * h));
+    painter.text(rect.right_top() - vec2(2.0, 0.0), Align2::RIGHT_TOP, (min + shown as i32).to_string(), t.readout(), t.fg_text);
+    for i in 0..cells {
+        let r = Rect::from_min_size(pos2(row.left() + i as f32 * (w + gap), row.top()), vec2(w, ROW));
+        let lift = if over == Some(i) { 0.1 } else { 0.0 };
+        let (fill, ink) = match i.cmp(&shown) {
+            std::cmp::Ordering::Equal => (Theme::mix(t.bg_field, t.accent, 0.85), t.bg_base),
+            std::cmp::Ordering::Less => (Theme::mix(t.bg_field, t.accent, 0.3 + lift), t.fg_text),
+            std::cmp::Ordering::Greater => (Theme::mix(t.bg_field, t.fg_text, 0.04 + lift), t.fg_muted),
+        };
+        painter.rect_filled(r, CornerRadius::same(4), fill);
+        if w >= 14.0 {
+            painter.text(r.center(), Align2::CENTER_CENTER, (min + i as i32).to_string(), Theme::mono(t.text_xs), ink);
+        }
+    }
+    kit::focus_ring(ui, t, &resp, t.radius_sm);
+    resp.widget_info(|| WidgetInfo::slider(true, f64::from(value), i18n::t(info.name)));
+    (resp.on_hover_cursor(egui::CursorIcon::PointingHand), picked)
 }
 
 /// A clip's loop on its timeline: the clip as a track (ticks along it), the part that loops
@@ -684,22 +878,22 @@ pub fn loop_range(ui: &mut Ui, t: &Theme, length: f64, from: f32, to: f32) -> (R
 /// dot on it glowing with `level` and the pill filling up with it, a ring off the dot on a hit;
 /// a macro's or a controller's muted. It sinks as it's pressed and stays lit while its popover
 /// is open. Click for its popover.
-fn badge(ui: &mut Ui, t: &Theme, id: egui::Id, at: Pos2, level: Option<f32>, name: &str, readout: &str) -> Response {
+fn badge(ui: &mut Ui, t: &Theme, id: egui::Id, (rect, last): (Rect, bool), level: Option<f32>, name: &str, readout: &str) -> Response {
     let (font, caps) = (Theme::mono(t.text_xs), name.to_uppercase());
-    let painter = ui.painter();
-    let name_w = painter.layout_no_wrap(caps.clone(), font.clone(), t.fg_text).size().x;
-    let readout_w = if readout.is_empty() { 0.0 } else { painter.layout_no_wrap(readout.to_string(), Theme::mono(t.text_sm), t.fg_muted).size().x + t.gap * 1.5 };
     let dot = if level.is_some() { 15.0 } else { 0.0 };
-    let rect = Rect::from_min_size(at, vec2(dot + name_w + readout_w + 2.0 * t.pad, t.row_h - 6.0));
     let resp = ui.interact(rect, id, Sense::click());
     let h = kit::hover(ui, t, &resp);
     let open = ui.ctx().animate_bool_with_time(id.with("open"), egui::Popup::is_id_open(ui.ctx(), egui::Popup::default_response_id(&resp)), t.motion);
     let tint = if level.is_some() { t.cat_signal } else { t.fg_muted };
-    let shape = if resp.is_pointer_button_down_on() { rect.shrink(1.0) } else { rect };
-    let radius = CornerRadius::same((shape.height() / 2.0) as u8);
+    let shape = rect;
+    let foot = if last { t.radius_sm } else { 0 };
+    let radius = CornerRadius { nw: 0, ne: 0, sw: foot, se: foot };
     let painter = ui.painter();
-    painter.rect_filled(shape, radius, Theme::mix(t.bg_card, tint, 0.08 + 0.06 * h + 0.1 * open));
-    let mut x = shape.left() + t.pad;
+    // darker than the field over it, which the mapping's band tints the same green: the two
+    // read as a slider and its tag, not one block; a bar down its side in the source's color
+    painter.rect_filled(shape, radius, Theme::mix(t.bg_base, tint, 0.07 + 0.06 * h + 0.1 * open));
+    painter.rect_filled(Rect::from_min_size(shape.min, vec2(2.0, shape.height())), CornerRadius { sw: foot, ..CornerRadius::ZERO }, tint.gamma_multiply(0.75));
+    let mut x = shape.left() + t.pad - 2.0;
     if let Some(level) = level {
         let v = level.clamp(0.0, 1.0);
         painter.with_clip_rect(Rect::from_min_max(shape.min, pos2(shape.left() + shape.width() * v, shape.bottom()))).rect_filled(shape, radius, tint.gamma_multiply(0.16));
@@ -720,13 +914,15 @@ fn badge(ui: &mut Ui, t: &Theme, id: egui::Id, at: Pos2, level: Option<f32>, nam
         painter.circle_filled(c, 3.0, Theme::mix(tint.gamma_multiply(0.55), Theme::mix(tint, egui::Color32::WHITE, 0.3), v));
         x += dot;
     }
-    painter.rect_stroke(shape, radius, Stroke::new(1.0, tint.gamma_multiply(0.3 + 0.3 * h + 0.4 * open)), egui::StrokeKind::Inside);
-    painter.text(pos2(x, shape.center().y), Align2::LEFT_CENTER, caps, font, Theme::mix(t.fg_muted, t.fg_text, 0.6 + 0.4 * h.max(open)));
+    // a seam where it meets what's over it
+    painter.hline(shape.x_range(), shape.top() + 0.5, Stroke::new(1.0, t.bg_panel));
+    let mut right = shape.right() - t.pad + 2.0;
     if !readout.is_empty() {
         let lit = if level.is_some() { tint } else { t.fg_muted };
-        painter.text(pos2(shape.right() - t.pad, shape.center().y), Align2::RIGHT_CENTER, readout, Theme::mono(t.text_sm), Theme::mix(lit, t.fg_text, 0.5 * h));
+        right = painter.text(pos2(right, shape.center().y), Align2::RIGHT_CENTER, readout, Theme::mono(t.text_sm), Theme::mix(lit, t.fg_text, 0.5 * h)).left() - t.gap;
     }
-    kit::focus_ring(ui, t, &resp, radius.nw);
+    kit::fit_text(painter, pos2(x, shape.center().y), Align2::LEFT_CENTER, caps, font, Theme::mix(t.fg_muted, t.fg_text, 0.6 + 0.4 * h.max(open)), right - x);
+    kit::focus_ring(ui, t, &resp, radius.sw);
     resp.widget_info(|| WidgetInfo::labeled(Role::Button, true, format!("{name} {readout}")));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
@@ -1092,6 +1288,21 @@ pub fn wash(hue: f32) -> (egui::Color32, egui::Color32) {
     (egui::ecolor::Hsva::new(h, 0.6, 0.55, 1.0).into(), egui::ecolor::Hsva::new((h + 0.07) % 1.0, 0.7, 0.18, 1.0).into())
 }
 
+/// A tape reel drawn in one thin line, as a pocket synth's screen shows it: its rim, its hub with
+/// a ring inside, three spokes turned by `angle`. `wound` (0..1) is how much tape is on it, a
+/// fainter circle between the hub and the rim.
+pub fn reel(painter: &Painter, center: Pos2, radius: f32, angle: f32, wound: f32, ink: egui::Color32, width: f32) {
+    let stroke = Stroke::new(width, ink);
+    painter.circle_stroke(center, radius, stroke);
+    painter.circle_stroke(center, radius * (0.42 + 0.46 * wound.clamp(0.0, 1.0)), Stroke::new(width * 0.7, ink.gamma_multiply(0.3)));
+    painter.circle_stroke(center, radius * 0.25, stroke);
+    painter.circle_stroke(center, radius * 0.11, stroke);
+    for spoke in 0..3 {
+        let d = egui::Vec2::angled(angle + spoke as f32 * TAU / 3.0);
+        painter.line_segment([center + d * radius * 0.32, center + d * radius * 0.62], stroke);
+    }
+}
+
 /// A launch's countdown: a ring filling up to its boundary.
 fn ring(painter: &Painter, t: &Theme, c: Pos2, progress: f32) {
     arc(painter, c, 7.0, 0.0, TAU, Stroke::new(2.0, t.bg_control));
@@ -1177,6 +1388,56 @@ pub fn scene_card(ui: &mut Ui, t: &Theme, index: usize, name: &str, icon: &str, 
     }
     kit::fit_text(&painter, pos2(x, y), Align2::LEFT_CENTER, name, egui::FontId::proportional(t.body().size + 1.0), egui::Color32::WHITE, inner.right() - x);
     kit::focus_ring(ui, t, &resp, t.radius_md);
+    resp.widget_info(|| WidgetInfo::selected(Role::Button, true, state.selected, name));
+    resp
+}
+
+/// A scene as a slim row, the compact list's: its launch key, its picture small (a wash in
+/// `hue` until it has one), its name, and at the end LIVE's dot beating with the music, the
+/// countdown to its launch, or where a layer shows.
+pub fn scene_row(ui: &mut Ui, t: &Theme, index: usize, name: &str, icon: &str, hue: f32, state: CardState) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+    let k = ui.ctx().animate_bool_with_time(resp.id.with("selected"), state.selected, t.motion);
+    let h = kit::hover(ui, t, &resp);
+    let radius = CornerRadius::same(t.radius_sm);
+    let painter = ui.painter_at(rect);
+    let live = state.live.is_some();
+    painter.rect_filled(rect, radius, Theme::mix(t.fg_text.gamma_multiply(0.05 * h), t.accent.gamma_multiply(0.16), k));
+    if live || k > 0.0 {
+        painter.rect_stroke(rect, radius, Stroke::new(1.0, if live { t.accent } else { t.accent.gamma_multiply(0.5 * k) }), StrokeKind::Inside);
+    }
+    let y = rect.center().y;
+    painter.text(pos2(rect.left() + 14.0, y), Align2::CENTER_CENTER, (index + 1).to_string(), Theme::mono(t.text_xs), Theme::mix(t.fg_muted, t.fg_text, 0.3 + 0.7 * k));
+    // its picture, at the canvas' 16:9
+    let thumb = Rect::from_min_size(pos2(rect.left() + 28.0, y - 11.0), vec2(40.0, 22.0));
+    match state.shot {
+        Some(shot) => egui::Image::new((shot, thumb.size())).corner_radius(CornerRadius::same(3)).paint_at(ui, thumb),
+        None => {
+            let (a, b) = wash(hue);
+            paint_gradient(&painter, thumb, CornerRadius::same(3), |p| Theme::mix(a, b, (p.x - thumb.left()) / thumb.width()));
+        }
+    }
+    // what it's doing, at the end
+    let mut right = rect.right() - 10.0;
+    if let Some(pulse) = state.live {
+        let dot = pos2(right - 3.0, y);
+        painter.circle_filled(dot, 3.0 + 3.0 * pulse, t.accent.gamma_multiply(0.3 * pulse));
+        painter.circle_filled(dot, 3.0, t.accent);
+        right = painter.text(pos2(right - 12.0, y), Align2::RIGHT_CENTER, tr!("LIVE"), Theme::mono(t.text_xs), t.accent).left() - t.gap;
+    } else if let Some(progress) = state.armed {
+        ring(&painter, t, pos2(right - 8.0, y), progress);
+        right -= 22.0;
+    } else if let Some((over, on)) = state.layer {
+        let text = if over { tr!("ON TOP") } else { tr!("UNDER") };
+        right = painter.text(pos2(right, y), Align2::RIGHT_CENTER, text, Theme::mono(t.text_xs), if on { t.accent } else { t.fg_muted }).left() - t.gap;
+    }
+    let mut x = thumb.right() + t.pad;
+    if !icon.is_empty() {
+        painter.text(pos2(x, y), Align2::LEFT_CENTER, icon, egui::FontId::proportional(13.0), egui::Color32::WHITE);
+        x += 20.0;
+    }
+    kit::fit_text(&painter, pos2(x, y), Align2::LEFT_CENTER, name, t.body(), Theme::mix(t.fg_muted, t.fg_text, (0.55 + 0.45 * h.max(k)).min(1.0)), right - x);
+    kit::focus_ring(ui, t, &resp, t.radius_sm);
     resp.widget_info(|| WidgetInfo::selected(Role::Button, true, state.selected, name));
     resp
 }
@@ -1472,8 +1733,13 @@ pub fn color(ui: &mut Ui, t: &Theme, name: &str, value: [f32; 4]) -> (Response, 
     // the hex on the right, its swatch before it, the name on the left where there's room
     let hex = ui.painter().text(pos2(rect.right() - t.pad, rect.center().y), Align2::RIGHT_CENTER, hex_of(bytes), Theme::mono(t.text_sm), t.fg_text);
     let swatch = Rect::from_center_size(pos2(hex.left() - t.pad - 9.0, rect.center().y), vec2(18.0, 18.0));
-    egui::widgets::color_picker::show_color_at(ui.painter(), shown, swatch);
-    ui.painter().rect_stroke(swatch, CornerRadius::same(3), Stroke::new(1.0, t.line), StrokeKind::Inside);
+    // round as its edge is (grey under a see-through one, so its alpha shows)
+    let corners = CornerRadius::same(4);
+    if bytes[3] < 255 {
+        ui.painter().rect_filled(swatch, corners, t.fg_muted);
+    }
+    ui.painter().rect_filled(swatch, corners, shown);
+    ui.painter().rect_stroke(swatch, corners, Stroke::new(1.0, t.fg_text.gamma_multiply(0.18)), StrokeKind::Inside);
     let room = swatch.left() - t.pad - rect.left() - t.pad;
     if room > 24.0 {
         kit::fit_text(ui.painter(), pos2(rect.left() + t.pad - 2.0, rect.center().y), Align2::LEFT_CENTER, name, t.body(), Theme::mix(t.fg_muted, t.fg_text, 0.4 + 0.6 * h), room);

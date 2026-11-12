@@ -88,7 +88,7 @@ const LINE_H: f32 = 19.0;
 /// The inside corner where the gooey filter joins pill and body.
 const FILLET: f32 = 10.0;
 /// Where the toast sits, 0 left · 0.5 centre · 1 right: its header goes on the same side.
-const SIDE: f32 = 1.0;
+const SIDE: f32 = 0.5;
 
 /// Auto-BPM's memory between frames.
 #[derive(Default)]
@@ -137,6 +137,26 @@ enum Preview {
     Beside,
     Under,
     Off,
+}
+
+/// A folder as it's said: the home folder as ~.
+fn tilde(dir: &std::path::Path) -> String {
+    let text = dir.display().to_string();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && text.starts_with(&home) => format!("~{}", &text[home.len()..]),
+        _ => text,
+    }
+}
+
+/// How long ago, in the largest unit that fits.
+fn ago(seconds: u64) -> String {
+    match seconds {
+        0..60 => tr!("just now").to_string(),
+        60..3600 => tr!("{} min ago", seconds / 60),
+        3600..86_400 => tr!("{} h ago", seconds / 3600),
+        86_400..172_800 => tr!("yesterday").to_string(),
+        _ => tr!("{} days ago", seconds / 86_400),
+    }
 }
 
 fn theme_row(ui: &mut Ui, t: &Theme, theme: &Theme, current: bool) -> egui::Response {
@@ -814,6 +834,16 @@ impl App {
         ui.separator();
         self.menu_command(ui, icons::KEYBOARD, tr!("Keyboard shortcuts"), "app.shortcuts");
         self.menu_command(ui, icons::GEAR_SIX, tr!("Preferences"), "app.preferences");
+        ui.separator();
+        // out of the project: back to the start screen's list, or out of Velo (unsaved work asks first)
+        if ui.button(format!("{}  {}", icons::SQUARES_FOUR, tr!("Quit to project list"))).clicked() {
+            self.request(crate::files::Pending::Start);
+            ui.close();
+        }
+        if ui.button(format!("{}  {}", icons::POWER, tr!("Quit"))).clicked() {
+            self.request(crate::files::Pending::Quit);
+            ui.close();
+        }
     }
 
     // ---- status bar and toasts ----------------------------------------------
@@ -904,27 +934,36 @@ impl App {
         });
     }
 
-    /// While Velo starts, Ableton's way: its mark, what it's doing and how far along, over
-    /// everything. It fades once the engine renders, the scenes are built and the audio is
-    /// open (six seconds at most: without a GPU or a sound card it doesn't wait).
+    /// While Velo starts or a project opens, Ableton's way: its mark, what it's doing and how
+    /// far along, over everything. It fades once the engine renders, the scenes are built, the
+    /// audio is open and every scene has been built once and pictured for its card: that last
+    /// part is what would make a big project stutter right after opening, so it happens behind
+    /// this. Without a GPU or a sound card it doesn't wait past six seconds; the scenes get two
+    /// minutes; Esc or a click goes on at once.
     pub fn splash_ui(&mut self, ctx: &egui::Context) {
         let Some(fading) = self.splash else { return };
         let t = self.theme.clone();
         let now = ctx.input(|i| i.time);
+        let waited = now - *self.splash_from.get_or_insert(now);
         let hold = std::env::var_os("VELO_DEMO_SPLASH").is_some();
         let live = self.live.as_ref();
+        let scenes = self.session.project.scenes.len();
+        let pictured = live.map_or(scenes, |l| l.pictured(&self.session.project)).min(scenes);
         let steps = [
-            (tr!("Starting the engine"), live.is_some_and(|l| l.engine.status.frames.load(Relaxed) > 0)),
-            (tr!("Building the scenes"), self.session.active().is_none() || live.is_some_and(crate::live::Live::settled)),
-            (tr!("Opening the audio"), live.is_some_and(|l| l.audio.state().is_some())),
+            (tr!("Starting the engine").to_string(), live.is_some_and(|l| l.engine.status.frames.load(Relaxed) > 0)),
+            (tr!("Building the scenes").to_string(), self.session.active().is_none() || live.is_some_and(crate::live::Live::settled)),
+            (tr!("Opening the audio").to_string(), live.is_some_and(|l| l.audio.state().is_some())),
+            (tr!("Preparing the scenes · {} of {}", pictured, scenes), pictured >= scenes),
         ];
         let done = steps.iter().filter(|s| s.1).count();
-        let ready = (done == steps.len() || live.is_none() || now > 6.0) && !hold;
+        let started = steps[..3].iter().all(|s| s.1);
+        let skip = started && ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.pointer.any_click());
+        let ready = (done == steps.len() || live.is_none() || (!started && waited > 6.0) || waited > 120.0 || skip) && !hold;
         // shown long enough to read, then a short fade
         let fade_from = match fading {
             Some(at) => at,
             None if ready => {
-                let at = now.max(0.9);
+                let at = now.max(now - waited + 0.9);
                 self.splash = Some(Some(at));
                 at
             }
@@ -932,7 +971,7 @@ impl App {
         };
         let alpha = (1.0 - ((now - fade_from) / 0.35) as f32).clamp(0.0, 1.0);
         if alpha <= 0.0 {
-            self.splash = None;
+            (self.splash, self.splash_from) = (None, None);
             return;
         }
         ctx.request_repaint();
@@ -947,14 +986,176 @@ impl App {
             painter.image(widgets::brand(ctx, widgets::ICON_256), mark, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Theme::NO_TINT);
             painter.text(c + vec2(0.0, 72.0), Align2::CENTER_CENTER, "Velo", FontId::proportional(28.0), t.fg_text);
             painter.text(c + vec2(0.0, 98.0), Align2::CENTER_CENTER, env!("CARGO_PKG_VERSION"), Theme::mono(t.text_xs), t.fg_muted);
-            // the bar fills step by step, eased toward where it's at
-            let shown = ctx.animate_value_with_time(Id::unique("splash progress"), done as f32 / steps.len() as f32, 0.3);
+            // the bar fills step by step (the last one scene by scene), eased toward where it's at
+            let at = (done.min(3) as f32 + if started { pictured as f32 / scenes.max(1) as f32 } else { 0.0 }) / steps.len() as f32;
+            let shown = ctx.animate_value_with_time(Id::unique("splash progress"), at, 0.3);
             let bar = egui::Rect::from_center_size(c + vec2(0.0, 132.0), vec2(220.0, 3.0));
             painter.rect_filled(bar, 2.0, t.bg_control);
             painter.rect_filled(egui::Rect::from_min_size(bar.min, vec2(bar.width() * shown, bar.height())), 2.0, t.accent);
             let doing = steps.iter().find(|s| !s.1).map_or_else(|| tr!("Ready").to_string(), |s| format!("{}…", s.0));
             painter.text(c + vec2(0.0, 150.0), Align2::CENTER_CENTER, doing, t.small(), t.fg_muted);
+            if started && done < steps.len() {
+                painter.text(c + vec2(0.0, 172.0), Align2::CENTER_CENTER, tr!("Esc or a click goes on without waiting"), t.small(), t.fg_muted.gamma_multiply(0.7));
+            }
         });
+    }
+
+    /// The start screen, before a project is open: the recent projects to pick up again, a new
+    /// one, one from a file, the demo. Esc (or its close button) leaves an empty project.
+    pub fn start_ui(&mut self, ctx: &egui::Context) {
+        if !self.start {
+            return;
+        }
+        let t = self.theme.clone();
+        let screen = ctx.content_rect();
+        let recent: Vec<std::path::PathBuf> = self.settings.recent.iter().filter(|p| p.exists()).cloned().collect();
+        let mut pick: Option<crate::files::Pending> = None;
+        let mut forget: Option<std::path::PathBuf> = None;
+        let (has_recovery, mut restore, mut discard) = (self.recovery.is_some(), false, false);
+        let mut open = false;
+        let mut leave = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        egui::Area::new(Id::unique("start")).order(egui::Order::Middle).fixed_pos(screen.min).interactable(true).show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(screen.size(), Sense::click_and_drag());
+            ui.painter().rect_filled(rect, 0.0, t.bg_base);
+            let width = (rect.width() - 64.0).min(680.0);
+            let column = egui::Rect::from_min_size(pos2(rect.center().x - width / 2.0, rect.top() + (rect.height() * 0.12).max(24.0)), vec2(width, rect.height() * 0.88 - 24.0));
+            ui.scope_builder(egui::UiBuilder::new().max_rect(column).layout(egui::Layout::top_down(egui::Align::Min)), |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                // the mark, the name and the motto; the way out on the right
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = t.pad * 1.25;
+                    let (mark, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
+                    ui.painter().image(widgets::brand(ctx, widgets::ICON_256), mark, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Theme::NO_TINT);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.add_space(3.0);
+                        ui.label(RichText::new("Velo").size(24.0).strong().color(t.fg_text));
+                        ui.label(RichText::new(crate::canvas::MOTTO).color(t.fg_muted));
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        leave |= kit::icon_button(ui, &t, icons::X, tr!("Start with an empty project (Esc)"), false).clicked();
+                        ui.label(RichText::new(env!("CARGO_PKG_VERSION")).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+                    });
+                });
+                ui.add_space(t.pad * 2.5);
+                // what to start from, side by side
+                let starts = [
+                    (icons::FILE_PLUS, tr!("New project"), tr!("Start from an empty canvas")),
+                    (icons::FOLDER_OPEN, tr!("Open…"), tr!("A project on this computer")),
+                    (icons::PLAY, tr!("Open the demo"), tr!("See what Velo does, live")),
+                ];
+                let gap = t.pad;
+                let tile = vec2((width - 2.0 * gap) / 3.0, 84.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for (i, (icon, title, what)) in starts.into_iter().enumerate() {
+                        let (r, resp) = ui.allocate_exact_size(tile, Sense::click());
+                        let h = kit::hover(ui, &t, &resp);
+                        let painter = ui.painter();
+                        painter.rect(r, CornerRadius::same(t.radius_md), Theme::mix(t.bg_panel, t.fg_text, 0.03 + 0.05 * h), Stroke::new(1.0, Theme::mix(t.line, t.accent, h * 0.7)), egui::StrokeKind::Inside);
+                        kit::icon_at(painter, r.left_top() + vec2(22.0, 24.0), icon, 18.0, Theme::mix(t.fg_muted, t.accent, 0.4 + 0.6 * h));
+                        painter.text(r.left_top() + vec2(14.0, 50.0), Align2::LEFT_CENTER, title, t.body(), t.fg_text);
+                        painter.text(r.left_top() + vec2(14.0, 68.0), Align2::LEFT_CENTER, what, t.small(), t.fg_muted);
+                        if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            match i {
+                                0 => pick = Some(crate::files::Pending::New),
+                                1 => open = true,
+                                _ => pick = Some(crate::files::Pending::Demo),
+                            }
+                        }
+                    }
+                });
+                ui.add_space(t.pad * 2.5);
+                // work Velo closed with unsaved last time: one more thing to open, or to throw
+                // away (held: it can't be had back)
+                if has_recovery {
+                    egui::Frame::new().fill(t.accent.gamma_multiply(0.10)).stroke(Stroke::new(1.0, t.accent.gamma_multiply(0.35))).corner_radius(t.radius_md).inner_margin(t.pad).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = t.pad;
+                            let (spot, _) = ui.allocate_exact_size(vec2(28.0, 36.0), Sense::hover());
+                            kit::icon_at(ui.painter(), spot.center(), icons::CLOCK_COUNTER_CLOCKWISE, 18.0, t.accent);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.label(RichText::new(tr!("Unsaved work from last time")).font(t.body()).color(t.fg_text));
+                                ui.label(RichText::new(tr!("Velo closed before it was saved: pick it up where you left off.")).font(t.small()).color(t.fg_muted));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.allocate_ui(vec2(190.0, t.control_h + 4.0), |ui| {
+                                    discard = kit::hold_button(ui, &t, Some(icons::TRASH), tr!("Hold to discard"), tr!("Discarded"), 1.0);
+                                });
+                                restore = kit::action(ui, &t, kit::Variant::Primary, Some(icons::CLOCK_COUNTER_CLOCKWISE), tr!("Restore")).clicked();
+                            });
+                        });
+                    });
+                    ui.add_space(t.pad * 2.0);
+                }
+                kit::caps(ui, &t, tr!("RECENT PROJECTS"));
+                ui.add_space(t.gap + 2.0);
+                if recent.is_empty() {
+                    kit::hint(ui, &t, tr!("Projects you open or save show up here."));
+                }
+                kit::scroll(ui, &t, "start recent", false, t.bg_base, |ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for path in &recent {
+                        let name = path.file_stem().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::click());
+                        let h = kit::hover(ui, &t, &resp);
+                        let painter = ui.painter();
+                        painter.rect_filled(r, CornerRadius::same(t.radius_md), t.fg_text.gamma_multiply(0.06 * h));
+                        // a wash of its own, from its name: the same every time
+                        let hue = name.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b))) % 360;
+                        let (a, _) = widgets::wash(hue as f32 / 360.0);
+                        let swatch = egui::Rect::from_center_size(r.left_center() + vec2(26.0, 0.0), vec2(36.0, 36.0));
+                        painter.rect_filled(swatch, CornerRadius::same(t.radius_sm), a.gamma_multiply(0.55));
+                        kit::icon_at(painter, swatch.center(), icons::STACK, 16.0, t.fg_text.gamma_multiply(0.85));
+                        painter.text(r.left_center() + vec2(56.0, -8.0), Align2::LEFT_CENTER, &name, t.body(), t.fg_text);
+                        let folder = path.parent().map(tilde).unwrap_or_default();
+                        let when = std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok()).map(|age| ago(age.as_secs())).unwrap_or_default();
+                        let when = painter.text(r.right_center() - vec2(14.0, 0.0), Align2::RIGHT_CENTER, when, t.small(), t.fg_muted);
+                        // the folder, cut short before the date
+                        let room = when.left() - (r.left() + 56.0) - t.pad;
+                        let galley = painter.layout(folder, t.small(), t.fg_muted, f32::INFINITY);
+                        painter.with_clip_rect(egui::Rect::from_min_size(r.left_center() + vec2(56.0, 0.0), vec2(room.max(0.0), 20.0))).galley(r.left_center() + vec2(56.0, 2.0), galley, t.fg_muted);
+                        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(path.display().to_string());
+                        if resp.clicked() {
+                            pick = Some(crate::files::Pending::Open(path.clone()));
+                        }
+                        // right-click: off the list (its file stays where it is), held to mean it
+                        kit::context_menu(&t, &resp).show(|ui| {
+                            if kit::hold_button(ui, &t, Some(icons::TRASH), tr!("Hold to remove from the list"), tr!("Removed"), 0.8) {
+                                forget = Some(path.clone());
+                                ui.close();
+                            }
+                        });
+                    }
+                });
+            });
+        });
+        if open {
+            self.open_dialog();
+        }
+        if let Some(path) = forget {
+            self.settings.recent.retain(|p| *p != path);
+        }
+        if let Some(action) = pick {
+            self.request(action);
+        }
+        if restore {
+            self.restore_recovery();
+        }
+        if discard {
+            self.recovery = None;
+        }
+        // a project loaded closes it (files.rs); so does leaving
+        if leave {
+            self.start = false;
+        }
+        // left for another project with that work still unopened: let go (its file stays until
+        // this session's first autosave takes its place), so this session autosaves as usual
+        if !self.start {
+            self.recovery = None;
+        }
     }
 
     /// The toast, Sileo's (hiaaryan/sileo, MIT) redrawn in egui: a pill with a tinted badge and
@@ -976,13 +1177,12 @@ impl App {
             Tone::Action => (Theme::TONE_ACTION, icons::LIGHTNING, tr!("Your turn")),
             Tone::Error => (Theme::TONE_ERROR, icons::X, tr!("Error")),
         };
-        // the canvas's bottom-right corner, above its zoom control: never over a panel (the
-        // AI's prompt bar sits in the window's corner)
-        let a = match self.canvas.view {
-            Some(view) => view.right_bottom() - vec2(t.pad, t.pad * 2.0 + t.control_h + t.gap),
-            None => ctx.content_rect().right_bottom() - vec2(t.pad * 2.0, 24.0 + t.pad * 2.0),
-        };
-        egui::Area::new(Id::unique("toast")).order(egui::Order::Foreground).fixed_pos(a - vec2(WIDTH, 0.0)).show(ctx, |ui| {
+        // at the top of the window, in its middle, under the top bar: over whatever view is up
+        // (the start screen, a panel, the canvas), where the eye already is. `a` is its body's
+        // top right corner.
+        let window = ctx.content_rect();
+        let a = pos2(window.center().x + WIDTH / 2.0, window.top() + t.bar_h + t.pad + PILL_H);
+        egui::Area::new(Id::unique("toast")).order(egui::Order::Foreground).fixed_pos(a - vec2(WIDTH, PILL_H)).show(ctx, |ui| {
             let painter = ui.painter();
             let font = FontId::proportional(t.text_md);
             let name = painter.layout_no_wrap(title.to_string(), font.clone(), color);
@@ -999,8 +1199,8 @@ impl App {
             let b = body_h * open.max(0.0);
             // how far the pill has melted into the body
             let m = (b / ROUND).clamp(0.0, 1.0);
-            // the body grows up from the corner; the header rides on top of it, on the toast's side
-            let body = egui::Rect::from_min_max(pos2(a.x - WIDTH, a.y - b), a);
+            // the body drops down from under the header, which stays where it is, on the toast's side
+            let body = egui::Rect::from_min_max(pos2(a.x - WIDTH, a.y), pos2(a.x, a.y + b));
             let px = body.left() + (WIDTH - pill_w) * SIDE;
             let pill = egui::Rect::from_min_max(pos2(px, body.top() - PILL_H), pos2(px + pill_w, body.top() + 2.0 * m));
 
@@ -1025,12 +1225,12 @@ impl App {
                 (toast.from, toast.open, toast.turned) = (open, want, now);
             }
 
-            // in: up from 6 px below and from 95 %; out: the same, backwards
+            // in: down from 6 px above and from 95 %; out: the same, backwards
             let (k_in, k_out) = (kit::spring(age / ENTER), kit::ease((age - life) / ENTER));
             let opacity = kit::ease(age / ENTER) * (1.0 - k_out);
             let scale = 0.95 + 0.05 * k_in - 0.05 * k_out;
             let center = pill.center();
-            let shift = vec2(0.0, 6.0 * (1.0 - k_in) + 6.0 * k_out);
+            let shift = vec2(0.0, -6.0 * (1.0 - k_in) - 6.0 * k_out);
             let at = egui::emath::TSTransform::new(center.to_vec2() * (1.0 - scale) + shift, scale);
             ui.multiply_opacity(opacity);
             ui.with_visual_transform(at, |ui| {
@@ -1103,27 +1303,32 @@ impl App {
         let t = self.theme.clone();
         let pages = [
             (icons::GEAR_SIX, tr!("General")),
-            (icons::PALETTE, tr!("Appearance")),
             (icons::SPEAKER_HIGH, tr!("Audio")),
             (icons::ROBOT, tr!("AI and agents")),
             (icons::BROADCAST, tr!("Control")),
-            (icons::CODE, tr!("Code")),
-            (icons::DOWNLOAD_SIMPLE, tr!("Updates")),
             (icons::INFO, tr!("About")),
         ];
         let key = Id::unique("preferences page");
         // (VELO_DEMO_PREFS=n: opened on page n, for screenshots)
         let first = std::env::var("VELO_DEMO_PREFS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
         let mut page = ctx.data(|d| d.get_temp::<usize>(key)).unwrap_or(first).min(pages.len() - 1);
-        let width = (ctx.content_rect().width() - 64.0).min(760.0);
-        let height = (ctx.content_rect().height() - 160.0).clamp(300.0, 560.0);
+        let width = (ctx.content_rect().width() - 64.0).min(860.0);
+        let height = (ctx.content_rect().height() - 160.0).clamp(300.0, 600.0);
+        // the page turned to fades in and settles up a few pixels
+        let (turned_key, now) = (Id::unique("preferences turned"), ctx.input(|i| i.time));
+        let turned = ctx.data(|d| d.get_temp::<f64>(turned_key)).unwrap_or(now - 1.0);
+        let k = if t.motion > 0.0 { kit::ease(((now - turned) / 0.22) as f32) } else { 1.0 };
+        let was = page;
         let ((), close) = kit::modal_flush(ctx, &t, "preferences", tr!("Preferences"), width, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 // the sections, down the left
                 ui.allocate_ui_with_layout(vec2(190.0, height), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.set_min_size(vec2(190.0, height));
-                    ui.add_space(t.gap);
+                    // darker than the page beside it: the two are told apart by that, not by a line
+                    let side = egui::Rect::from_min_size(ui.max_rect().min, vec2(190.0, height));
+                    ui.painter().rect_filled(side, CornerRadius { sw: t.radius_md, ..CornerRadius::ZERO }, t.bg_base);
+                    ui.add_space(t.gap * 2.0);
                     for (i, (icon, label)) in pages.iter().enumerate() {
                         let r = kit::row(ui, &t, Id::unique(("preferences row", i)), i == page);
                         let painter = ui.painter();
@@ -1133,28 +1338,42 @@ impl App {
                             page = i;
                         }
                     }
+                    // which Velo this is, at the foot
+                    let foot = pos2(ui.max_rect().left() + 20.0, ui.max_rect().top() + height - 18.0);
+                    ui.painter().text(foot, Align2::LEFT_CENTER, concat!("Velo ", env!("CARGO_PKG_VERSION")), Theme::mono(t.text_xs), t.fg_muted.gamma_multiply(0.7));
                 });
-                let line = ui.available_rect_before_wrap();
-                ui.painter().vline(line.left(), line.top()..=line.top() + height, Stroke::new(1.0, t.line));
                 // the picked one
                 ui.allocate_ui_with_layout(vec2(ui.available_width(), height), egui::Layout::top_down(egui::Align::Min), |ui| {
                     ui.set_min_size(vec2(ui.available_width(), height));
                     // the pages' text wraps (the modal truncates by default)
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    kit::scroll(ui, &t, ("prefs", page), true, t.bg_card, |ui| match page {
-                        0 => self.prefs_general(ui, &t),
-                        1 => self.prefs_theme(ui, &t),
-                        2 => self.prefs_audio(ui, &t),
-                        3 => self.prefs_agents(ui, &t),
-                        4 => self.prefs_osc(ui, &t),
-                        5 => self.prefs_code(ui, &t),
-                        6 => self.prefs_updates(ui, &t),
-                        _ => self.prefs_about(ui, &t),
+                    kit::scroll(ui, &t, ("prefs", page), true, t.bg_card, |ui| {
+                        ui.multiply_opacity(k);
+                        ui.add_space(t.gap + 8.0 * (1.0 - k));
+                        match page {
+                            // General: the language, the theme, motion, the shader editor
+                            0 => {
+                                self.prefs_general(ui, &t);
+                                self.prefs_theme(ui, &t);
+                                self.prefs_code(ui, &t);
+                            }
+                            1 => self.prefs_audio(ui, &t),
+                            2 => self.prefs_agents(ui, &t),
+                            3 => self.prefs_osc(ui, &t),
+                            // About: which Velo this is, its updates, who makes it
+                            _ => self.prefs_about(ui, &t),
+                        }
                     });
                 });
             });
         });
         ctx.data_mut(|d| d.insert_temp(key, page));
+        if page != was {
+            ctx.data_mut(|d| d.insert_temp(turned_key, now));
+        }
+        if k < 1.0 || page != was {
+            ctx.request_repaint();
+        }
         if close {
             self.show_settings = false;
         }
@@ -1168,7 +1387,8 @@ impl App {
 
     /// Audio: following the music, and on macOS the permission to hear the computer, step by step.
     fn prefs_audio(&mut self, ui: &mut Ui, t: &Theme) {
-        kit::section(ui, t, icons::METRONOME, tr!("TEMPO"), true, |ui| {
+        kit::page_title(ui, t, icons::SPEAKER_HIGH, tr!("Audio"), tr!("How Velo follows the music, and what it's allowed to hear."));
+        kit::card(ui, t, tr!("TEMPO"), |ui| {
             let detail = tr!("On by default when Velo hears the computer or an app. Setting the tempo by hand turns it off.");
             kit::setting(ui, t, tr!("Follow the music's tempo"), detail, |ui| kit::switch(ui, t, &mut self.settings.auto_bpm, tr!("Follow the music's tempo")));
         });
@@ -1176,32 +1396,52 @@ impl App {
         if !cfg!(target_os = "macos") {
             return;
         }
-        kit::section(ui, t, icons::SPEAKER_HIGH, tr!("HEARING THE COMPUTER (MACOS)"), false, |ui| {
-            let steps = tr!(
+        kit::card(ui, t, tr!("HEARING THE COMPUTER (MACOS)"), |ui| {
+            let text = tr!(
                 "Velo hears what the computer plays only with your permission.\n1. Open System Settings (the button below takes you there).\n2. Privacy & Security, then Screen & System Audio Recording.\n3. Under System Audio Recording Only, switch Velo on. If it isn't listed, click +, pick Velo in your Applications folder and switch it on.\n4. Quit Velo and open it again.\nFor a microphone or an audio interface: Privacy & Security, then Microphone, Velo on.\nEvery new build of Velo may ask again: macOS ties the permission to the build. If it stops hearing after an update, switch Velo off and on there, or remove it with - and add it again."
             );
-            ui.spacing_mut().item_spacing.y = 6.0;
-            for line in steps.lines() {
-                let numbered = line.chars().next().is_some_and(|c| c.is_ascii_digit());
-                ui.add(egui::Label::new(RichText::new(line).color(if numbered { t.fg_text } else { t.fg_muted })).wrap());
+            // its first line says why, the numbered ones are the steps, the rest is what else to know
+            let mut lines = text.lines();
+            if let Some(why) = lines.next() {
+                kit::para(ui, t, why, t.fg_text);
+                ui.add_space(t.gap);
             }
+            let (numbered, notes): (Vec<&str>, Vec<&str>) = lines.partition(|l| l.chars().next().is_some_and(|c| c.is_ascii_digit()));
+            let numbered: Vec<&str> = numbered.iter().map(|l| l.split_once(". ").map_or(*l, |(_, words)| words)).collect();
+            kit::steps(ui, t, &numbered);
             ui.add_space(t.gap);
             if kit::button(ui, t, Some(icons::GEAR_SIX), tr!("Open System Settings"), false).clicked() {
                 Self::open_audio_privacy();
             }
+            ui.add_space(t.pad);
+            for (i, line) in notes.iter().enumerate() {
+                let (icon, color) = if i == 0 { (icons::MICROPHONE, t.accent) } else { (icons::INFO, t.warn) };
+                kit::callout(ui, t, icon, line, color);
+                ui.add_space(t.gap);
+            }
+            ui.add_space(t.pad - t.gap);
         });
     }
 
     fn prefs_general(&mut self, ui: &mut Ui, t: &Theme) {
         // each language under its own name, so it's found whatever the current one is
-        kit::section(ui, t, icons::TRANSLATE, tr!("LANGUAGE"), true, |ui| {
+        kit::page_title(ui, t, icons::GEAR_SIX, tr!("General"), tr!("Velo's language, its looks, and the editor your shaders open in."));
+        kit::card(ui, t, tr!("LANGUAGE"), |ui| {
             let current = Lang::ALL.iter().position(|l| *l == self.settings.language).unwrap_or(0);
-            if let Some(i) = kit::segmented(ui, t, current, &Lang::ALL.map(Lang::name)) {
+            // a list to pick from: it stays one row however many languages there are
+            let r = kit::select(ui, t, Some(icons::TRANSLATE), Lang::ALL[current].name());
+            let mut picked = None;
+            kit::menu(t, &r).show(|ui| {
+                let items: Vec<(&str, &str)> = Lang::ALL.iter().map(|l| ("", l.name())).collect();
+                picked = kit::choose(ui, t, &items, Some(current));
+            });
+            if let Some(i) = picked {
                 self.settings.language = Lang::ALL[i];
                 i18n::set(Lang::ALL[i]);
             }
+            ui.add_space(t.pad);
         });
-        kit::section(ui, t, icons::WIND, tr!("MOTION"), false, |ui| {
+        kit::card(ui, t, tr!("MOTION"), |ui| {
             let mut reduce = self.settings.reduce_motion;
             let detail = tr!("Panels, menus and lists appear without animating.");
             if kit::setting(ui, t, tr!("Reduce motion"), detail, |ui| kit::switch(ui, t, &mut reduce, tr!("Reduce motion"))).changed() {
@@ -1214,21 +1454,39 @@ impl App {
     /// Preferences → About: who makes Velo, its source, and its sister project, as Ravune's About
     /// names Velo.
     fn prefs_about(&mut self, ui: &mut Ui, t: &Theme) {
-        kit::section(ui, t, icons::INFO, "VELO", true, |ui| {
-            ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).font(Theme::mono(t.text_xs)).color(t.fg_muted));
-            ui.label(RichText::new(tr!("Live visuals played by the music.")).color(t.fg_text));
-            ui.label(RichText::new(tr!("Made by gilgil")).strong().color(t.accent));
-            ui.hyperlink_to(format!("{}  {}", icons::ARROW_SQUARE_OUT, tr!("Source on GitHub")), "https://github.com/g1lg1l/velo");
-            ui.label(RichText::new(tr!("Free and open source: the app under GPL-3.0-or-later, its libraries MIT or Apache-2.0.")).small().color(t.fg_muted));
+        // the mark, the name, the motto, which Velo this is
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = t.pad * 1.5;
+            let (mark, _) = ui.allocate_exact_size(vec2(64.0, 64.0), Sense::hover());
+            ui.painter().image(widgets::brand(ui.ctx(), widgets::ICON_256), mark, egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Theme::NO_TINT);
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add_space(4.0);
+                ui.label(RichText::new("Velo").size(24.0).strong().color(t.fg_text));
+                ui.label(RichText::new(crate::canvas::MOTTO).color(t.fg_muted));
+                ui.label(RichText::new(concat!("v", env!("CARGO_PKG_VERSION"))).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+            });
         });
-        kit::section(ui, t, icons::PIANO_KEYS, tr!("SISTER PROJECT"), false, |ui| {
-            ui.label(RichText::new(tr!("Making the beats too? Ravune, from the same maker, is a modular DAW for deep sound design.")).color(t.fg_text));
+        ui.add_space(t.pad * 2.0);
+        self.prefs_updates(ui, t);
+        kit::card(ui, t, tr!("ABOUT"), |ui| {
+            kit::para(ui, t, tr!("Live visuals played by the music."), t.fg_text);
+            ui.label(RichText::new(tr!("Made by gilgil")).strong().color(t.accent));
+            ui.add_space(t.gap);
+            ui.hyperlink_to(format!("{}  {}", icons::ARROW_SQUARE_OUT, tr!("Source on GitHub")), "https://github.com/g1lg1l/velo");
+            ui.add_space(t.gap);
+            kit::hint(ui, t, tr!("Free and open source: the app under GPL-3.0-or-later, its libraries MIT or Apache-2.0."));
+            ui.add_space(t.pad);
+        });
+        kit::card(ui, t, tr!("SISTER PROJECT"), |ui| {
+            kit::para(ui, t, tr!("Making the beats too? Ravune, from the same maker, is a modular DAW for deep sound design."), t.fg_text);
             ui.hyperlink_to(format!("{}  {}", icons::ARROW_SQUARE_OUT, tr!("Ravune · a modular DAW")), "https://github.com/g1lg1l/ravune");
+            ui.add_space(t.pad);
         });
     }
 
     fn prefs_theme(&mut self, ui: &mut Ui, t: &Theme) {
-        kit::section(ui, t, icons::PALETTE, tr!("THEME"), true, |ui| {
+        kit::card(ui, t, tr!("THEME"), |ui| {
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let current = self.settings.theme.name.clone();
@@ -1242,9 +1500,11 @@ impl App {
                     self.use_theme(ui.ctx(), theme);
                 }
             });
+            ui.add_space(t.gap);
             if kit::button(ui, t, Some(icons::FOLDER_OPEN), tr!("Import…"), false).clicked() {
                 self.import_theme(ui.ctx());
             }
+            ui.add_space(t.pad);
         });
     }
 
@@ -1500,4 +1760,18 @@ fn audio_menu(ui: &mut Ui, t: &Theme, state: &AudioState, current: Option<&Input
         pick = Some(inputs.swap_remove(i).1);
     }
     (pick, help)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn how_long_ago_is_said_in_the_largest_unit_that_fits() {
+        assert_eq!(ago(59), "just now");
+        assert_eq!(ago(150), "2 min ago");
+        assert_eq!(ago(2 * 3600 + 5), "2 h ago");
+        assert_eq!(ago(30 * 3600), "yesterday");
+        assert_eq!(ago(3 * 86_400), "3 days ago");
+    }
 }

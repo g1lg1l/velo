@@ -33,6 +33,7 @@ The keys you play with.
 | <kbd>Ctrl</kbd> <kbd>A</kbd> | Select all nodes |
 | <kbd>E</kbd> | Turn the selection off or on |
 | <kbd>Ctrl</kbd> <kbd>D</kbd> | Duplicate the selection |
+| <kbd>Ctrl</kbd> <kbd>G</kbd> | Group the selection: a frame round the nodes, with a name. Drag its title to move them all, double-click it to rename, right-click to ungroup |
 | <kbd>Delete</kbd> or <kbd>Backspace</kbd> | Delete the selection |
 | <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>I</kbd> | Import an ISF shader |
 

@@ -31,7 +31,7 @@ fn fbm(start: vec2f) -> f32 {
     var p = start;
     var sum = 0.0;
     var amp = 0.5;
-    for (var i = 0; i < 3; i++) {
+    for (var i = 0; i < 4; i++) {
         sum += amp * noise(p);
         p = mat2x2f(1.6, 1.2, -1.2, 1.6) * p + vec2f(1.7, 9.2);
         amp *= 0.5;
@@ -48,12 +48,17 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let f = fbm(p + w * 2.5 + vec2f(0.0, t * 0.5));
     let shimmer = 0.012 * audio * g.hat * (noise(p * 25.0 + g.time * 6.0) - 0.5);
     // thicker toward the bottom, where the film drains
-    let d = thickness * (0.2 + f * 0.3 + uv.y * 0.15) + 0.05 * audio * g.bass + shimmer;
+    let d = thickness * (0.2 + f * 0.33 + uv.y * 0.15) + 0.07 * audio * g.bass + shimmer;
     // light off the film's two faces interferes: each wavelength (red, green, blue, in
     // micrometers) comes out bright at its own thicknesses
     let film = 0.5 + 0.5 * cos(6.2831853 * 2.0 * 1.33 * d / vec3f(0.65, 0.53, 0.45));
     // our eyes blend neighboring wavelengths: softer than pure red, green and blue
-    let soft = mix(vec3f((film.r + film.g + film.b) / 3.0), film, 0.7);
-    let col = tint.rgb + soft * shine * (0.5 + 0.7 * f);
-    return vec4f(col * (1.0 + 0.2 * audio * g.kick), 1.0);
+    let soft = mix(vec3f((film.r + film.g + film.b) / 3.0), film, 0.62);
+    // the film isn't flat: where it tilts toward the light it glints (its slope taken from
+    // the pixels next door, at no cost)
+    let slope = vec2f(dpdx(d), dpdy(d)) * g.resolution.y;
+    let n = normalize(vec3f(-slope * 0.6, 1.0));
+    let glint = pow(max(dot(n, normalize(vec3f(-0.35, -0.5, 0.8))), 0.0), 24.0);
+    let col = tint.rgb + soft * shine * (0.45 + 0.75 * f) * (0.8 + 0.5 * n.z) + vec3f(glint) * shine * 0.6;
+    return vec4f(col * (1.0 + 0.35 * audio * g.kick), 1.0);
 }

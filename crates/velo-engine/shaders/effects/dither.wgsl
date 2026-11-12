@@ -1,7 +1,7 @@
 /*{
   "name": "Dither",
   "category": "effect",
-  "description": "A four by four Bayer pattern reduces colors with a small musical exposure lift.",
+  "description": "A four by four Bayer pattern reduces colors; the music lifts the exposure, the kick most.",
   "inputs": [{ "id": "src", "type": "texture" }],
   "params": [
     { "id": "levels", "type": "int", "default": 3, "min": 2, "max": 8 },
@@ -19,7 +19,8 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let high = ((cell.x >> 1u) ^ (cell.y >> 1u)) * 2u + (cell.y >> 1u);
     let threshold = (f32(low * 4u + high) + 0.5) / 16.0;
     let gray = vec3f(dot(original.rgb, vec3f(0.2126, 0.7152, 0.0722)));
-    let color = clamp(select(original.rgb, gray, monochrome) + 0.08 * music * g.level, vec3f(0.0), vec3f(1.0));
+    // the music brightens what is lit; black stays black
+    let color = clamp(select(original.rgb, gray, monochrome) * (1.0 + music * (0.2 * g.level + 0.4 * g.kick)), vec3f(0.0), vec3f(1.0));
     let steps = f32(max(levels - 1, 1));
     return vec4f(floor(color * steps + threshold) / steps, original.a);
 }

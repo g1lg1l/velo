@@ -6,6 +6,7 @@
     { "id": "speed", "type": "float", "default": 0.6, "min": 0.0, "max": 3.0 },
     { "id": "stretch", "type": "float", "default": 0.35, "min": 0.0, "max": 1.0 },
     { "id": "density", "type": "int", "default": 160, "min": 20, "max": 400 },
+    { "id": "swirl", "type": "float", "default": 0.0, "min": -2.0, "max": 2.0 },
     { "id": "tint", "type": "color", "default": [0.6, 0.75, 1.0, 1.0] },
     { "id": "core", "type": "color", "default": [0.3, 0.4, 1.0, 1.0] },
     { "id": "audio", "type": "float", "default": 0.0, "min": 0.0, "max": 2.0 }
@@ -23,7 +24,8 @@ fn hash(c: vec2f) -> f32 {
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let p = (uv - 0.5) * vec2f(g.aspect, 1.0);
     let r = length(p);
-    let around = atan2(p.y, p.x) / 6.2831853 + 0.5;
+    // (swirl winds the streaks round the middle, as down a twisting tunnel)
+    let around = atan2(p.y, p.x) / 6.2831853 + 0.5 + swirl * 0.12 * log(r + 0.03);
     let rush = 1.0 + 1.5 * audio * g.kick;
     var light = vec3f(0.0);
     // four layers of streaks, each on its own slices of the way round

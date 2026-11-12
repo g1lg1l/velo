@@ -12,7 +12,7 @@
 
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let original = textureSample(src, smp, uv);
-    var q = (uv - 0.5) / (zoom * (1.0 + 0.08 * music * g.bass)) + 0.5;
+    var q = (uv - 0.5) / (zoom * (1.0 + music * (0.12 * g.bass + 0.1 * g.kick))) + 0.5;
     q.x = select(q.x, 0.5 - abs(q.x - 0.5), mode == 0 || mode == 2);
     q.y = select(q.y, 0.5 - abs(q.y - 0.5), mode == 1 || mode == 2);
     let color = textureSample(src, smp, q);

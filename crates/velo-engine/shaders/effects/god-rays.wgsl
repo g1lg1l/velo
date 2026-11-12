@@ -17,15 +17,17 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let c = 0.5 + center * 0.5;
     let reach = length * (1.0 + 0.6 * music * g.kick);
     // 32 steps back toward the point, what's bright along the way adding up, the far fainter
+    // each pixel starts at its own fraction of a step: the rays come out smooth, not in steps
+    let jitter = fract(sin(dot(px, vec2f(12.9898, 78.233))) * 43758.5453);
     var rays = vec3f(0.0);
     var weight = 0.0;
     for (var i = 0; i < 32; i++) {
-        let k = f32(i) / 32.0;
+        let k = (f32(i) + jitter) / 32.0;
         let s = textureSampleLevel(src, smp, uv + (c - uv) * k * reach, 0.0).rgb;
         let l = max(s.r, max(s.g, s.b));
         let w = 1.0 - k;
         rays += s * max(l - threshold, 0.0) / max(l, 0.0001) * w;
         weight += w;
     }
-    return vec4f(original.rgb + rays / weight * strength * 2.0, original.a);
+    return vec4f(original.rgb + rays / weight * strength * 2.0 * (1.0 + 0.6 * music * g.kick), original.a);
 }

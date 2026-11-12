@@ -57,7 +57,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 
 **Makes pictures**
 - 62 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Mesh, Text, Image, Video, Live, Media List, up to 256 files streamed from disk or held in memory, movies on a clock of their own), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze, Time Machine, Key and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (Beat Kick, LFO, Envelope, Sequencer, Sample & Hold, Random, Probe, Speed, Delay, Spring and more).
-- 40 shader presets, from Plasma and Fire to Lasers, Fractal, Reaction and V Beams, and 25 effect presets, from Glitch and VHS to LED Wall and God Rays.
+- 76 shader presets, from Plasma and Fire to Lasers, Fractal, Reaction and V Beams, and 25 effect presets, from Glitch and VHS to LED Wall and God Rays.
 - Your own WGSL or ISF shaders become nodes with knobs, rebuilt as you type or save. A broken shader keeps the last one that worked. A WGSL shader can keep buffers from frame to frame, each drawn by a pass of its own, for simulations like reaction diffusion.
 - Particles are born wherever a picture is lit (a logo, an edge map, a movie), in a sphere, or on the points of a 3D model (.obj, .ply), and drawn as soft dots or a picture of your own; its Orbit view turns a camera round them.
 - A **Mesh** node draws a 3D model (.obj, .ply) solid, with a depth test and 4x antialiasing, lit by a light with a shine, a studio reflection and a rim, from a camera that turns round it; the surface breathes with the bass and the kick flashes it.

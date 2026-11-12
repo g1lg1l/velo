@@ -25,7 +25,11 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let ray = floor(a * n / 6.2831853 + 0.5);
     let flicker = 1.0 + audio * g.hat * 0.3 * sin(ray * 12.9898 + floor(g.time * 12.0) * 4.1);
     var col = mix(color_a.rgb, color_b.rgb * flicker, band);
-    col *= 0.55 + 0.6 * exp(-r * 2.0);
-    col += color_b.rgb * glow * exp(-r * 6.0 / (1.0 + 0.5 * audio * g.bass));
-    return vec4f(col * (1.0 + 0.25 * audio * g.kick), 1.0);
+    // every other ray a shade deeper, all of them paler toward the middle
+    col *= 0.9 + 0.1 * cos(ray * 3.1415927);
+    col *= 0.72 + 0.45 * exp(-r * 2.0);
+    col += color_b.rgb * glow * (exp(-r * 6.0 / (1.0 + 0.8 * audio * g.bass)) + 0.6 * exp(-r * 22.0));
+    // the kick sends a ring of light out along the rays
+    col += color_b.rgb * audio * g.kick * exp(-abs(r - (1.0 - g.kick) * 0.9) * 14.0) * 0.5;
+    return vec4f(col * (1.0 + 0.3 * audio * g.kick), 1.0);
 }

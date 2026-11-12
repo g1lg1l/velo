@@ -1,7 +1,7 @@
 /*{
   "name": "Text List",
   "category": "generator",
-  "description": "Lines of words shown one at a time: in order, at random or back and forth, a new one every so many beats or seconds, cut or crossfaded, typed in if you like; set in a font as the Text sets its words",
+  "description": "Lines of words shown one at a time: in order, at random (every line once before any comes again, another way round each time) or back and forth, a new one every so many beats or seconds, cut or crossfaded, typed in if you like; set in a font as the Text sets its words",
   "inputs": [{ "id": "src", "type": "texture" }],
   "params": [
     { "id": "audio", "type": "float", "default": 0.0, "min": 0.0, "max": 2.0 },
@@ -73,16 +73,43 @@ fn hash(x: f32) -> f32 {
     return fract(sin(x * 12.9898 + 78.233) * 43758.5453);
 }
 
+fn gcd(a: i32, b: i32) -> i32 {
+    var x = a;
+    var y = b;
+    for (var i = 0; i < 16 && y != 0; i++) {
+        let t = x % y;
+        x = y;
+        y = t;
+    }
+    return x;
+}
+
+// the line dealt `i`th in round `round` of n lines: a stride through them that shares no
+// factor with n (so every line comes once) from a start of its own, both new every round.
+// Worked out for every pixel, so no deck can be shuffled here: a stride costs nothing
+fn dealt(i: i32, round: i32, n: i32) -> i32 {
+    var stride = 1 + i32(hash(f32(round) * 1.7 + 3.0) * f32(n - 1)) % (n - 1);
+    for (var k = 0; k < 16 && gcd(stride, n) != 1; k++) {
+        stride = stride % (n - 1) + 1;
+    }
+    stride = select(1, stride, gcd(stride, n) == 1);
+    let start = i32(hash(f32(round) * 2.3 + 11.0) * f32(n)) % n;
+    return (stride * i + start) % n;
+}
+
 // the line a step of the clock shows (as the Media List picks its files)
 fn pick(step: i32, n: i32) -> i32 {
     if n <= 1 {
         return 0;
     }
     if order == 1 {
-        // at random, not the one just before
-        let k = i32(hash(f32(step)) * f32(n)) % n;
-        let before = i32(hash(f32(step - 1)) * f32(n)) % n;
-        return select(k, (k + 1) % n, k == before && step > 0);
+        // at random as a deck is dealt: every line once, then all of them again another way
+        // round (as the Media List deals its files). A round doesn't start on the line the
+        // one before ended on: its first two swap
+        let round = step / n;
+        let i = step % n;
+        let clash = round > 0 && dealt(0, round, n) == dealt(n - 1, round - 1, n);
+        return dealt(select(i, 1 - i, clash && i < 2 && n > 2), round, n);
     }
     if order == 2 {
         let period = 2 * n - 2;

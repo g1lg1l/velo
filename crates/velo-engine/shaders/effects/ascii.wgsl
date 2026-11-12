@@ -29,7 +29,10 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let cell = vec2f(size, size * 1.4);
     let q = (floor(px / cell) + 0.5) * cell / g.resolution;
     let color = cell_color(q, cell);
-    let brightness = clamp(dot(color, vec3f(0.2126, 0.7152, 0.0722)) + 0.1 * music * g.mid, 0.0, 1.0);
+    // the mids lift every cell a step or so, the kick a few cells at random more
+    let cell_id = floor(px / cell);
+    let jolt = step(0.8, fract(sin(dot(cell_id + floor(g.time * 12.0), vec2f(12.9898, 78.233))) * 43758.5453)) * g.kick;
+    let brightness = clamp(dot(color, vec3f(0.2126, 0.7152, 0.0722)) + music * (0.2 * g.mid + 0.3 * jolt), 0.0, 1.0);
     let p = abs(fract(px / cell) - 0.5);
     let aa = 0.5 / size;
     let dot_shape = 1.0 - smoothstep(weight - aa, weight + aa, length(p));
@@ -43,6 +46,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     glyph = select(glyph, hash_shape, brightness >= 0.65);
     glyph = select(glyph, max(hash_shape, frame_shape), brightness >= 0.85);
     let margin = 1.0 - smoothstep(0.36, 0.4, max(p.x, p.y));
-    let ink = select(tint.rgb, color, colored);
-    return vec4f(ink * glyph * margin, original.a);
+    // a cell's own color, lifted so a thin glyph still reads
+    let ink = select(tint.rgb * (0.35 + 0.65 * brightness), color * (1.0 + 0.8 * (1.0 - brightness)), colored);
+    return vec4f(ink * glyph * margin * (1.0 + 0.5 * music * g.kick), original.a);
 }

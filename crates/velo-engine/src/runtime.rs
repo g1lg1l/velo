@@ -767,9 +767,13 @@ impl Thread {
         // Freeze: the program copied once, shown until it's let go
         let held_blit = Blit::new(&self.device, crate::gpu::FORMAT);
         // the layers: the program drawn on a stage, then each layer onto the other side of it
-        let (stage_blit, compose) = (Blit::new(&self.device, crate::gpu::FORMAT), Compose::new(&self.device));
+        let (stage_blit, mut compose) = (Blit::new(&self.device, crate::gpu::FORMAT), Compose::new(&self.device));
         let mut stage: Option<([u32; 2], [wgpu::TextureView; 2])> = None;
+        // the layers switched on, and every layer showing with how far it is in (0..1): one
+        // switched on fades in over LAYER_FADE, one switched off fades out and is then let go
         let mut layers: Vec<(u64, Layer, LayerBlend)> = Vec::new();
+        let mut showing: Vec<(u64, Layer, LayerBlend, f32)> = Vec::new();
+        let mut faded_at = Instant::now();
         let (mut freeze, mut held, mut pattern) = (false, None, false);
         let start = Instant::now();
         let tick = Duration::from_micros(16_667);
@@ -973,7 +977,7 @@ impl Thread {
             }
             let mut encoder = self.device.create_command_encoder(&Default::default());
             // the edited scene that isn't going out rests while the show needs the frames
-            let apart = edit != 0 && edit != show.live && edit != fading && !layers.iter().any(|l| l.0 == edit);
+            let apart = edit != 0 && edit != show.live && edit != fading && !showing.iter().any(|l| l.0 == edit);
             if !apart {
                 aside = Aside::default();
             }
@@ -990,7 +994,7 @@ impl Thread {
                 *left = 1;
             }
             let peeked = peek.map_or(0, |p| p.0);
-            let renders = |key: &u64| !(resting && *key == edit) && ([show.live, fading, edit].contains(key) || layers.iter().any(|l| l.0 == *key)) || (*key == peeked && peeked != 0);
+            let renders = |key: &u64| !(resting && *key == edit) && ([show.live, fading, edit].contains(key) || showing.iter().any(|l| l.0 == *key)) || (*key == peeked && peeked != 0);
             if graphs.iter().any(|(key, g)| renders(key) && g.programs.iter().any(|p| p.node.audio)) {
                 self.wave.load(&mut wave);
                 for (bytes, value) in wave_bytes.as_chunks_mut::<4>().0.iter_mut().zip(wave.iter().flatten()) {
@@ -1103,10 +1107,18 @@ impl Thread {
                 None => picture(show.live).map(|v| (v, v, 0.0)),
             };
             let size = graphs.iter().find(|g| g.0 == show.live).map(|(_, g)| g.runner.size());
+            // each layer a step nearer where it's going: in if it's switched on, out if not. One
+            // switched off keeps its place among those still fading, after those that are on
+            // (only Over cares which is drawn first)
+            let step = faded_at.elapsed().as_secs_f32() / LAYER_FADE;
+            faded_at = Instant::now();
+            let was = std::mem::take(&mut showing);
+            showing.extend(layers.iter().map(|&(key, layer, blend)| (key, layer, blend, (was.iter().find(|l| l.0 == key).map_or(0.0, |l| l.3) + step).min(1.0))));
+            showing.extend(was.iter().filter(|l| !layers.iter().any(|on| on.0 == l.0)).map(|&(key, layer, blend, fade)| (key, layer, blend, fade - step)).filter(|l| l.3 > 0.0));
             // the layers switched on: those under the program, then those over it (one that is
             // the live scene shows once, as the scene)
-            let shown: Vec<_> = layers.iter().filter(|l| ![show.live, fading].contains(&l.0)).filter_map(|&(key, layer, blend)| Some((picture(key)?, layer, blend))).collect();
-            let size = size.or_else(|| layers.iter().find_map(|l| graphs.iter().find(|g| g.0 == l.0).map(|(_, g)| g.runner.size())));
+            let shown: Vec<_> = showing.iter().filter(|l| ![show.live, fading].contains(&l.0)).filter_map(|&(key, layer, blend, fade)| Some((picture(key)?, layer, blend, fade))).collect();
+            let size = size.or_else(|| showing.iter().find_map(|l| graphs.iter().find(|g| g.0 == l.0).map(|(_, g)| g.runner.size())));
             let program = match size.filter(|_| !shown.is_empty()) {
                 Some(size) => {
                     if stage.as_ref().is_none_or(|s| s.0 != size) {
@@ -1116,9 +1128,9 @@ impl Thread {
                     let (a, b, p) = program.unwrap_or((&black, &black, 0.0));
                     stage_blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), &views[0], None);
                     let mut at = 0;
-                    for &(view, layer, blend) in shown.iter().filter(|l| l.1 == Layer::Bottom).chain(shown.iter().filter(|l| l.1 == Layer::Top)) {
+                    for (pass, &(view, layer, blend, fade)) in shown.iter().filter(|l| l.1 == Layer::Bottom).chain(shown.iter().filter(|l| l.1 == Layer::Top)).enumerate() {
                         let (under, over) = if layer == Layer::Top { (&views[at], view) } else { (view, &views[at]) };
-                        compose.draw(&self.device, &mut encoder, [under, over], blend, &views[1 - at]);
+                        compose.draw(&self.device, &self.queue, &mut encoder, [under, over], blend, (fade, layer == Layer::Bottom), pass, &views[1 - at]);
                         at = 1 - at;
                     }
                     Some((&views[at], &views[at], 0.0))
@@ -1269,12 +1281,18 @@ fn drop_later(graph: Box<Graph>) {
     std::thread::spawn(move || drop(graph));
 }
 
+/// How long a layer takes to come in or go out when it's switched, in seconds.
+const LAYER_FADE: f32 = 0.5;
+
 /// Puts a layer and what's under it together, a [`LayerBlend`] each: one pipeline per blend, its
 /// constant set when built, so the passes of a frame share no uniform.
 struct Compose {
     pipelines: Vec<wgpu::RenderPipeline>,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Each pass of a frame's own fade, so one pass's never reaches another: as many as the
+    /// most layers a frame has had.
+    fades: Vec<wgpu::Buffer>,
 }
 
 impl Compose {
@@ -1288,6 +1306,10 @@ struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
 @group(0) @binding(0) var under: texture_2d<f32>;
 @group(0) @binding(1) var over: texture_2d<f32>;
 @group(0) @binding(2) var smp: sampler;
+// how far the layer is in: 0 leaves the other picture alone (the one under it, or with
+// `layer_under` the one over it), 1 is the layer whole
+struct U { fade: f32, layer_under: f32 }
+@group(0) @binding(3) var<uniform> u: U;
 // LayerBlend::ALL's index: over (premultiplied), add, screen, multiply
 override BLEND: u32 = 0u;
 @fragment fn fs(v: V) -> @location(0) vec4<f32> {
@@ -1302,12 +1324,12 @@ override BLEND: u32 = 0u;
         // where the upper one is clear it changes nothing
         c = a.rgb * (b.rgb + 1.0 - b.a);
     }
-    return vec4<f32>(c, 1.0 - (1.0 - a.a) * (1.0 - b.a));
+    return mix(mix(a, b, u.layer_under), vec4<f32>(c, 1.0 - (1.0 - a.a) * (1.0 - b.a)), u.fade);
 }";
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("compose"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty, count: None };
         let texture = wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false };
-        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("compose"), entries: &[entry(0, texture), entry(1, texture), entry(2, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering))] });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("compose"), entries: &[entry(0, texture), entry(1, texture), entry(2, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)), entry(3, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None })] });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("compose"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
         let pipelines = (0..LayerBlend::ALL.len())
             .map(|blend| {
@@ -1331,11 +1353,19 @@ override BLEND: u32 = 0u;
             })
             .collect();
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        Self { pipelines, layout, sampler }
+        Self { pipelines, layout, sampler, fades: Vec::new() }
     }
 
-    /// Draws `[under, over]` put together the way `blend` says over all of `dst`.
-    fn draw(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, [under, over]: [&wgpu::TextureView; 2], blend: LayerBlend, dst: &wgpu::TextureView) {
+    /// Draws `[under, over]` put together the way `blend` says over all of `dst`, the layer of
+    /// the two (the upper one, or with `layer_under` the lower) `fade` of the way in; `pass` is
+    /// which of the frame's passes this is.
+    #[allow(clippy::too_many_arguments)]
+    fn draw(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, [under, over]: [&wgpu::TextureView; 2], blend: LayerBlend, (fade, layer_under): (f32, bool), pass: usize, dst: &wgpu::TextureView) {
+        while self.fades.len() <= pass {
+            self.fades.push(device.create_buffer(&wgpu::BufferDescriptor { label: Some("compose fade"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false }));
+        }
+        let uniform: Vec<u8> = [fade, f32::from(u8::from(layer_under))].iter().flat_map(|v| v.to_ne_bytes()).collect();
+        queue.write_buffer(&self.fades[pass], 0, &uniform);
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("compose"),
             layout: &self.layout,
@@ -1343,6 +1373,7 @@ override BLEND: u32 = 0u;
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(under) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(over) },
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 3, resource: self.fades[pass].as_entire_binding() },
             ],
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

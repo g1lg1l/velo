@@ -237,6 +237,109 @@ pub fn note(ui: &mut Ui, t: &Theme, icon: Option<&str>, text: &str, color: Color
     resp
 }
 
+/// A Preferences page's head: its icon on a tile of the accent, its name large, and a line on
+/// what the page is for.
+pub fn page_title(ui: &mut Ui, t: &Theme, icon: &str, title: &str, blurb: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = t.pad;
+        let (tile, _) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::hover());
+        ui.painter().rect_filled(tile, CornerRadius::same(t.radius_md), t.accent.gamma_multiply(0.16));
+        icon_at(ui.painter(), tile.center(), icon, 18.0, t.accent);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(RichText::new(title).size(t.text_lg + 3.0).strong().color(t.fg_text));
+            ui.label(RichText::new(blurb).font(t.small()).color(t.fg_muted));
+        });
+    });
+    ui.add_space(t.pad * 1.5);
+}
+
+/// A group of preferences, set apart by its heading and the room round it, not by a frame: the
+/// name in the text's own color over its rows, straight on the page. Rows end with room of
+/// their own ([`setting`] does); after anything else, add `t.pad`.
+pub fn card<R>(ui: &mut Ui, t: &Theme, title: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
+    if !title.is_empty() {
+        ui.label(RichText::new(sentence(title)).size(t.text_md).strong().color(t.fg_text));
+        ui.add_space(t.gap);
+        let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+        ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, t.line));
+        ui.add_space(t.pad);
+    }
+    let out = add(ui);
+    ui.add_space(t.pad * 1.25);
+    out
+}
+
+/// A hairline between two rows of a [`card`], with the room under it a row has.
+pub fn divider(ui: &mut Ui, t: &Theme) {
+    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
+    ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, t.line.gamma_multiply(0.6)));
+    ui.add_space(t.pad);
+}
+
+/// Words that wrap under themselves, `indent` in from the left: where a wrapped label would run
+/// back to the row's start.
+fn wrapped(ui: &mut Ui, text: &str, font: FontId, color: Color32, line: f32, indent: f32) -> egui::Rect {
+    let width = ui.available_width();
+    let mut job = egui::text::LayoutJob::single_section(text.to_owned(), egui::TextFormat { font_id: font, color, line_height: Some(line), ..Default::default() });
+    job.wrap.max_width = (width - indent).max(1.0);
+    let galley = ui.painter().layout_job(job);
+    let (rect, _) = ui.allocate_exact_size(vec2(width, galley.size().y), Sense::hover());
+    ui.painter().galley(pos2(rect.left() + indent, rect.top()), galley, color);
+    rect
+}
+
+/// Numbered steps: each number on a badge, its words wrapped beside it.
+pub fn steps(ui: &mut Ui, t: &Theme, steps: &[&str]) {
+    let line = t.text_md + 6.0;
+    for (i, step) in steps.iter().enumerate() {
+        let rect = wrapped(ui, step, t.body(), t.fg_text, line, 30.0);
+        let badge = pos2(rect.left() + 10.0, rect.top() + line / 2.0);
+        ui.painter().circle_filled(badge, 10.0, t.accent.gamma_multiply(0.18));
+        ui.painter().text(badge, Align2::CENTER_CENTER, (i + 1).to_string(), Theme::mono(t.text_xs), t.accent);
+        ui.add_space(t.gap + 2.0);
+    }
+}
+
+/// A paragraph of a page: body size, wrapped, its lines given room.
+pub fn para(ui: &mut Ui, t: &Theme, text: &str, color: Color32) {
+    wrapped(ui, text, t.body(), color, t.text_md + 6.0, 0.0);
+    ui.add_space(t.gap);
+}
+
+/// Something to know, set apart in a box tinted `color`, led by `icon`.
+pub fn callout(ui: &mut Ui, t: &Theme, icon: &str, text: &str, color: Color32) {
+    Frame::new().fill(color.gamma_multiply(0.10)).corner_radius(t.radius_sm).inner_margin(egui::Margin::symmetric(t.pad as i8, t.gap as i8 + 3)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        note(ui, t, Some(icon), text, Theme::mix(color, t.fg_text, 0.55));
+    });
+}
+
+/// A command or a snippet on one line, mono in a framed box, cut short where it doesn't fit,
+/// with a button at its end that copies it: true when that's clicked.
+pub fn snippet(ui: &mut Ui, t: &Theme, text: &str) -> bool {
+    Frame::new()
+        .fill(t.bg_field)
+        .stroke(Stroke::new(1.0, t.line))
+        .corner_radius(t.radius_sm)
+        .inner_margin(egui::Margin { left: t.pad as i8, right: 2, top: 2, bottom: 2 })
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let copied = icon_button(ui, t, crate::icons::COPY, tr!("Copy"), false).clicked();
+                    // the words from the left, up to the button
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.add(egui::Label::new(RichText::new(text).font(Theme::mono(t.text_xs)).color(t.fg_text)).truncate());
+                    });
+                    copied
+                })
+                .inner
+            })
+            .inner
+        })
+        .inner
+}
+
 /// A preference as a row: what it is with a line on what it does under it, its control on the
 /// right, room under it.
 pub fn setting<R>(ui: &mut Ui, t: &Theme, title: &str, detail: &str, add: impl FnOnce(&mut Ui) -> R) -> R {
@@ -746,7 +849,10 @@ pub fn segmented_with(ui: &mut Ui, t: &Theme, current: usize, labels: &[&str]) -
     let (rect, whole) = ui.allocate_exact_size(vec2(widths.iter().sum::<f32>() + 4.0, t.control_h), Sense::hover());
     let id = ui.scope_id().with(("segmented", labels));
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius::same(t.radius_sm), t.bg_field);
+    // a quiet track, round at its ends; the choice sits on a pill a shade lighter, not a block
+    // of the accent: the eye goes to the words, and to the dot beside the chosen ones
+    let round = CornerRadius::same((rect.height() / 2.0) as u8);
+    painter.rect_filled(rect, round, t.bg_field);
     let mut cells = Vec::with_capacity(labels.len());
     let mut x = rect.left() + 2.0;
     for (label, w) in labels.iter().zip(&widths) {
@@ -754,23 +860,32 @@ pub fn segmented_with(ui: &mut Ui, t: &Theme, current: usize, labels: &[&str]) -
         cells.push((cell, ui.interact(cell, id.with(label), Sense::click())));
         x += w;
     }
-    // the lit segment slides to the new choice
+    // the pill slides to the new choice like jelly: it reaches out the way it's going and
+    // thins as it does, then gathers itself there
     if let Some((cell, _)) = cells.get(current) {
-        let cx = ui.ctx().animate_value_with_time(id.with("x"), cell.left(), t.motion);
-        let cw = ui.ctx().animate_value_with_time(id.with("w"), cell.width(), t.motion);
-        painter.rect_filled(Rect::from_min_size(pos2(cx, cell.top()), vec2(cw, cell.height())), CornerRadius::same(t.radius_sm.saturating_sub(2)), t.accent);
+        let cx = ui.ctx().animate_value_with_time(id.with("x"), cell.center().x, t.motion * 1.6);
+        let cw = ui.ctx().animate_value_with_time(id.with("w"), cell.width(), t.motion * 1.6);
+        let ahead = cell.center().x - cx;
+        let (reach, thin) = (ahead * 0.45, (ahead.abs() / rect.width().max(1.0)).min(1.0) * 0.3);
+        let pill = Rect::from_min_max(pos2(cx - cw / 2.0 + reach.min(0.0), cell.top() + cell.height() * thin / 2.0), pos2(cx + cw / 2.0 + reach.max(0.0), cell.bottom() - cell.height() * thin / 2.0));
+        let pill_round = CornerRadius::same((pill.height() / 2.0) as u8);
+        painter.rect_filled(pill, pill_round, Theme::mix(t.bg_field, t.fg_text, 0.15));
+        painter.rect_stroke(pill, pill_round, Stroke::new(1.0, t.fg_text.gamma_multiply(0.10)), StrokeKind::Inside);
     }
     for (i, ((cell, resp), label)) in cells.iter().zip(labels).enumerate() {
         if resp.clicked() {
             picked = Some(i);
         }
         let on = i == current;
-        if !on && resp.hovered() {
-            painter.rect_filled(*cell, CornerRadius::same(t.radius_sm.saturating_sub(2)), t.bg_control);
+        let lit = ui.ctx().animate_bool_with_time(id.with(("on", i)), on, t.motion);
+        let h = if on { 0.0 } else { hover(ui, t, resp) };
+        let color = Theme::mix(Theme::mix(t.fg_muted, t.fg_text, 0.5 * h), t.fg_text, lit);
+        let words = painter.text(cell.center() + vec2(4.0 * lit, 0.0), Align2::CENTER_CENTER, *label, font.clone(), color);
+        // the dot that says which
+        if lit > 0.0 {
+            painter.circle_filled(pos2(words.left() - 7.0, cell.center().y), 2.5 * lit, t.accent);
         }
-        let color = if on { t.bg_base } else { t.fg_text };
-        painter.text(cell.center(), Align2::CENTER_CENTER, *label, font.clone(), color);
-        focus_ring(ui, t, resp, t.radius_sm.saturating_sub(2));
+        focus_ring(ui, t, resp, (cell.height() / 2.0) as u8);
         resp.widget_info(|| WidgetInfo::selected(Role::RadioButton, true, on, *label));
     }
     (picked, cells.into_iter().fold(whole, |a, (_, r)| a.union(r)))
@@ -1044,7 +1159,16 @@ fn glow_texture(ctx: &egui::Context) -> egui::TextureId {
 /// Keyboard focus ring (after React Bits' Star Border): it lands with a quick glow and
 /// settles to a thin line.
 pub fn focus_ring(ui: &Ui, t: &Theme, resp: &Response, radius: u8) {
-    let k = ui.ctx().animate_bool_with_time(resp.id.with("focus"), resp.has_focus(), t.motion);
+    // only while the keyboard is what moves the focus (Tab, the arrows): a click focuses too,
+    // and what was just clicked needs no ring round it
+    let key = Id::unique("focus moved by keys");
+    let (pressed, keyed) = ui.input(|i| {
+        let keys = [egui::Key::Tab, egui::Key::ArrowUp, egui::Key::ArrowDown, egui::Key::ArrowLeft, egui::Key::ArrowRight];
+        (i.pointer.any_pressed(), keys.iter().any(|k| i.key_pressed(*k)))
+    });
+    let by_keys = if keyed { true } else { !pressed && ui.data(|d| d.get_temp::<bool>(key)).unwrap_or(false) };
+    ui.data_mut(|d| d.insert_temp(key, by_keys));
+    let k = ui.ctx().animate_bool_with_time(resp.id.with("focus"), resp.has_focus() && by_keys, t.motion);
     if k <= 0.0 {
         return;
     }

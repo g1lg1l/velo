@@ -219,6 +219,12 @@ pub struct Scene {
     /// Cables tied into bundles on its canvas.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ties: Vec<Tie>,
+    /// Nodes framed together under a name on its canvas, and the words written on it: nothing
+    /// to the picture, a way to keep a big graph in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<Group>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Note>,
     /// A layer shows over or under whichever scene goes out, combined with it as `blend` says;
     /// launching one switches it on or off.
     #[serde(default, skip_serializing_if = "is_default")]
@@ -1015,6 +1021,34 @@ pub struct Tie {
     pub id: String,
     pub pos: [f32; 2],
     pub cables: Vec<String>,
+}
+
+/// Nodes framed together on the canvas under a name. The frame is drawn round its nodes wherever
+/// they are (it has no place or size of its own); a node that's gone is left out of it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub nodes: Vec<String>,
+}
+
+/// Words written on the canvas (canvas units, their top left corner): a title over a part of
+/// the graph, a note to self. `size` scales them (1: a heading).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Note {
+    pub id: String,
+    pub pos: [f32; 2],
+    pub text: String,
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub size: f32,
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
 }
 
 impl Tie {

@@ -302,12 +302,14 @@ impl App {
     /// Preferences → Updates.
     pub fn prefs_updates(&mut self, ui: &mut Ui, t: &Theme) {
         let version = env!("CARGO_PKG_VERSION");
-        kit::section(ui, t, icons::DOWNLOAD_SIMPLE, tr!("UPDATES"), true, |ui| {
+        kit::card(ui, t, tr!("UPDATES"), |ui| {
+            ui.spacing_mut().item_spacing.y = t.gap + 2.0;
             let mut on = !self.settings.no_update_check;
             let detail = tr!("Velo {} asks GitHub for the latest release. Nothing else is sent.", version);
             if kit::setting(ui, t, tr!("Check when Velo starts"), &detail, |ui| kit::switch(ui, t, &mut on, tr!("Check when Velo starts"))).changed() {
                 self.settings.no_update_check = !on;
             }
+            kit::divider(ui, t);
             ui.horizontal(|ui| {
                 if kit::button(ui, t, Some(icons::ARROW_CLOCKWISE), tr!("Check now"), false).clicked() && !self.updates.checking {
                     self.check_updates(ui.ctx());
@@ -356,6 +358,7 @@ impl App {
                 }
                 (None, _) => {}
             }
+            ui.add_space(t.pad);
             if restart {
                 self.request(crate::files::Pending::Restart);
             }

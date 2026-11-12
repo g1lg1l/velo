@@ -28,6 +28,9 @@ const VIEWER_H: f32 = NODE_W * 9.0 / 16.0;
 /// parameters down.
 const FOOTER_H: f32 = 20.0;
 pub const NODE_H: f32 = HEADER_H + VIEWER_H + FOOTER_H;
+/// A signal node's card is taller than a picture's: its line of words, its curve and its foot
+/// each need their room.
+const SCOPE_H: f32 = 124.0;
 /// An Audio In's tape deck, under its header.
 const DECK_H: f32 = 84.0;
 /// A line of the jacks under a card's footer: a signal plugged into it.
@@ -36,6 +39,8 @@ const JACK_H: f32 = 22.0;
 const ROW_H: f32 = 44.0;
 /// Samples in a row's curve: a second and a half.
 const TRAIL: usize = 45;
+/// A signal card's inputs keep curves too, beside its outputs': input `p`'s is kept as this + p.
+const INPUT_TRAIL: u8 = 128;
 /// Room the canvas leaves between nodes it places itself (append, duplicate, the demo).
 pub const SPACING: f32 = 56.0;
 /// Zoom limits. Going out, the real limit is the view that shows every node ([`min_zoom`]).
@@ -54,6 +59,11 @@ const TOOLBAR_ROOM: f32 = 40.0;
 const ZOOM_EASE: f32 = 0.05;
 /// Below this, names would be too small to read: cards keep their color and viewer only.
 const TEXT_ZOOM: f32 = 0.5;
+/// A group's frame round its nodes: the room it leaves them, its title strip's height, and a
+/// note's size at 1 (all canvas units).
+const GROUP_PAD: f32 = 18.0;
+const GROUP_TITLE: f32 = 26.0;
+const NOTE_SIZE: f32 = 26.0;
 /// Below this, ports would be specks: only the one under the pointer shows (wires still end
 /// where they plug in).
 const PORT_ZOOM: f32 = 0.4;
@@ -138,6 +148,9 @@ enum Act {
     Add(Pos2),
     Fit,
     Arrange,
+    /// Frame the selected nodes together under a name; write words on the canvas at a point.
+    Group,
+    Note(Pos2),
 }
 
 /// A zoom asked for by a key or the zoom menu, done (eased) where the canvas knows its size.
@@ -147,6 +160,8 @@ pub enum ZoomTo {
     Fit,
     /// The selected nodes (Shift+2).
     Selection,
+    /// The node the search found, in the middle at 100% (nearer than that helps nobody).
+    Found,
     /// A level, about the view's center (Shift+0 is 1.0).
     Level(f32),
     /// Figma's next step in or out, about the pointer if it's on the canvas.
@@ -206,12 +221,14 @@ pub struct Find {
     query: String,
     at: usize,
     focus: bool,
+    /// When it opened (it drops in), once drawn.
+    opened: Option<f64>,
 }
 
 impl Find {
     /// Open with `words` typed, on their first match (`VELO_DEMO_FIND`, screenshots).
     pub fn with(words: &str) -> Self {
-        Self { query: words.to_string(), at: 0, focus: true }
+        Self { query: words.to_string(), at: 0, focus: true, opened: None }
     }
 }
 
@@ -224,7 +241,7 @@ impl Find {
 
 impl Default for Find {
     fn default() -> Self {
-        Self { query: String::new(), at: 0, focus: true }
+        Self { query: String::new(), at: 0, focus: true, opened: None }
     }
 }
 
@@ -235,6 +252,13 @@ fn found(scene: &Scene, words: &str) -> Vec<String> {
         return Vec::new();
     }
     scene.nodes.iter().filter(|n| n.name.to_lowercase().contains(&words) || n.kind.to_lowercase().contains(&words)).map(|n| n.id.clone()).collect()
+}
+
+/// What's being typed on the canvas: the id of the group or note, and its words so far.
+struct Typing {
+    id: String,
+    text: String,
+    focus: bool,
 }
 
 /// The canvas' UI state: the view per scene and the selection. Not saved, not undoable.
@@ -273,6 +297,12 @@ pub struct State {
     pub find: Option<Find>,
     pub zoom_to: Option<ZoomTo>,
     reveal: Option<String>,
+    /// A group's name or a note's words being typed, where they are on the canvas.
+    typing: Option<Typing>,
+    /// A note was just added: its words are typed at once, the next frame.
+    note_new: bool,
+    /// The pointer was over a group's title or a note last frame.
+    on_label: bool,
     /// Under the pointer last frame (the keymap's canvas keys work then).
     pub hovered: bool,
     /// The node whose parameters drop down under its card (its header's chevron).
@@ -398,7 +428,10 @@ fn plane_rect(scene: &Scene, n: &velo_core::Node, pos: [f32; 2]) -> Rect {
     let w = node_w(&n.kind);
     let h = match rows(scene, n) {
         Some(list) => HEADER_H + deck_h(&n.kind) + list.len().max(1) as f32 * ROW_H + FOOTER_H,
-        None => NODE_H + ports_span(velo_core::inputs_shown(scene, n)) - VIEWER_H,
+        None => {
+            let scope = node_kind(&n.kind).is_some_and(|k| k.category == velo_core::Category::Signal) && n.kind != velo_core::LFO;
+            HEADER_H + ports_span(velo_core::inputs_shown(scene, n)).max(if scope { SCOPE_H } else { 0.0 }) + FOOTER_H
+        }
     };
     Rect::from_min_size(pos2(pos[0] + NODE_W - w, pos[1]), vec2(w, h))
 }
@@ -524,13 +557,16 @@ pub fn arrange(scene: &Scene) -> Vec<(String, [f32; 2])> {
 /// How long a tie keeps its cables straight and level, side by side, and how far apart.
 const TIE_RUN: f32 = 30.0;
 const TIE_GAP: f32 = 4.0;
+/// How long a bend (a tie of one cable) keeps its cable level.
+const BEND_RUN: f32 = 6.0;
 
 /// A cable from `a` to `b` through the ties holding it (screen points: its own place in each
 /// bundle, left to right), straight through each, curving between.
-fn routed(a: Pos2, b: Pos2, through: &[Pos2], zoom: f32) -> Vec<Pos2> {
-    let half = vec2(TIE_RUN * zoom / 2.0, 0.0);
+fn routed(a: Pos2, b: Pos2, through: &[(Pos2, f32)], zoom: f32) -> Vec<Pos2> {
     let (mut pts, mut from) = (Vec::new(), a);
-    for &p in through {
+    for &(p, run) in through {
+        // (how long it runs level there: a bundle's tie holds it straight, a bend barely)
+        let half = vec2(run * zoom / 2.0, 0.0);
         pts.extend(bezier(from, p - half, zoom));
         from = p + half;
     }
@@ -614,6 +650,10 @@ fn cable_nodes<'a>(scene: &'a Scene, key: &'a str) -> Vec<&'a str> {
 
 /// A tie on screen round its `n` cables `gap` apart: a capsule standing across them.
 fn tie_rect(at: Pos2, n: usize, gap: f32, zoom: f32) -> Rect {
+    // one cable: a bend, a round point on it
+    if n <= 1 {
+        return Rect::from_center_size(at, Vec2::splat(9.0 * zoom.max(0.6)));
+    }
     Rect::from_center_size(at, vec2(8.0 * zoom.max(0.6), n.max(1) as f32 * gap + 10.0 * zoom.max(0.6)))
 }
 
@@ -649,7 +689,9 @@ const PORT_GAP: f32 = 9.0;
 /// Inputs down the left edge, outputs down the right, spread along the viewer.
 fn port_pos(r: Rect, zoom: f32, count: usize, i: u8, output: bool) -> Pos2 {
     let top = r.top() + HEADER_H * zoom;
-    let y = top + ports_span(count) * zoom * (f32::from(i) + 1.0) / (count as f32 + 1.0);
+    // along the card's own viewer: a taller card (a signal's, a Blend of sixteen) spreads them over all of it
+    let span = (r.height() / zoom - HEADER_H - FOOTER_H).max(ports_span(count));
+    let y = top + span * zoom * (f32::from(i) + 1.0) / (count as f32 + 1.0);
     pos2(if output { r.right() } else { r.left() }, y)
 }
 
@@ -1013,6 +1055,51 @@ fn paint_lfo(painter: &Painter, t: &Theme, r: Rect, zoom: f32, lfo: &velo_engine
     painter.circle_filled(point(now), 3.5 * zoom.sqrt(), t.fg_text);
 }
 
+/// What a small graph's curve is read against: the range it can take as lines at 0, a half and
+/// 1, as many upright lines as keep its cells near square (three columns at least, twelve at
+/// most), and (where words can be read) "1" and "0" at its top and bottom.
+fn paint_grid(painter: &Painter, t: &Theme, area: Rect, zoom: f32) {
+    let (edge, inner) = (Stroke::new(1.0, t.line), Stroke::new(1.0, t.line.gamma_multiply(0.6)));
+    for level in [0.0, 0.5, 1.0] {
+        painter.hline(area.x_range(), area.bottom() - level * area.height(), if level == 0.5 { inner } else { edge });
+    }
+    // two rows high: a column as wide as a row is tall, or nearly
+    let columns = ((2.0 * area.width() / area.height().max(1.0)).round() as usize).clamp(3, 12);
+    for k in 1..columns {
+        painter.vline(area.left() + area.width() * k as f32 / columns as f32, area.y_range(), inner);
+    }
+    if zoom >= TEXT_ZOOM {
+        let (font, color, x) = (Theme::mono(7.0 * zoom), t.fg_muted.gamma_multiply(0.75), area.right() - 7.0 * zoom);
+        painter.text(pos2(x, area.top() + 1.0 * zoom), Align2::RIGHT_TOP, "1", font.clone(), color);
+        painter.text(pos2(x, area.bottom() - 1.0 * zoom), Align2::RIGHT_BOTTOM, "0", font, color);
+    }
+}
+
+/// A signal's last second and a half as a curve across `area`, the oldest at its left edge, now
+/// at its right: filled under it, or the line alone.
+fn paint_trail(painter: &Painter, area: Rect, zoom: f32, trail: &VecDeque<f32>, color: egui::Color32, filled: bool) {
+    if trail.len() < 2 {
+        return;
+    }
+    let step = area.width() / (TRAIL - 1) as f32;
+    let start = area.right() - step * (trail.len() - 1) as f32;
+    let line: Vec<Pos2> = trail.iter().enumerate().map(|(i, x)| pos2(start + step * i as f32, area.bottom() - x.clamp(0.0, 1.0) * area.height())).collect();
+    if filled {
+        let mut fill = Mesh::default();
+        for (i, p) in line.iter().enumerate() {
+            fill.colored_vertex(*p, color.gamma_multiply(0.3));
+            fill.colored_vertex(pos2(p.x, area.bottom()), color.gamma_multiply(0.03));
+            if i > 0 {
+                let b = 2 * i as u32;
+                fill.add_triangle(b - 2, b - 1, b);
+                fill.add_triangle(b - 1, b + 1, b);
+            }
+        }
+        painter.add(fill);
+    }
+    painter.add(Shape::line(line, Stroke::new(if filled { 1.3 } else { 1.0 } * zoom.sqrt(), color)));
+}
+
 /// One listed output as its card draws it: its name, whether it's a hit (kick, snare, hat,
 /// beat), what it reads now and lately.
 struct Row<'a> {
@@ -1045,23 +1132,9 @@ fn paint_rows(painter: &Painter, t: &Theme, r: Rect, zoom: f32, deck: f32, rows:
         }
         // the curve, oldest at the card's left edge, now at its right edge where the port is
         let area = Rect::from_min_max(pos2(band.left(), band.top() + 6.0 * zoom), pos2(band.right(), band.bottom() - 1.0));
-        let trail: Vec<f32> = row.trail.map(|tr| tr.iter().copied().collect()).unwrap_or_default();
-        if trail.len() >= 2 {
-            let step = area.width() / (TRAIL - 1) as f32;
-            let start = area.right() - step * (trail.len() - 1) as f32;
-            let line: Vec<Pos2> = trail.iter().enumerate().map(|(i, x)| pos2(start + step * i as f32, area.bottom() - x.clamp(0.0, 1.0) * area.height())).collect();
-            let mut fill = Mesh::default();
-            for (i, p) in line.iter().enumerate() {
-                fill.colored_vertex(*p, t.cat_signal.gamma_multiply(0.3));
-                fill.colored_vertex(pos2(p.x, area.bottom()), t.cat_signal.gamma_multiply(0.03));
-                if i > 0 {
-                    let b = 2 * i as u32;
-                    fill.add_triangle(b - 2, b - 1, b);
-                    fill.add_triangle(b - 1, b + 1, b);
-                }
-            }
-            painter.add(fill);
-            painter.add(Shape::line(line, Stroke::new(1.3 * zoom.sqrt(), t.cat_signal)));
+        paint_grid(painter, t, area, zoom);
+        if let Some(trail) = row.trail {
+            paint_trail(painter, area, zoom, trail, t.cat_signal, true);
         }
         let now = pos2(area.right(), area.bottom() - v * area.height());
         painter.circle_filled(now, (1.5 + 2.5 * v) * zoom.sqrt(), Theme::mix(t.cat_signal, t.fg_text, 0.6 * v));
@@ -1110,80 +1183,48 @@ struct Deck<'a> {
     bpm: Option<(f32, f32)>,
 }
 
-/// An Audio In's tape deck under its header, on the card itself: a cassette drawn in a divider's
-/// grey, a real one's proportions (its body, the label with its orange band and ruled lines, the
-/// window, the head opening along its foot with its pins and pad), two reels passing the tape
-/// from one to the other, their teeth turning with the level, the tape between them trembling
-/// with it, the band brightening as it's loud and a glint sweeping the window now and then.
-/// Beside it what it listens to, the tempo pulsing on the beat, and the level as green bars with
-/// a peak that falls slowly.
+/// An Audio In's tape deck under its header, on the card itself: a reel-to-reel drawn in one
+/// thin line on a dark screen, as a pocket synth shows its tape: two reels turning with the
+/// level, the tape wound on each as far as it has run, the tape off their feet over two rollers
+/// and past the head, trembling there with what it hears. Beside it what it listens to, the
+/// tempo pulsing on the beat, and the level as green bars with a peak that falls slowly.
 fn paint_deck(painter: &Painter, t: &Theme, room: Rect, zoom: f32, deck: &Deck) {
-    const ORANGE: egui::Color32 = crate::theme::TE_ORANGE;
     let (z, level) = (zoom, deck.level.clamp(0.0, 1.0));
     // a grid of units over the cassette: its body runs from (3, 5) to (21, 16.5), about a real
     // one's 100 by 63 mm
     let u = 5.4 * z;
     let origin = room.left_top() + vec2(14.0 * z - 3.0 * u, 11.0 * z - 5.0 * u);
     let at = |x: f32, y: f32| origin + vec2(x, y) * u;
-    let grey = Theme::mix(t.line, t.fg_muted, 0.55);
-    let (line, thin) = (Stroke::new(2.0 * z, grey), Stroke::new(1.0 * z, Theme::mix(t.line, t.fg_muted, 0.3)));
     let body = Rect::from_min_max(at(3.0, 5.0), at(21.0, 16.5));
-    painter.rect_filled(body, CornerRadius::same((1.4 * u) as u8), Theme::mix(t.bg_card, t.fg_text, 0.03));
-    // the label: a band lit as it's loud, the name, two ruled lines to write on
-    let label = Rect::from_min_max(at(4.2, 6.0), at(19.8, 12.6));
-    painter.rect_filled(label, CornerRadius::same((0.8 * u) as u8), Theme::mix(t.bg_card, t.fg_text, 0.06));
-    painter.rect_stroke(label, CornerRadius::same((0.8 * u) as u8), thin, StrokeKind::Inside);
-    let band = Rect::from_min_max(at(4.2, 6.0), at(19.8, 7.1));
-    let r = (0.8 * u) as u8;
-    painter.rect_filled(band, CornerRadius { nw: r, ne: r, sw: 0, se: 0 }, Theme::mix(Theme::mix(ORANGE, t.bg_card, 0.25), ORANGE, level));
-    if zoom >= TEXT_ZOOM {
-        painter.text(at(5.0, 6.55), Align2::LEFT_CENTER, "VELO", FontId::monospace(0.85 * u), t.bg_base);
-        painter.text(at(19.0, 6.55), Align2::RIGHT_CENTER, "A", FontId::monospace(0.85 * u), t.bg_base);
+    // its screen, dark as the canvas: everything on it is one thin line
+    painter.rect_filled(body, CornerRadius::same((0.9 * u) as u8), t.bg_base);
+    let ink = t.fg_text.gamma_multiply(0.9);
+    let (line, thin) = (Stroke::new(1.1 * z, ink), Stroke::new(1.0 * z, t.fg_muted.gamma_multiply(0.7)));
+    // the reels, turning with the level, the tape on each as far as it has run
+    let (a, b, radius) = (at(7.3, 9.7), at(16.7, 9.7), 3.4 * u);
+    widgets::reel(painter, a, radius, deck.reel, 1.0 - deck.tape, ink, 1.1 * z);
+    widgets::reel(painter, b, radius, deck.reel, deck.tape, ink, 1.1 * z);
+    // between them, the loop it plays in
+    painter.rect_stroke(Rect::from_center_size(at(12.0, 9.7), vec2(1.7, 0.8) * u), CornerRadius::same((0.4 * u) as u8), thin, StrokeKind::Middle);
+    // the tape: off each reel's foot, over a roller, past the head in the middle, trembling
+    // there with what it hears
+    let (left, right) = (at(6.2, 15.1), at(17.8, 15.1));
+    let foot = |c: Pos2, side: f32| c + egui::Vec2::angled(std::f32::consts::FRAC_PI_2 + side * 0.75) * radius;
+    let mut tape = vec![foot(a, 1.0), at(4.5, 14.3), left];
+    tape.extend((1..24).map(|s| {
+        let k = s as f32 / 24.0;
+        pos2(left.x + (right.x - left.x) * k, left.y + (k * std::f32::consts::PI).sin() * (deck.reel * 3.0 + k * 20.0).sin() * level * 0.35 * u)
+    }));
+    tape.extend([right, at(19.5, 14.3), foot(b, -1.0)]);
+    painter.add(Shape::line(tape, line));
+    for roller in [left, right] {
+        painter.circle_filled(roller, 0.42 * u, t.bg_base);
+        painter.circle_stroke(roller, 0.42 * u, line);
     }
-    for y in [7.8, 12.0] {
-        painter.hline(at(5.2, y).x..=at(18.8, y).x, at(0.0, y).y, thin);
-    }
-    // the window, the tape wound on each reel (seen through it), the tape running between
-    let window = Rect::from_min_max(at(6.2, 8.4), at(17.8, 11.2));
-    painter.rect_filled(window, CornerRadius::same((1.4 * u) as u8), t.bg_base);
-    let (a, b) = (at(8.4, 9.8), at(15.6, 9.8));
-    // (each reel's tape from its hub to the window's height)
-    let (wound_a, wound_b) = ((0.95 + 0.45 * (1.0 - deck.tape)) * u, (0.95 + 0.45 * deck.tape) * u);
-    let inside = painter.with_clip_rect(window.intersect(painter.clip_rect()));
-    inside.circle_filled(a, wound_a, ORANGE);
-    inside.circle_filled(b, wound_b, Theme::mix(ORANGE, t.bg_base, 0.25));
-    let wave: Vec<Pos2> = (0..=24)
-        .map(|s| {
-            let k = s as f32 / 24.0;
-            let x = a.x + (b.x - a.x) * k;
-            let y = a.y + wound_a + (wound_b - wound_a) * k;
-            pos2(x, y + (k * std::f32::consts::PI).sin() * (deck.reel * 3.0 + k * 20.0).sin() * level * 0.3 * u)
-        })
-        .collect();
-    inside.add(Shape::line(wave, Stroke::new(1.2 * z, Theme::mix(ORANGE, t.fg_text, 0.3))));
-    // a glint sweeping the window every few turns
-    let sweep = (deck.reel / std::f32::consts::TAU * 0.5).fract() * 2.0 - 0.5;
-    let gx = window.left() + window.width() * sweep;
-    let glint = vec![pos2(gx, window.top()), pos2(gx + 1.2 * u, window.top()), pos2(gx + 0.4 * u, window.bottom()), pos2(gx - 0.8 * u, window.bottom())];
-    inside.add(Shape::convex_polygon(glint, t.fg_text.gamma_multiply(0.07), Stroke::NONE));
-    painter.rect_stroke(window, CornerRadius::same((1.4 * u) as u8), thin, StrokeKind::Inside);
-    // the hubs, six teeth each, turning
-    for c in [a, b] {
-        painter.circle_filled(c, 0.75 * u, t.bg_card);
-        for s in 0..6 {
-            let d = egui::Vec2::angled(deck.reel + s as f32 * std::f32::consts::TAU / 6.0);
-            painter.line_segment([c + d * 0.38 * u, c + d * 0.72 * u], Stroke::new(1.1 * z, grey));
-        }
-        painter.circle_stroke(c, 0.75 * u, Stroke::new(1.4 * z, grey));
-    }
-    // the head opening along the foot: its slope, two pins, the pad in the middle
-    painter.add(Shape::line(vec![at(5.4, 16.5), at(6.9, 13.6), at(17.1, 13.6), at(18.6, 16.5)], line));
-    for x in [8.4, 15.6] {
-        painter.rect_stroke(Rect::from_center_size(at(x, 15.0), vec2(0.8, 0.8) * u), CornerRadius::same((0.2 * u) as u8), thin, StrokeKind::Middle);
-    }
-    painter.rect_stroke(Rect::from_min_max(at(10.9, 14.3), at(13.1, 15.7)), CornerRadius::same((0.3 * u) as u8), thin, StrokeKind::Middle);
-    // the outline over it all
-    painter.rect_stroke(body, CornerRadius::same((1.4 * u) as u8), line, StrokeKind::Middle);
+    let head = Rect::from_center_size(at(12.0, 14.9), vec2(0.9, 0.9) * u);
+    painter.rect_filled(head, 0.0, t.bg_base);
+    painter.rect_stroke(head, 0.0, line, StrokeKind::Middle);
+    painter.line_segment([at(12.0, 14.45), at(12.0, 13.8)], thin);
     // beside it: the source and the tempo, the level, its figure
     let (left, right) = (body.right() + 22.0 * z, room.right() - 16.0 * z);
     let mono = FontId::monospace(t.text_xs * z);
@@ -1197,6 +1238,22 @@ fn paint_deck(painter: &Painter, t: &Theme, room: Rect, zoom: f32, deck: &Deck) 
         kit::fit_text(painter, pos2(left, top), Align2::LEFT_CENTER, deck.source.to_uppercase(), mono.clone(), t.fg_muted, room_left);
     }
     let meter = Rect::from_min_max(pos2(left, room.top() + 27.0 * z), pos2(right, room.top() + 55.0 * z));
+    // far out its twenty-eight bars are less than a pixel each: one bar that fills, and farther
+    // still a light that glows with the level
+    if zoom < 0.3 {
+        let c = pos2((left + right) / 2.0, room.center().y);
+        let r = (room.height() * 0.22).max(1.5);
+        painter.circle_filled(c, r * (1.0 + 0.8 * level), t.cat_signal.gamma_multiply(0.25 * level));
+        painter.circle_filled(c, r, Theme::mix(t.line, t.cat_signal, 0.25 + 0.75 * level));
+        return;
+    }
+    if zoom < 0.6 {
+        let bar = Rect::from_min_max(pos2(left, room.center().y - 3.0 * z.max(0.5)), pos2(right, room.center().y + 3.0 * z.max(0.5)));
+        let round = CornerRadius::same((bar.height() / 2.0) as u8);
+        painter.rect_filled(bar, round, t.line.gamma_multiply(0.8));
+        painter.rect_filled(Rect::from_min_max(bar.min, pos2(bar.left() + bar.width() * level, bar.bottom())), round, t.cat_signal);
+        return;
+    }
     let (n, gap) = (28, 2.5 * z);
     let w = ((meter.width() - gap * (n - 1) as f32) / n as f32).max(1.0);
     let lit_to = meter.left() + meter.width() * level;
@@ -1277,19 +1334,180 @@ fn paint_jacks(painter: &Painter, t: &Theme, strip: Rect, zoom: f32, lines: &[Ja
     }
 }
 
-/// A signal node's inputs (muted) and outputs as bars, side by side.
-fn paint_meters(painter: &Painter, t: &Theme, r: Rect, zoom: f32, values: &[f32], inputs: usize) {
+/// One input of a signal node as its card shows it: its name, and what comes in now and lately
+/// (None: nothing is wired in).
+type Input<'a> = (&'a str, Option<(f32, Option<&'a VecDeque<f32>>)>);
+
+/// What a signal node's card says about itself.
+struct Scope<'a> {
+    /// What it does, in a line, with its settings as they are.
+    caption: String,
+    inputs: Vec<Input<'a>>,
+    out: f32,
+    trail: Option<&'a VecDeque<f32>>,
+    /// The level an input must cross for the node to act: a hit's threshold, what a Compare
+    /// compares with.
+    threshold: Option<f32>,
+    /// A Sequencer's steps (each as high as it is set) or a Counter's places, and the one it's on.
+    steps: Option<(Vec<f32>, usize)>,
+}
+
+/// A signal node's card, so that what happens inside it can be read: what it does in a line;
+/// what comes in as thin grey lines, the level they must cross as a dashed one, and over them
+/// what it gives as a green curve running to its port, all over the last second and a half; a
+/// Sequencer's steps or a Counter's places as a strip with the one it's on lit; and in its foot
+/// each input by name with what comes in and, at the right, what goes out. Far out, where words
+/// can't be read, the curves alone.
+fn paint_signal(painter: &Painter, t: &Theme, r: Rect, zoom: f32, scope: &Scope) {
     let viewer = viewer_rect(r, zoom);
     painter.rect_filled(viewer, 0, t.bg_field);
-    let area = viewer.shrink(8.0 * zoom);
-    let (gap, n) = (4.0 * zoom, values.len() as f32);
-    let w = (area.width() - gap * (n - 1.0)) / n;
-    for (k, v) in values.iter().enumerate() {
-        let x = area.left() + k as f32 * (w + gap);
-        let bar = Rect::from_min_max(pos2(x, area.bottom() - v.clamp(0.0, 1.0) * area.height()), pos2(x + w, area.bottom()));
-        painter.rect_filled(Rect::from_min_max(pos2(x, area.top()), bar.max), CornerRadius::same((2.0 * zoom) as u8), t.line.gamma_multiply(0.5));
-        let color = if k < inputs { t.fg_muted.gamma_multiply(0.5) } else { t.cat_signal };
-        painter.rect_filled(bar, CornerRadius::same((2.0 * zoom) as u8), color);
+    let words = zoom >= TEXT_ZOOM;
+    let pad = 8.0 * zoom;
+    let (head, foot) = if words { (36.0 * zoom, 22.0 * zoom) } else { (pad, pad) };
+    let strip = scope.steps.as_ref().map(|_| 21.0 * zoom).unwrap_or(0.0);
+    let area = Rect::from_min_max(pos2(viewer.left(), viewer.top() + head), pos2(viewer.right(), viewer.bottom() - foot - strip));
+    let level = |v: f32| area.bottom() - v.clamp(0.0, 1.0) * area.height();
+    paint_grid(painter, t, area, zoom);
+    if let Some(at) = scope.threshold {
+        painter.extend(Shape::dashed_line(&[pos2(area.left(), level(at)), pos2(area.right(), level(at))], Stroke::new(1.0, t.fg_muted.gamma_multiply(0.6)), 4.0 * zoom, 3.0 * zoom));
+    }
+    for trail in scope.inputs.iter().filter_map(|(_, input)| input.and_then(|(_, trail)| trail)) {
+        paint_trail(painter, area, zoom, trail, t.fg_muted.gamma_multiply(0.7), false);
+    }
+    if let Some(trail) = scope.trail {
+        paint_trail(painter, area, zoom, trail, t.cat_signal, true);
+    }
+    let v = scope.out.clamp(0.0, 1.0);
+    painter.circle_filled(pos2(area.right(), level(v)), (1.5 + 2.5 * v) * zoom.sqrt(), Theme::mix(t.cat_signal, t.fg_text, 0.6 * v));
+    if let Some((cells, at)) = &scope.steps {
+        // a square a step, as large as sixteen of them allow, evenly apart: an empty step an
+        // outline, a set one filled as far as it is set, the one it's on bright
+        let n = cells.len().max(1) as f32;
+        let gap = if n > 10.0 { 3.0 } else { 5.0 } * zoom;
+        let side = ((viewer.width() - 2.0 * pad - gap * (n - 1.0)) / n).min(11.0 * zoom);
+        let top = area.bottom() + (strip - side) / 2.0;
+        for (i, v) in cells.iter().enumerate() {
+            let cell = Rect::from_min_size(pos2(viewer.left() + pad + i as f32 * (side + gap), top), vec2(side, side));
+            let round = CornerRadius::same((2.0 * zoom) as u8);
+            let v = v.clamp(0.0, 1.0);
+            if i == *at {
+                painter.rect_filled(cell.expand(zoom), round, t.fg_text);
+            } else {
+                if v > 0.0 {
+                    painter.rect_filled(cell, round, t.cat_signal.gamma_multiply(0.25 + 0.55 * v));
+                }
+                painter.rect_stroke(cell, round, Stroke::new(1.0, if v > 0.0 { t.cat_signal.gamma_multiply(0.7) } else { t.fg_muted.gamma_multiply(0.5) }), StrokeKind::Inside);
+            }
+        }
+    }
+    if !words {
+        return;
+    }
+    // what it does, on two lines at most
+    let mut caption = egui::text::LayoutJob::simple(scope.caption.clone(), FontId::proportional(10.5 * zoom), t.fg_muted, viewer.width() - 2.0 * pad);
+    caption.wrap.max_rows = 2;
+    caption.wrap.overflow_character = Some('…');
+    painter.galley(viewer.left_top() + vec2(pad, 5.0 * zoom), painter.layout_job(caption), t.fg_muted);
+    // the foot: the inputs from the left, the output at the right, where its port is
+    painter.hline(viewer.x_range(), viewer.bottom() - foot, Stroke::new(1.0, t.line));
+    let y = viewer.bottom() - foot / 2.0;
+    let number = |v: f32| format!("{v:.2}");
+    let (names, digits) = (FontId::proportional(10.0 * zoom), Theme::mono(10.0 * zoom));
+    let wide = |text: &str, font: &FontId| painter.layout_no_wrap(text.to_string(), font.clone(), t.fg_muted).size().x;
+    // two inputs with long names don't fit beside the output: their names are cut to three
+    // letters then, and the output is its number alone (green, by its port)
+    let full: f32 = scope.inputs.iter().map(|(name, _)| wide(crate::i18n::t(name), &names) + wide("0.00", &digits) + 14.0 * zoom).sum::<f32>() + wide(tr!("out"), &names) + wide("0.00", &digits) + 4.0 * zoom;
+    let tight = full > viewer.width() - 2.0 * pad;
+    let mut x = viewer.left() + pad;
+    for (name, input) in &scope.inputs {
+        let name: String = if tight { crate::i18n::t(name).chars().take(3).collect() } else { crate::i18n::t(name).to_string() };
+        let label = painter.text(pos2(x, y), Align2::LEFT_CENTER, name, names.clone(), t.fg_muted);
+        let value = painter.text(pos2(label.right() + 4.0 * zoom, y), Align2::LEFT_CENTER, input.map_or("–".to_string(), |(now, _)| number(now)), digits.clone(), if input.is_some() { t.fg_text } else { t.fg_muted });
+        x = value.right() + if tight { 6.0 } else { 10.0 } * zoom;
+    }
+    let out = painter.text(pos2(viewer.right() - pad, y), Align2::RIGHT_CENTER, number(scope.out), Theme::mono(11.0 * zoom), t.cat_signal);
+    if !tight {
+        painter.text(pos2(out.left() - 4.0 * zoom, y), Align2::RIGHT_CENTER, tr!("out"), names, t.fg_muted);
+    }
+}
+
+/// A signal node's settings as its card reads them: what the node has set, its kind's defaults
+/// for the rest, and which of its inputs something is plugged into.
+struct Settings<'a> {
+    node: &'a velo_core::Node,
+    params: Vec<velo_engine::shader::Param>,
+    wired: Vec<bool>,
+}
+
+impl Settings<'_> {
+    fn v(&self, id: &str) -> f32 {
+        self.node.params.get(id).map(|v| v[0]).or_else(|| self.params.iter().find(|p| p.id == id).map(|p| p.default[0])).unwrap_or(0.0)
+    }
+
+    /// A choice's name ("Lag", "Random"), translated.
+    fn named(&self, id: &str) -> String {
+        self.params.iter().find(|p| p.id == id).and_then(|p| p.names.get(self.v(id).round().max(0.0) as usize)).map(|s| crate::i18n::t(s).to_string()).unwrap_or_default()
+    }
+
+    fn wired(&self, port: usize) -> bool {
+        self.wired.get(port).copied().unwrap_or(false)
+    }
+
+    /// The level an input must cross for the node to act, where it has one.
+    fn threshold(&self) -> Option<f32> {
+        match self.node.kind.as_str() {
+            velo_core::BEAT_KICK | velo_core::ENVELOPE | velo_core::COUNTER | velo_core::HOLD | velo_core::TOGGLE => Some(self.v("threshold")),
+            velo_core::RANDOM if self.wired(0) => Some(self.v("threshold")),
+            velo_core::COMPARE if !self.wired(1) => Some(self.v("value")),
+            _ => None,
+        }
+    }
+
+    /// A Sequencer's steps or a Counter's places, and the one it's on (`out` is what it gives now).
+    fn steps(&self, beats: f64, out: f32) -> Option<(Vec<f32>, usize)> {
+        let n = self.v("steps").round().clamp(2.0, 16.0) as usize;
+        match self.node.kind.as_str() {
+            velo_core::SEQUENCER => {
+                let every = velo_engine::signal::SEQ_BEATS[(self.v("rate").round().max(0.0) as usize).min(velo_engine::signal::SEQ_BEATS.len() - 1)];
+                Some(((1..=n).map(|i| self.v(&format!("step_{i}"))).collect(), (beats / every).floor().rem_euclid(n as f64) as usize))
+            }
+            velo_core::COUNTER => Some((vec![0.0; n], (out.clamp(0.0, 1.0) * (n - 1) as f32).round() as usize)),
+            _ => None,
+        }
+    }
+
+    /// What the node does, in a line, with its settings as they are. A Math's or a Compare's b is
+    /// its own value while nothing is wired into it; a Random turns on the beat.
+    fn caption(&self) -> String {
+        let v = |id: &str| self.v(id);
+        let named = |id: &str| self.named(id);
+        let time = |ms: f32| if ms >= 1000.0 { format!("{} s", ms / 1000.0) } else { format!("{ms:.0} ms") };
+        let two = |x: f32| format!("{x:.2}");
+        let b = if self.wired(1) { "b".to_string() } else { two(v("value")) };
+        match self.node.kind.as_str() {
+            velo_core::BEAT_KICK => tr!("trigger × in · silent under {} · falls in {}", two(v("threshold")), time(v("release_ms"))),
+            velo_core::SMOOTH => tr!("{} · up in {} · down in {}", named("mode"), time(v("rise_ms")), time(v("fall_ms"))),
+            velo_core::MATH => ["a + b", "a − b", "a × b", "min(a, b)", "max(a, b)", "(a + b) / 2", "|a − b|"].get(v("operation").round().max(0.0) as usize).map(|e| e.replace('b', &b)).unwrap_or_default(),
+            velo_core::COMPARE => tr!("1 while a is {} {}", named("operation").to_lowercase(), b),
+            velo_core::ENVELOPE => tr!("On a hit over {}: up in {}, down in {}", two(v("threshold")), time(v("attack_ms")), time(v("release_ms"))),
+            velo_core::COUNTER => tr!("A step on each hit, through {} · {}", v("steps"), named("mode")),
+            velo_core::SEQUENCER => tr!("{} steps · {} each", v("steps"), named("rate").to_lowercase()),
+            velo_core::HOLD => tr!("Keeps what in reads at each trigger").to_string(),
+            velo_core::TOGGLE => tr!("Flips between 0 and 1 on each hit").to_string(),
+            velo_core::TIMER => tr!("A hit every {}", time(v("seconds") * 1000.0)),
+            velo_core::RANDOM if self.wired(0) => tr!("A new value on each trigger").to_string(),
+            velo_core::RANDOM => tr!("A new value every {} beats", v("beats")),
+            velo_core::TIME => tr!("{} over {}", named("shape"), time(v("seconds") * 1000.0)),
+            velo_core::QUANTIZE => tr!("Snapped to {} steps", v("steps")),
+            velo_core::SPEED => tr!("A cycle of {}, as fast as in", time(v("seconds") * 1000.0)),
+            velo_core::DELAY => tr!("In, as it was {} beats ago", v("beats")),
+            velo_core::SPRING => tr!("Follows in on a spring of {}", time(v("time_ms"))),
+            velo_core::SLOPE => tr!("How fast in changes · {} · full in {}", named("direction").to_lowercase(), time(v("time_ms"))),
+            velo_core::REMAP if v("auto") > 0.5 => tr!("In, stretched to its own range").to_string(),
+            velo_core::REMAP => tr!("In, from {}–{} to {}–{}", two(v("in_min")), two(v("in_max")), two(v("out_min")), two(v("out_max"))),
+            velo_core::PROBE => tr!("The picture's {}", named("measure").to_lowercase()),
+            _ => String::new(),
+        }
     }
 }
 
@@ -1468,7 +1686,9 @@ impl App {
             st.map = None;
         }
         // not through a panel, the toolbar or the zoom menu over it
-        st.hovered = bg.hovered() || bg.dragged();
+        // (a group's title and a note are widgets of their own over it: the pointer on one is
+        // still on the canvas, which scrolls and zooms under it as anywhere else)
+        st.hovered = bg.hovered() || bg.dragged() || std::mem::take(&mut st.on_label);
 
         // ---- the view ----
         // where fitting puts the nodes: clear of the preview card and of the toolbar along the
@@ -1482,6 +1702,7 @@ impl App {
             let target = match to {
                 ZoomTo::Fit => fit(bounds(scene, None), center, free, 1.0),
                 ZoomTo::Selection => fit(bounds(scene, Some(&st.selected)).or(bounds(scene, None)), center, free, 2.0),
+                ZoomTo::Found => fit(bounds(scene, Some(&st.selected)).or(bounds(scene, None)), center, free, 1.0),
                 ZoomTo::Level(z) => cam.zoomed(center, view.center(), z.clamp(min, MAX_ZOOM)),
                 ZoomTo::In => cam.zoomed(center, at, step(cam.zoom, true).clamp(min, MAX_ZOOM)),
                 ZoomTo::Out => cam.zoomed(center, at, step(cam.zoom, false).clamp(min, MAX_ZOOM)),
@@ -1641,9 +1862,12 @@ impl App {
             .collect();
         // a cable's line, through the ties holding it
         let route = |key: &str, a: Pos2, b: Pos2| {
-            let mut through: Vec<Pos2> =
-                ties.iter().filter_map(|(at, held, gap)| held.iter().position(|c| c == key).map(|k| *at + vec2(0.0, (k as f32 - (held.len() - 1) as f32 / 2.0) * gap))).collect();
-            through.sort_by(|p, q| p.x.total_cmp(&q.x));
+            // (a tie of one cable is a bend in it: a point it passes, not a bundle to run straight through)
+            let mut through: Vec<(Pos2, f32)> = ties
+                .iter()
+                .filter_map(|(at, held, gap)| held.iter().position(|c| c == key).map(|k| (*at + vec2(0.0, (k as f32 - (held.len() - 1) as f32 / 2.0) * gap), if held.len() == 1 { BEND_RUN } else { TIE_RUN })))
+                .collect();
+            through.sort_by(|p, q| p.0.x.total_cmp(&q.0.x));
             routed(a, b, &through, cam.zoom)
         };
         // every wire on screen as a polyline (off-screen ones: None)
@@ -1724,6 +1948,113 @@ impl App {
         let mut close_merge = false;
         let mut rename = None;
         let mut menu = None;
+        // ---- groups and notes: frames round nodes and words on the canvas, to keep it in order.
+        // A group's title and a note's words are widgets of their own over the canvas ----
+        if std::mem::take(&mut st.note_new)
+            && let Some(n) = scene.notes.last()
+        {
+            st.typing = Some(Typing { id: n.id.clone(), text: n.text.clone(), focus: true });
+        }
+        // each group's frame round its nodes on screen, and the strip its title's on
+        let frames: Vec<(usize, Rect, Rect)> = scene
+            .groups
+            .iter()
+            .enumerate()
+            .filter_map(|(g, group)| {
+                let mut held = group.nodes.iter().filter_map(|id| index.get(id.as_str())).map(|&i| Rect::from_min_max(rects[i].min, pos2(rects[i].right(), strips[i].bottom())));
+                let first = held.next()?;
+                let body = held.fold(first, |a, b| a.union(b)).expand(GROUP_PAD * cam.zoom);
+                let title = GROUP_TITLE * cam.zoom.max(0.45);
+                let frame = Rect::from_min_max(body.min - vec2(0.0, title), body.max);
+                Some((g, frame, Rect::from_min_size(frame.min, vec2(frame.width(), title))))
+            })
+            .collect();
+        let mut lit_groups = Vec::new();
+        for (g, _, title) in &frames {
+            let group = &scene.groups[*g];
+            let on = title.intersect(rect);
+            if !on.is_positive() || st.typing.as_ref().is_some_and(|w| w.id == group.id) {
+                continue;
+            }
+            let r = ui.interact(on, id().with(("group", group.id.as_str())), Sense::click_and_drag());
+            // dragged by its title, its nodes go with it; clicked, they're selected
+            if r.dragged() && r.drag_delta() != Vec2::ZERO {
+                let by = r.drag_delta() / cam.zoom;
+                ops.push(("node.move", json!({ "nodes": group.nodes, "by": [by.x, by.y] }), Some("node.move")));
+            }
+            close_merge |= r.drag_stopped();
+            if r.clicked() {
+                st.selected = group.nodes.clone();
+            }
+            let mut retitle = r.double_clicked();
+            kit::context_menu(&t, &r).show(|ui| {
+                if ui.button(format!("{}  {}", icons::PENCIL_SIMPLE, tr!("Rename…"))).clicked() {
+                    retitle = true;
+                    ui.close();
+                }
+                if ui.button(format!("{}  {}", icons::X, tr!("Ungroup"))).clicked() {
+                    ops.push(("group.remove", json!({ "group": group.id }), None));
+                    ui.close();
+                }
+            });
+            if retitle {
+                st.typing = Some(Typing { id: group.id.clone(), text: group.name.clone(), focus: true });
+            }
+            if r.hovered() || r.dragged() {
+                ui.ctx().set_cursor_icon(if r.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+                lit_groups.push(*g);
+                st.on_label = true;
+            }
+        }
+        // each note's words on screen (said so while it has none)
+        let noted: Vec<(usize, Pos2, std::sync::Arc<egui::Galley>)> = scene
+            .notes
+            .iter()
+            .enumerate()
+            .map(|(k, note)| {
+                let font = FontId::proportional((NOTE_SIZE * note.size * cam.zoom).clamp(5.0, 240.0));
+                let (words, ink) = if note.text.is_empty() { (tr!("Note").to_string(), t.fg_muted.gamma_multiply(0.6)) } else { (note.text.clone(), t.fg_text.gamma_multiply(0.92)) };
+                (k, cam.screen(center, pos2(note.pos[0], note.pos[1])), ui.painter().layout_no_wrap(words, font, ink))
+            })
+            .collect();
+        for (k, at, galley) in &noted {
+            let note = &scene.notes[*k];
+            let on = Rect::from_min_size(*at, galley.size()).expand(4.0).intersect(rect);
+            if !on.is_positive() || st.typing.as_ref().is_some_and(|w| w.id == note.id) {
+                continue;
+            }
+            let r = ui.interact(on, id().with(("note", note.id.as_str())), Sense::click_and_drag());
+            if r.dragged() && r.drag_delta() != Vec2::ZERO {
+                let to = pos2(note.pos[0], note.pos[1]) + r.drag_delta() / cam.zoom;
+                ops.push(("note.set", json!({ "note": note.id, "pos": [to.x, to.y] }), Some("note.move")));
+            }
+            close_merge |= r.drag_stopped();
+            let mut rewrite = r.double_clicked();
+            kit::context_menu(&t, &r).show(|ui| {
+                if ui.button(format!("{}  {}", icons::PENCIL_SIMPLE, tr!("Edit the words"))).clicked() {
+                    rewrite = true;
+                    ui.close();
+                }
+                for (label, size) in [(tr!("Large"), 1.8), (tr!("Heading"), 1.0), (tr!("Label"), 0.6)] {
+                    if kit::menu_tick(ui, &t, (note.size - size).abs() < 0.05, label).clicked() {
+                        ops.push(("note.set", json!({ "note": note.id, "size": size }), None));
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button(RichText::new(format!("{}  {}", icons::TRASH, tr!("Delete"))).color(t.error)).clicked() {
+                    ops.push(("note.remove", json!({ "note": note.id }), None));
+                    ui.close();
+                }
+            });
+            if rewrite {
+                st.typing = Some(Typing { id: note.id.clone(), text: note.text.clone(), focus: true });
+            }
+            if r.hovered() || r.dragged() {
+                ui.ctx().set_cursor_icon(if r.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+                st.on_label = true;
+            }
+        }
         // arranged: every node to its place in one undo step, sliding there, the view following
         if std::mem::take(&mut st.arrange) {
             let moves: HashMap<String, [f32; 2]> = arrange(scene).into_iter().collect();
@@ -2072,6 +2403,15 @@ impl App {
                 Hit::Empty => menu = Some((p, None)),
                 // a tie double-clicked comes off: its cables go their own ways
                 Hit::Tie(k) => ops.push(("tie.remove", json!({ "tie": scene.ties[k].id }), None)),
+                // a cable double-clicked gets a bend there: a point to drag it round things by
+                Hit::Wire(e) => {
+                    let g = cam.graph(center, p);
+                    ops.push(("tie.add", json!({ "pos": [g.x, g.y], "cables": [velo_core::Tie::wire(&scene.edges[e].to)] }), None));
+                }
+                Hit::Map(m) => {
+                    let g = cam.graph(center, p);
+                    ops.push(("tie.add", json!({ "pos": [g.x, g.y], "cables": [velo_core::Tie::line(&nodes[maps[m].0].id, &maps[m].3)] }), None));
+                }
                 _ => {}
             }
         }
@@ -2100,6 +2440,64 @@ impl App {
         let painter = ui.painter_at(rect);
         if !backdrop {
             grid(&painter, &t, rect, center + cam.pan, cam.zoom);
+        }
+        // the groups' frames under everything, each in a hue of its own, its name on its strip
+        for (g, frame, title) in &frames {
+            let group = &scene.groups[*g];
+            let (tint, _) = widgets::wash(widgets::hue_of(&group.id));
+            let lit = if lit_groups.contains(g) { 1.0 } else { 0.0 };
+            let round = CornerRadius::same((10.0 * cam.zoom.max(0.5)) as u8);
+            painter.rect_filled(*frame, round, tint.gamma_multiply(0.07 + 0.04 * lit));
+            painter.rect_stroke(*frame, round, Stroke::new(1.0, tint.gamma_multiply(0.5 + 0.3 * lit)), StrokeKind::Inside);
+            // (its title goes on over the nodes, below; under the field while it's being typed)
+            if st.typing.as_ref().is_some_and(|w| w.id == group.id) {
+                painter.rect_filled(*title, CornerRadius { nw: round.nw, ne: round.ne, sw: 0, se: 0 }, Theme::mix(t.bg_base, tint, 0.3));
+            }
+        }
+        // the notes: words straight on the canvas
+        for (k, at, galley) in &noted {
+            if st.typing.as_ref().is_none_or(|w| w.id != scene.notes[*k].id) {
+                painter.galley(*at, galley.clone(), t.fg_text);
+            }
+        }
+        // what's being typed: a group's name on its strip, a note's words where they are.
+        // Enter (a note: Cmd Enter) or a click elsewhere keeps them, Esc doesn't
+        if let Some(mut typing) = st.typing.take() {
+            let group = frames.iter().find(|(g, ..)| scene.groups[*g].id == typing.id);
+            let note = noted.iter().find(|(k, ..)| scene.notes[*k].id == typing.id);
+            let field = match (group, note) {
+                (Some((_, _, title)), _) => Some((title.shrink2(vec2(6.0, 2.0)), FontId::proportional((13.0 * cam.zoom).max(10.0)), false)),
+                (None, Some((k, at, galley))) => {
+                    let font = FontId::proportional((NOTE_SIZE * scene.notes[*k].size * cam.zoom).clamp(5.0, 240.0));
+                    Some((Rect::from_min_size(*at, vec2(galley.size().x.max(220.0) + 40.0, galley.size().y.max(font.size * 1.3))), font, true))
+                }
+                (None, None) => None,
+            };
+            if let Some((place, font, lines)) = field {
+                let edit = if lines { egui::TextEdit::multiline(&mut typing.text).desired_rows(1) } else { egui::TextEdit::singleline(&mut typing.text) };
+                let r = ui.put(place, edit.font(font).frame(egui::Frame::NONE).margin(egui::Margin::ZERO).text_color(t.fg_text).id(id().with("typing")));
+                if std::mem::take(&mut typing.focus) {
+                    r.request_focus();
+                }
+                let (enter, command, escape) = ui.input(|i| (i.key_pressed(Key::Enter), i.modifiers.command, i.key_pressed(Key::Escape)));
+                let keep = r.lost_focus() || (enter && (!lines || command));
+                if escape {
+                    // (a note left without words was never wanted)
+                    if lines && scene.notes.iter().any(|n| n.id == typing.id && n.text.is_empty()) {
+                        ops.push(("note.remove", json!({ "note": typing.id }), None));
+                    }
+                } else if keep {
+                    let words = typing.text.trim().to_string();
+                    match (lines, words.is_empty()) {
+                        (true, true) => ops.push(("note.remove", json!({ "note": typing.id }), None)),
+                        (true, false) => ops.push(("note.set", json!({ "note": typing.id, "text": words }), None)),
+                        (false, false) => ops.push(("group.rename", json!({ "group": typing.id, "name": words }), None)),
+                        (false, true) => {}
+                    }
+                } else {
+                    st.typing = Some(typing);
+                }
+            }
         }
         let selected: HashSet<&str> = st.selected.iter().map(String::as_str).collect();
         let lifted = match &st.drag {
@@ -2218,9 +2616,17 @@ impl App {
         if now - st.trail_at >= 1.0 / 30.0 {
             st.trail_at = now;
             for (i, n) in nodes.iter().enumerate() {
-                for &p in rows[i].iter().flatten() {
-                    let trail = st.trails.entry((n.id.clone(), p)).or_default();
-                    trail.push_back(meters[i].0.get(meters[i].1 + usize::from(p)).copied().unwrap_or(0.0));
+                // (a node with one output and no rows keeps that one's curve)
+                let single = [0u8];
+                let kept: &[u8] = match &rows[i] {
+                    Some(list) => list,
+                    None if !meters[i].0.is_empty() => &single,
+                    None => &[],
+                };
+                let ins = if rows[i].is_none() { meters[i].1 } else { 0 };
+                for (key, at) in kept.iter().map(|&p| (p, meters[i].1 + usize::from(p))).chain((0..ins).map(|p| (INPUT_TRAIL + p as u8, p))) {
+                    let trail = st.trails.entry((n.id.clone(), key)).or_default();
+                    trail.push_back(meters[i].0.get(at).copied().unwrap_or(0.0));
                     if trail.len() > TRAIL {
                         trail.pop_front();
                     }
@@ -2373,8 +2779,13 @@ impl App {
                     let deck = Deck { reel: st.reel, tape: ((now / 90.0).fract() as f32 * 2.0 - 1.0).abs(), level, peak: st.peak, source: &source, bpm };
                     paint_deck(&painter, &t, room, cam.zoom, &deck);
                 }
-            } else if !meters[i].0.is_empty() {
-                paint_meters(&painter, &t, r, cam.zoom, &meters[i].0, meters[i].1);
+            } else if let (false, Some(k)) = (meters[i].0.is_empty(), kinds[i]) {
+                let (values, ins) = (&meters[i].0, meters[i].1);
+                let set = Settings { node: n, params: velo_engine::signal::params(&n.kind).unwrap_or_default(), wired: (0..ins as u8).map(|p| scene.wire_into(&n.id, p).is_some()).collect() };
+                let inputs = (0..ins).map(|p| (k.inputs.get(p).copied().unwrap_or_default(), set.wired(p).then(|| (values[p], st.trails.get(&(n.id.clone(), INPUT_TRAIL + p as u8)))))).collect();
+                let out = values.get(ins).copied().unwrap_or(0.0);
+                let scope = Scope { caption: set.caption(), inputs, out, trail: st.trails.get(&(n.id.clone(), 0)), threshold: set.threshold(), steps: set.steps(beats, out) };
+                paint_signal(&painter, &t, r, cam.zoom, &scope);
             }
             // the signals plugged in, a jack each in the card's foot, larger while its cable is
             // pointed at or chosen, a ring leaving one just plugged in
@@ -2771,6 +3182,9 @@ impl App {
         kit::context_menu(&t, &bg).show(|ui| match &target {
             Some((Some(id), _)) => {
                 let node = index.get(id.as_str()).map(|&i| &nodes[i]);
+                if ui.add(egui::Button::new(format!("{}  {}", icons::SQUARES_FOUR, tr!("Group"))).shortcut_text(keys_of("canvas.group"))).clicked() {
+                    act = Some(Act::Group);
+                }
                 let has_props = node.is_some_and(|n| crate::live::shader(&n.kind, n.code.as_deref()).is_some());
                 if ui.add_enabled(has_props, egui::Button::new(format!("{}  {}", icons::SLIDERS_HORIZONTAL, tr!("Parameters")))).clicked() {
                     act = Some(Act::Props(id.clone()));
@@ -2808,6 +3222,9 @@ impl App {
                 if ui.button(format!("{}  {}", icons::TREE_STRUCTURE, tr!("Arrange the nodes"))).clicked() {
                     act = Some(Act::Arrange);
                 }
+                if ui.button(format!("{}  {}", icons::PENCIL_SIMPLE, tr!("Write a note here"))).clicked() {
+                    act = Some(Act::Note(*p));
+                }
             }
             None => {}
         });
@@ -2826,39 +3243,96 @@ impl App {
             Some(Act::Replace(id, p)) => st.menu = Some(Menu::new(cam.graph(center, p), None, None, Some(id))),
             Some(Act::Fit) => st.zoom_to = Some(ZoomTo::Fit),
             Some(Act::Arrange) => st.arrange = true,
+            Some(Act::Group) => ops.push(("group.add", json!({ "nodes": st.selected }), None)),
+            Some(Act::Note(p)) => {
+                let g = cam.graph(center, p);
+                ops.push(("note.add", json!({ "pos": [g.x, g.y], "text": "" }), None));
+                st.note_new = true;
+            }
             _ => {}
+        }
+        // the groups' titles, over the nodes: far out a node's name stands above its card at a
+        // size of its own, and the strip covers it, so a group is always read by its name
+        for (g, _, title) in &frames {
+            let group = &scene.groups[*g];
+            if st.typing.as_ref().is_some_and(|w| w.id == group.id) {
+                continue;
+            }
+            let (tint, _) = widgets::wash(widgets::hue_of(&group.id));
+            let lit = if lit_groups.contains(g) { 0.1 } else { 0.0 };
+            let corner = (10.0 * cam.zoom.max(0.5)) as u8;
+            painter.rect_filled(*title, CornerRadius { nw: corner, ne: corner, sw: 0, se: 0 }, Theme::mix(t.bg_base, tint, 0.3 + lit));
+            let font = FontId::proportional((13.0 * cam.zoom).max(10.0));
+            let inset = 10.0 * cam.zoom.max(0.5);
+            kit::fit_text(&painter, title.left_center() + vec2(inset, 0.0), Align2::LEFT_CENTER, group.name.as_str(), font, Theme::mix(tint, t.fg_text, 0.8), title.width() - 2.0 * inset);
         }
         // Find: the matching nodes one at a time, selected and brought into view; Enter goes to
         // the next (Shift: the one before), Esc closes
         if let Some(mut find) = st.find.take() {
             let hits = found(scene, &find.query);
             let (mut go, mut close) = (false, false);
-            kit::pill(ui.ctx(), &t, "find", view.center_top() + vec2(0.0, t.pad), Align2::CENTER_TOP, |ui| {
-                ui.horizontal(|ui| {
-                    let r = ui.add(kit::field(&mut find.query).hint_text(format!("{}  {}", icons::MAGNIFYING_GLASS, tr!("Find a node…"))).desired_width(220.0));
-                    if std::mem::take(&mut find.focus) {
-                        r.request_focus();
+            // in the canvas' top-right corner, beside the preview card while that sits there
+            let mut corner = view.right_top() + vec2(-t.pad, t.pad);
+            if let Some(card) = st.covered.filter(|c| c.top() < corner.y + 48.0 && c.right() > corner.x - 200.0) {
+                corner.x = card.left() - t.gap;
+            }
+            // it drops in from just above as it opens
+            let opened = *find.opened.get_or_insert(now);
+            let k = if t.motion > 0.0 { kit::ease(((now - opened) / 0.2) as f32) } else { 1.0 };
+            corner.y -= 10.0 * (1.0 - k);
+            if k < 1.0 {
+                ui.ctx().request_repaint();
+            }
+            let (count, missing) = (hits.len(), !find.query.trim().is_empty() && hits.is_empty());
+            kit::pill(ui.ctx(), &t, "find", corner, Align2::RIGHT_TOP, |ui| {
+                ui.multiply_opacity(k);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = t.gap;
+                        // the glass, lit while the words find something
+                        let (glass, _) = ui.allocate_exact_size(vec2(22.0, t.control_h), Sense::hover());
+                        kit::icon_at(ui.painter(), glass.center(), icons::MAGNIFYING_GLASS, 15.0, if count > 0 { t.accent } else { t.fg_muted });
+                        let r = ui.add(kit::field(&mut find.query).hint_text(tr!("Find a node…")).desired_width(150.0));
+                        if std::mem::take(&mut find.focus) {
+                            r.request_focus();
+                        }
+                        if r.changed() {
+                            (find.at, go) = (0, true);
+                        }
+                        let (enter, back, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
+                        let mut step = (enter && r.lost_focus()).then_some(!back);
+                        // which of the matches it's on, and the ways to the one before and the next
+                        let at = if count > 0 { format!("{}/{count}", find.at.min(count - 1) + 1) } else { "0/0".to_string() };
+                        ui.label(RichText::new(at).font(Theme::mono(t.text_xs)).color(if count > 0 { t.fg_text } else { t.fg_muted.gamma_multiply(0.6) }));
+                        ui.add_enabled_ui(count > 1, |ui| {
+                            if kit::icon_button_turned(ui, &t, icons::CARET_DOWN, std::f32::consts::PI, tr!("Previous match (Shift Enter)"), false).clicked() {
+                                step = Some(false);
+                            }
+                            if kit::icon_button(ui, &t, icons::CARET_DOWN, tr!("Next match (Enter)"), false).clicked() {
+                                step = Some(true);
+                            }
+                        });
+                        if let Some(forward) = step.filter(|_| count > 0) {
+                            find.at = (find.at + if forward { 1 } else { count - 1 }) % count;
+                            go = true;
+                            r.request_focus();
+                        }
+                        close = esc || kit::icon_button(ui, &t, icons::X, tr!("Close (Esc)"), false).clicked();
+                    });
+                    // nothing by those words: said under the field
+                    if missing {
+                        ui.horizontal(|ui| {
+                            ui.add_space(22.0 + t.gap);
+                            ui.label(RichText::new(format!("{}  {}", icons::WARNING, tr!("No match"))).small().color(t.warn));
+                        });
+                        ui.add_space(2.0);
                     }
-                    if r.changed() {
-                        (find.at, go) = (0, true);
-                    }
-                    let (enter, back, esc) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.modifiers.shift, i.key_pressed(egui::Key::Escape)));
-                    if enter && r.lost_focus() && !hits.is_empty() {
-                        find.at = (find.at + if back { hits.len() - 1 } else { 1 }) % hits.len();
-                        go = true;
-                        r.request_focus();
-                    }
-                    close = esc;
-                    let count = match (find.query.trim().is_empty(), hits.len()) {
-                        (true, _) => String::new(),
-                        (false, 0) => tr!("No match").to_string(),
-                        (false, n) => format!("{} / {n}", find.at.min(n - 1) + 1),
-                    };
-                    ui.label(RichText::new(count).small().color(t.fg_muted));
                 });
             });
             if go && let Some(id) = hits.get(find.at.min(hits.len().saturating_sub(1))) {
-                (st.selected, st.reveal) = (vec![id.clone()], Some(id.clone()));
+                // selected, and the view goes to it
+                (st.selected, st.zoom_to) = (vec![id.clone()], Some(ZoomTo::Found));
                 (st.wire, st.map) = (None, None);
                 ui.ctx().request_repaint();
             }

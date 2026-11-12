@@ -4,12 +4,12 @@
   "description": "Thin glowing lines drawn across the dark, straight or as box outlines, each wavering a while and then redrawn somewhere else; the hats shake them, the kick flares them",
   "params": [
     { "id": "style", "type": "int", "default": 0, "names": ["Lines", "Boxes"] },
-    { "id": "lines", "type": "int", "default": 12, "min": 1, "max": 48 },
+    { "id": "lines", "type": "int", "default": 20, "min": 1, "max": 48 },
     { "id": "rate", "type": "float", "default": 0.5, "min": 0.05, "max": 4.0 },
     { "id": "reach", "type": "float", "default": 0.6, "min": 0.1, "max": 1.0 },
     { "id": "wiggle", "type": "float", "default": 0.3, "min": 0.0, "max": 1.0 },
-    { "id": "width", "type": "float", "default": 1.0, "min": 0.2, "max": 4.0 },
-    { "id": "glow", "type": "float", "default": 0.5, "min": 0.0, "max": 2.0 },
+    { "id": "width", "type": "float", "default": 1.4, "min": 0.2, "max": 4.0 },
+    { "id": "glow", "type": "float", "default": 0.8, "min": 0.0, "max": 2.0 },
     { "id": "tint", "type": "color", "default": [0.45, 0.75, 1.0, 1.0] },
     { "id": "background", "type": "color", "default": [0.0, 0.0, 0.01, 1.0] },
     { "id": "audio", "type": "float", "default": 0.0, "min": 0.0, "max": 2.0 }
@@ -58,6 +58,8 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         let life = grow * (1.0 - smoothstep(0.7, 1.0, t));
         var d = 1.0;
         var lit = 1.0;
+        // how far past either end of a line (the glow rounds off there instead of stopping dead)
+        var past = 0.0;
         if style == 0 {
             // a horizontal or a vertical one, growing from its start
             let horizontal = r.w < 0.5;
@@ -73,6 +75,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             let bend = shake * 0.04 * wander(a * 5.0 + g.time * 1.5, seed);
             d = abs(c - r.x * across_range - bend);
             lit = smoothstep(0.0, 0.01, at) * (1.0 - smoothstep(head - 0.01, head, at));
+            past = max(max(-at, at - head), 0.0);
             // the tip burns brighter while it's drawn
             lit += 2.0 * (1.0 - grow) * exp(-abs(at - head) * 40.0) * step(0.0, at);
         } else {
@@ -84,7 +87,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             d = abs(length(max(e, vec2f(0.0))) + min(max(e.x, e.y), 0.0));
         }
         core += (1.0 - smoothstep(w, w + aa, d)) * life * lit;
-        halo += exp(-d / (w * 10.0)) * life * lit;
+        halo += exp(-length(vec2f(d, past)) / (w * 10.0)) * life * max(lit, 1.0);
     }
     let flare = 1.0 + 1.5 * audio * g.kick;
     let col = background.rgb + (tint.rgb * halo * glow * 0.3 + mix(tint.rgb, vec3f(1.0), 0.6) * core) * flare;

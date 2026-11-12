@@ -600,14 +600,20 @@ impl Loader {
 /// are in, and each plays from its start on its turn. In memory (1), every file loads and
 /// stays: a turn never waits, at the memory all of them take, and each plays on from where its
 /// last turn left it. A movie's turn lasts `movie_every` (beats or seconds as the clock goes),
-/// a picture's `every`.
+/// a picture's `every`; a movie shorter than its turn moves on to the next file once it has
+/// played through (`short_movie` at 0), or repeats until the turn is over (1).
 pub struct Reel {
-    /// The Media List's node id and engine node, its order, clock, every, fade, load and
-    /// movie_every parameters' indices, and those of what it tells its shader: the slot showing
-    /// and how much of the one before is still in.
+    /// The Media List's node id and engine node, its order, clock, every, fade, load,
+    /// movie_every and short_movie parameters' indices, and those of what it tells its shader:
+    /// the slot showing and how much of the one before is still in.
     id: String,
     pub node: usize,
-    params: [usize; 6],
+    params: [usize; 7],
+    /// What the turns that ended early (a short movie played through) have put the list ahead
+    /// of its clock by, in the clock's own beats or seconds.
+    ahead: f32,
+    /// The turn it's on, and where its movie was (seconds played) when the turn began.
+    began: (i64, f64),
     shows: [usize; 2],
     /// Its slots' engine nodes, and what each shows: the turn, its file, whether that was in.
     slots: [usize; SLOTS],
@@ -628,7 +634,7 @@ impl Reel {
     #[allow(clippy::too_many_arguments)]
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, id: String, node: usize, shader: &crate::ShaderNode, slots: [usize; SLOTS], files: Vec<String>, bc: bool) -> Option<Self> {
         let at = |param| crate::modulate::slot(shader, param).map(|s| s.0);
-        let params = [at("order")?, at("clock")?, at("every")?, at("fade")?, at("load")?, at("movie_every")?];
+        let params = [at("order")?, at("clock")?, at("every")?, at("fade")?, at("load")?, at("movie_every")?, at("short_movie")?];
         let shows = [at("_now")?, at("_fade")?];
         let movie = files.iter().map(|f| Path::new(f).extension().is_some_and(|e| MOVIES.iter().any(|m| e.eq_ignore_ascii_case(m)))).collect();
         let loader = Arc::new(Loader::default());
@@ -653,7 +659,7 @@ impl Reel {
             }
         });
         let n = files.len();
-        Some(Self { id, node, params, shows, slots, bound: [None; SLOTS], files, movie, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done })
+        Some(Self { id, node, params, ahead: 0.0, began: (-1, 0.0), shows, slots, bound: [None; SLOTS], files, movie, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done })
     }
 
     /// This frame, at `beats` and `time` (seconds): the turn, told to the shader with how much
@@ -666,13 +672,14 @@ impl Reel {
         if n == 0 {
             return;
         }
-        let [order, clock, every, fade, load, movie_every] = self.params.map(value);
+        let [order, clock, every, fade, load, movie_every, short_movie] = self.params.map(value);
         let order = order.round() as i32;
         // a movie's turn as long as a picture's unless it's given its own
         let every = every.max(0.01);
         let movie_every = if movie_every > 0.0 { movie_every.max(0.01) } else { every };
-        let t = if clock.round() as i32 == 1 { time } else { beats }.max(0.0);
-        let (turn, k) = turn_at(t, n, order, |f| if self.movie[f] { movie_every } else { every });
+        let long = |movie: bool| if movie { movie_every } else { every };
+        let t = if clock.round() as i32 == 1 { time } else { beats }.max(0.0) + self.ahead;
+        let (turn, k) = turn_at(t, n, order, |f| long(self.movie[f]));
         let fading = fade > 0.0 && turn > 0 && k < fade;
         // the first part of each turn crossfades from the one before
         let before = if fading {
@@ -729,6 +736,21 @@ impl Reel {
             }
             played = Some(f);
         }
+        // a movie shorter than its turn, played through: on to the next file now, the rest of
+        // its turn skipped (unless it's set to repeat, or it's the only file)
+        let f = file(turn);
+        let at = self.cache[f].as_ref().map_or(0.0, |p| p.at);
+        if self.began.0 != turn {
+            self.began = (turn, at);
+        } else if short_movie.round() as i32 == 0
+            && n > 1
+            && self.movie[f]
+            && let Some(length) = self.cache[f].as_ref().and_then(|p| p.media.ends.last().copied())
+            && length > 0.0
+            && at - self.began.1 >= length - f64::from(dt)
+        {
+            self.ahead += (1.0 - k) * long(true) + 1e-3;
+        }
     }
 
     /// What `old`, the same list in the graph this one replaces, has in or loading, carried
@@ -739,6 +761,7 @@ impl Reel {
             std::mem::swap(&mut self.broken, &mut old.broken);
             std::mem::swap(&mut self.loader, &mut old.loader);
             std::mem::swap(&mut self.done, &mut old.done);
+            (self.ahead, self.began) = (old.ahead, old.began);
         }
     }
 

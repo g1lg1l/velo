@@ -76,7 +76,7 @@ const cards = [
     title: 'Makes pictures',
     glow: '255, 205, 160',
     icon: 'M12 3l2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',
-    text: 'Generators, effects and composites, 40 shader presets and 25 effect presets. Particles on the GPU, stills, GIFs and movies in HAP, H.264 and HEVC.',
+    text: 'Generators, effects and composites, 76 shader presets and 25 effect presets. Particles on the GPU, stills, GIFs and movies in HAP, H.264 and HEVC.',
   },
   {
     title: 'Patches by hand',

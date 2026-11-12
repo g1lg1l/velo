@@ -32,7 +32,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let s = (uv - 0.5) * vec2f(g.aspect, 1.0);
     let t = g.time * speed;
     // a gentle swirl so the blends curve, swaying more with the bass
-    let bend = warp * (0.12 + 0.06 * audio * g.bass);
+    let bend = warp * (0.12 + 0.12 * audio * g.bass);
     let q = s + bend * vec2f(sin(s.y * 3.0 + t * 1.3), cos(s.x * 3.0 - t * 1.1));
     let x = 0.5 * g.aspect;
     let wa = pull(q, vec2f(-0.55 * x, -0.25) + vec2f(sin(t * 0.7), cos(t * 0.9)) * vec2f(0.3 * x, 0.15));

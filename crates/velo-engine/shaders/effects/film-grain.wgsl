@@ -22,6 +22,6 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     let noise_color = vec3f(mono, grain_hash(cell + 31.0) - 0.5, grain_hash(cell + 67.0) - 0.5);
     let noise_value = mix(vec3f(mono), noise_color, colored);
     let luma = clamp(dot(original.rgb, vec3f(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
-    let strength = grain * (1.0 + 0.5 * music * g.hat) * (0.4 + 0.6 * sqrt(luma));
+    let strength = grain * (1.0 + 1.5 * music * g.hat) * (0.4 + 0.6 * sqrt(luma));
     return vec4f(max(original.rgb + noise_value * strength, vec3f(0.0)), original.a);
 }

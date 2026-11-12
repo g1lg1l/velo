@@ -40,17 +40,18 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     col += step(0.97, star) * (1.0 - smoothstep(0.0, 0.12, spot)) * twinkle * smoothstep(0.1, 0.6, p.y) * 0.8;
     // three curtains, each hanging from a folding line, rays rising from it
     var light = vec3f(0.0);
-    let reach = 0.22 * (1.0 + 0.4 * audio * g.kick);
+    let reach = 0.26 * (1.0 + 0.6 * audio * g.kick);
     for (var i = 0; i < 3; i++) {
         let f = f32(i);
         let x = p.x * (1.0 - 0.2 * f) + f * 5.3;
         let foot = height + 0.1 * f + 0.4 * (noise(vec2f(x * 1.6 + t * 0.4, f * 3.0)) - 0.5) + 0.07 * sin(x * 3.0 + t * 0.7 + f);
         let d = p.y - foot;
-        let rays = noise(vec2f(x * 16.0 + t * 0.8 + noise(vec2f(x * 2.0, t * 0.3)) * 6.0, f * 7.0));
+        let sway = noise(vec2f(x * 2.0, t * 0.3)) * 6.0;
+        let rays = noise(vec2f(x * 16.0 + t * 0.8 + sway, f * 7.0)) * 0.65 + noise(vec2f(x * 47.0 - t * 1.1 + sway * 2.0, f * 3.0)) * 0.35;
         let shimmer = 1.0 + audio * g.hat * (noise(vec2f(x * 40.0, g.time * 12.0)) - 0.5);
-        let curtain = pow(smoothstep(-0.1, 0.01, d), 2.0) * exp(-max(d, 0.0) / reach) * (0.2 + rays * rays * 1.3) * shimmer;
+        let curtain = pow(smoothstep(-0.1, 0.01, d), 2.0) * exp(-max(d, 0.0) / reach) * (0.12 + pow(rays, 2.5) * 2.4) * shimmer;
         light += mix(color_a.rgb, color_b.rgb, smoothstep(0.0, reach * 1.5, d)) * curtain * (1.0 - 0.25 * f);
     }
-    col += light * 0.7 * (1.0 + 0.5 * audio * g.bass);
+    col += light * 0.8 * (1.0 + 0.8 * audio * g.bass);
     return vec4f(col, 1.0);
 }

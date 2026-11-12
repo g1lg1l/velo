@@ -138,6 +138,34 @@ struct TieRef {
     scene: Option<String>,
 }
 
+/// Props of `group.add`, `group.rename` and `group.remove`.
+#[derive(Deserialize)]
+struct GroupProps {
+    #[serde(default)]
+    group: Option<String>,
+    #[serde(default)]
+    nodes: Vec<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    scene: Option<String>,
+}
+
+/// Props of `note.add`, `note.set` and `note.remove`.
+#[derive(Deserialize)]
+struct NoteProps {
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    pos: Option<[f32; 2]>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    size: Option<f32>,
+    #[serde(default)]
+    scene: Option<String>,
+}
+
 /// Props of `node.replace`.
 #[derive(Deserialize)]
 struct ReplaceNode {
@@ -595,6 +623,123 @@ pub static OPERATORS: &[Operator] = &[
         },
     },
     Operator {
+        id: "group.add",
+        label: "Group Nodes",
+        description: "Frame nodes together on the canvas under a name (the frame follows them; it changes nothing in the picture). A node sits in one group: it leaves the one it was in.",
+        example: r#"{"nodes": ["n_ab12", "n_cd34"], "name": "Smoke"}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let GroupProps { nodes, name, scene, .. } = props(v)?;
+            let scene = s.scene_mut(scene.as_deref())?;
+            let nodes: Vec<String> = nodes.into_iter().filter(|n| scene.node(n).is_some()).collect();
+            if nodes.is_empty() {
+                return Err("nodes of this scene are required".into());
+            }
+            for g in &mut scene.groups {
+                g.nodes.retain(|n| !nodes.contains(n));
+            }
+            scene.groups.retain(|g| !g.nodes.is_empty());
+            let id = new_id("g_", |id| scene.groups.iter().any(|g| g.id == id));
+            let name = name.unwrap_or_else(|| format!("Group {}", scene.groups.len() + 1));
+            scene.groups.push(Group { id, name, nodes });
+            Ok(())
+        },
+    },
+    Operator {
+        id: "group.rename",
+        label: "Rename Group",
+        description: "Give a group of nodes another name.",
+        example: r#"{"group": "g_ab12", "name": "Smoke"}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let GroupProps { group, name, scene, .. } = props(v)?;
+            let (group, name) = (group.ok_or("group is required")?, name.ok_or("name is required")?);
+            let scene = s.scene_mut(scene.as_deref())?;
+            scene.groups.iter_mut().find(|g| g.id == group).ok_or_else(|| format!("no group {group}"))?.name = name;
+            Ok(())
+        },
+    },
+    Operator {
+        id: "group.remove",
+        label: "Ungroup Nodes",
+        description: "Take the frame off a group of nodes: the nodes stay.",
+        example: r#"{"group": "g_ab12"}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let GroupProps { group, scene, .. } = props(v)?;
+            let group = group.ok_or("group is required")?;
+            let scene = s.scene_mut(scene.as_deref())?;
+            let before = scene.groups.len();
+            scene.groups.retain(|g| g.id != group);
+            if scene.groups.len() == before {
+                return Err(format!("no group {group}"));
+            }
+            Ok(())
+        },
+    },
+    Operator {
+        id: "note.add",
+        label: "Add Note",
+        description: "Write words on the canvas at a point (canvas units): a title over a part of the graph, a note to self. size scales them (1 is a heading, 0.6 a label, up to 8 for a title read from far out).",
+        example: r#"{"pos": [-400, -120], "text": "SMOKE", "size": 1}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let NoteProps { pos, text, size, scene, .. } = props(v)?;
+            let pos = pos.ok_or("pos is required")?;
+            let scene = s.scene_mut(scene.as_deref())?;
+            let id = new_id("x_", |id| scene.notes.iter().any(|n| n.id == id));
+            scene.notes.push(Note { id, pos, text: text.unwrap_or_default(), size: size.unwrap_or(1.0).clamp(0.3, 8.0) });
+            Ok(())
+        },
+    },
+    Operator {
+        id: "note.set",
+        label: "Change Note",
+        description: "Change a note on the canvas: its words, where it is, how large.",
+        example: r#"{"note": "x_ab12", "text": "SMOKE", "pos": [-400, -120]}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let NoteProps { note, pos, text, size, scene } = props(v)?;
+            let note = note.ok_or("note is required")?;
+            let scene = s.scene_mut(scene.as_deref())?;
+            let n = scene.notes.iter_mut().find(|n| n.id == note).ok_or_else(|| format!("no note {note}"))?;
+            if let Some(pos) = pos {
+                n.pos = pos;
+            }
+            if let Some(text) = text {
+                n.text = text;
+            }
+            if let Some(size) = size {
+                n.size = size.clamp(0.3, 8.0);
+            }
+            Ok(())
+        },
+    },
+    Operator {
+        id: "note.remove",
+        label: "Delete Note",
+        description: "Take a note off the canvas.",
+        example: r#"{"note": "x_ab12"}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let NoteProps { note, scene, .. } = props(v)?;
+            let note = note.ok_or("note is required")?;
+            let scene = s.scene_mut(scene.as_deref())?;
+            let before = scene.notes.len();
+            scene.notes.retain(|n| n.id != note);
+            if scene.notes.len() == before {
+                return Err(format!("no note {note}"));
+            }
+            Ok(())
+        },
+    },
+    Operator {
         id: "node.rename",
         label: "Rename Node",
         description: "Give a node a name, e.g. \"Tunnel\".",
@@ -665,6 +810,11 @@ pub static OPERATORS: &[Operator] = &[
             for m in &mut scene.macros {
                 m.targets.retain(|t| t.node != node);
             }
+            // out of its group too, the group with it once it's empty
+            for g in &mut scene.groups {
+                g.nodes.retain(|n| *n != node);
+            }
+            scene.groups.retain(|g| !g.nodes.is_empty());
             s.project.bindings.retain(|b| !matches!(&b.target, Target::Param { node: n, .. } if *n == node));
             Ok(())
         },

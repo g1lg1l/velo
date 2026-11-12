@@ -197,6 +197,38 @@ fn nodes_add_with_fresh_ids_and_names() {
 }
 
 #[test]
+fn nodes_are_grouped_and_notes_written_on_the_canvas() {
+    let mut s = session();
+    let (a, b, c) = (add(&mut s, "velo.noise", 0.0), add(&mut s, "velo.blur", 200.0), add(&mut s, "velo.color", 400.0));
+    ok(&mut s, "group.add", json!({ "nodes": [a, b], "name": "Smoke" }));
+    let group = s.active().unwrap().groups[0].clone();
+    assert!(group.id.starts_with("g_") && group.name == "Smoke" && group.nodes == [a.clone(), b.clone()], "{group:?}");
+    assert!(s.run("group.add", json!({ "nodes": ["n_nope"] })).is_err(), "a group holds nodes of the scene");
+    // a node sits in one group: grouped again, it leaves the first
+    ok(&mut s, "group.add", json!({ "nodes": [b, c] }));
+    let groups = &s.active().unwrap().groups;
+    assert_eq!((groups[0].nodes.clone(), groups[1].nodes.clone()), (vec![a.clone()], vec![b.clone(), c.clone()]));
+    ok(&mut s, "group.rename", json!({ "group": group.id, "name": "Fog" }));
+    assert_eq!(s.active().unwrap().groups[0].name, "Fog");
+    // deleted, a node leaves its group, and the group goes with its last node
+    ok(&mut s, "node.remove", json!({ "node": a }));
+    assert_eq!(s.active().unwrap().groups.len(), 1);
+    let last = s.active().unwrap().groups[0].id.clone();
+    ok(&mut s, "group.remove", json!({ "group": last }));
+    assert!(s.active().unwrap().groups.is_empty() && s.active().unwrap().node(&b).is_some(), "ungrouped, the nodes stay");
+
+    ok(&mut s, "note.add", json!({ "pos": [-40.0, -80.0], "text": "SMOKE" }));
+    let note = s.active().unwrap().notes[0].clone();
+    assert!(note.id.starts_with("x_") && note.text == "SMOKE" && note.size == 1.0, "{note:?}");
+    ok(&mut s, "note.set", json!({ "note": note.id, "text": "FOG", "pos": [10.0, 20.0], "size": 0.6 }));
+    let note = s.active().unwrap().notes[0].clone();
+    assert_eq!((note.text.as_str(), note.pos, note.size), ("FOG", [10.0, 20.0], 0.6));
+    ok(&mut s, "note.remove", json!({ "note": note.id }));
+    assert!(s.active().unwrap().notes.is_empty());
+    assert!(s.run("note.remove", json!({ "note": note.id })).is_err());
+}
+
+#[test]
 fn cables_tie_slide_and_untie() {
     let mut s = session();
     let a = add(&mut s, "velo.noise", 0.0);

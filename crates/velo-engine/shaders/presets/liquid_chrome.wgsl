@@ -79,9 +79,16 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     }
     let n = normal(r[0] + r[1] * t);
     let m = reflect(r[1], n);
-    // chrome: a sky of bands overhead, dark below the horizon, a white sun
-    let bands = 0.5 + 0.5 * sin(m.y * 9.0 + m.x * 2.0);
-    let env = mix(background.rgb * 2.0, sky.rgb * (0.4 + 0.6 * bands), smoothstep(-0.2, 0.3, m.y));
-    let sun = vec3f(pow(max(dot(m, normalize(vec3f(-0.4, 0.7, -0.5))), 0.0), 90.0)) * 3.0 * (1.0 + audio * g.kick);
-    return vec4f(tint.rgb * env + sun, 1.0);
+    // chrome: a sky of bands overhead, a floor in the sky's opposite color below the horizon,
+    // a bright line where they meet, a white sun
+    let bands = 0.5 + 0.5 * sin(m.y * 9.0 + m.x * 2.0 + g.time * speed * 0.5);
+    let above = sky.rgb * (0.35 + 0.65 * bands);
+    let below = sky.bgr * (0.1 + 0.3 * smoothstep(0.0, -0.9, m.y)) * (0.6 + 0.4 * sin(m.x * 11.0));
+    var env = mix(below, above, smoothstep(-0.06, 0.06, m.y)) + vec3f(0.8) * exp(-abs(m.y) * 22.0);
+    // edges mirror more than what faces us
+    let fresnel = pow(1.0 - max(dot(-r[1], n), 0.0), 4.0);
+    env += sky.rgb * fresnel * 0.6;
+    let flash = 1.0 + audio * g.kick;
+    let sun = vec3f(pow(max(dot(m, normalize(vec3f(-0.4, 0.7, -0.5))), 0.0), 90.0)) * 3.0 * flash;
+    return vec4f(tint.rgb * env * (1.0 + 0.4 * audio * g.kick) + sun, 1.0);
 }

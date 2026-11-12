@@ -3,7 +3,7 @@
 
 /// The presets as (slug, source), in the order a menu shows them: Tunnel (the new node's own
 /// code) first, then color fields, nature, lines and waves, radial, space, retro, patterns.
-pub const PRESETS: [(&str, &str); 40] = [
+pub const PRESETS: [(&str, &str); 76] = [
     ("tunnel", include_str!("../shaders/presets/tunnel.wgsl")),
     ("plasma", include_str!("../shaders/presets/plasma.wgsl")),
     ("liquid", include_str!("../shaders/presets/liquid.wgsl")),
@@ -16,6 +16,8 @@ pub const PRESETS: [(&str, &str); 40] = [
     ("fire", include_str!("../shaders/presets/fire.wgsl")),
     ("flow", include_str!("../shaders/presets/flow.wgsl")),
     ("waves", include_str!("../shaders/presets/waves.wgsl")),
+    ("strands", include_str!("../shaders/presets/strands.wgsl")),
+    ("fractal_world", include_str!("../shaders/presets/fractal_world.wgsl")),
     ("ridgelines", include_str!("../shaders/presets/ridgelines.wgsl")),
     ("ripples", include_str!("../shaders/presets/ripples.wgsl")),
     ("rings", include_str!("../shaders/presets/rings.wgsl")),
@@ -44,6 +46,40 @@ pub const PRESETS: [(&str, &str); 40] = [
     ("dot_grid", include_str!("../shaders/presets/dot_grid.wgsl")),
     ("stripes", include_str!("../shaders/presets/stripes.wgsl")),
     ("moire", include_str!("../shaders/presets/moire.wgsl")),
+    ("silk", include_str!("../shaders/presets/silk.wgsl")),
+    ("paint_swirl", include_str!("../shaders/presets/paint_swirl.wgsl")),
+    ("beams", include_str!("../shaders/presets/beams.wgsl")),
+    ("dark_veil", include_str!("../shaders/presets/dark_veil.wgsl")),
+    ("light_pillar", include_str!("../shaders/presets/light_pillar.wgsl")),
+    ("prism", include_str!("../shaders/presets/prism.wgsl")),
+    ("prismatic_burst", include_str!("../shaders/presets/prismatic_burst.wgsl")),
+    ("plasma_wave", include_str!("../shaders/presets/plasma_wave.wgsl")),
+    ("color_bends", include_str!("../shaders/presets/color_bends.wgsl")),
+    ("gradient_blinds", include_str!("../shaders/presets/gradient_blinds.wgsl")),
+    ("grid_scan", include_str!("../shaders/presets/grid_scan.wgsl")),
+    ("pixel_snow", include_str!("../shaders/presets/pixel_snow.wgsl")),
+    ("pixel_blast", include_str!("../shaders/presets/pixel_blast.wgsl")),
+    ("faulty_terminal", include_str!("../shaders/presets/faulty_terminal.wgsl")),
+    ("ripple_grid", include_str!("../shaders/presets/ripple_grid.wgsl")),
+    ("radar", include_str!("../shaders/presets/radar.wgsl")),
+    ("orb", include_str!("../shaders/presets/orb.wgsl")),
+    ("magnet_lines", include_str!("../shaders/presets/magnet_lines.wgsl")),
+    ("shape_grid", include_str!("../shaders/presets/shape_grid.wgsl")),
+    ("dither_waves", include_str!("../shaders/presets/dither_waves.wgsl")),
+    ("molten_metal", include_str!("../shaders/presets/molten_metal.wgsl")),
+    ("gradient_waves", include_str!("../shaders/presets/gradient_waves.wgsl")),
+    ("web_threads", include_str!("../shaders/presets/web_threads.wgsl")),
+    ("sliced_waves", include_str!("../shaders/presets/sliced_waves.wgsl")),
+    ("gradient_ascii", include_str!("../shaders/presets/gradient_ascii.wgsl")),
+    ("pattern_waves", include_str!("../shaders/presets/pattern_waves.wgsl")),
+    ("micro_slats", include_str!("../shaders/presets/micro_slats.wgsl")),
+    ("topography", include_str!("../shaders/presets/topography.wgsl")),
+    ("acid_squares", include_str!("../shaders/presets/acid_squares.wgsl")),
+    ("scanner", include_str!("../shaders/presets/scanner.wgsl")),
+    ("lightfall", include_str!("../shaders/presets/lightfall.wgsl")),
+    ("line_waves", include_str!("../shaders/presets/line_waves.wgsl")),
+    ("night_highway", include_str!("../shaders/presets/night_highway.wgsl")),
+    ("crt_warp", include_str!("../shaders/presets/crt_warp.wgsl")),
 ];
 
 #[cfg(test)]

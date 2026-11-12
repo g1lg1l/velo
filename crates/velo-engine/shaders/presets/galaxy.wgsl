@@ -56,13 +56,18 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     // arms along logarithmic spirals, dust turning with them
     let arm = pow(0.5 + 0.5 * cos(f32(arms) * a - twist * log(r + 0.001)), 3.0);
     let dust = fbm(turn(q, -spin) * 6.0);
-    let lanes = 0.5 + 0.5 * smoothstep(0.35, 0.65, fbm(turn(q, -spin) * 11.0 + 3.0));
-    let density = exp(-r * 3.0) * (0.15 + arm * (0.5 + dust)) * lanes;
-    let core = exp(-r * 16.0) * (1.0 + 0.6 * audio * g.bass + 0.5 * audio * g.kick);
-    var col = mix(color_b.rgb, color_a.rgb, smoothstep(0.0, 0.3, r)) * density * 2.2 + color_b.rgb * core * 1.5;
+    let lanes = 0.55 + 0.45 * smoothstep(0.3, 0.7, fbm(turn(q, -spin) * 11.0 + 3.0));
+    // the bass swells the whole disc, the kick flares the core
+    let swell = 1.0 + 0.5 * audio * g.bass;
+    let density = exp(-r * 2.3) * (0.12 + arm * (0.5 + 1.2 * dust)) * lanes * swell;
+    let core = (exp(-r * 13.0) + 0.25 * exp(-r * 4.5)) * (1.0 + 0.6 * audio * g.bass + 1.2 * audio * g.kick);
+    var col = mix(color_b.rgb, color_a.rgb, smoothstep(0.0, 0.3, r)) * density * 3.2 + color_b.rgb * core * 1.6;
+    // knots of young stars strung along the arms, in the two colors' blend
+    col += mix(color_a.rgb, color_b.rgb, 0.5).brg * pow(arm * dust * 1.6, 4.0) * exp(-r * 2.0) * 0.9 * swell;
     // stars, in the arms and all around
     let cell = s * 160.0;
-    let star = step(0.985 - arm * density * 0.1, hash(cell)) * (1.0 - smoothstep(0.05, 0.2, length(fract(cell) - 0.5)));
-    col += star * (0.5 + 0.5 * hash(cell + 7.0)) * (1.0 + audio * g.hat * (hash(cell + floor(g.time * 12.0)) - 0.3));
-    return vec4f(col, 1.0);
+    let star = step(0.975 - arm * density * 0.15, hash(cell)) * (1.0 - smoothstep(0.05, 0.22, length(fract(cell) - 0.5)));
+    let warmth = hash(cell + 7.0);
+    col += mix(color_a.rgb, color_b.rgb, warmth) * 0.5 * star + star * (0.3 + 0.5 * warmth) * (1.0 + 1.5 * audio * g.hat * (hash(cell + floor(g.time * 12.0)) - 0.3));
+    return vec4f(1.0 - exp(-col * 1.2), 1.0);
 }

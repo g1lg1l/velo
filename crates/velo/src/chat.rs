@@ -1015,9 +1015,9 @@ impl App {
                     let command = if provider == Provider::ClaudeCode { "claude auth login" } else { "codex login" };
                     let mut buttons = Vec::new();
                     if TERMINAL {
-                        buttons.push((kit::Variant::Outline, None, tr!("Open the Terminal")));
+                        buttons.push((kit::Variant::Outline, Some(icons::TERMINAL_WINDOW), tr!("Open the Terminal")));
                     }
-                    buttons.push((kit::Variant::Outline, None, tr!("Copy the command")));
+                    buttons.push((kit::Variant::Outline, Some(icons::COPY), tr!("Copy the command")));
                     let shown = kit::actions(ui, t, &buttons);
                     if TERMINAL && shown[0].clicked() {
                         actions.terminal = true;
@@ -1039,7 +1039,7 @@ impl App {
         guide_card(ui, t, tr!("Velo in Claude, Cursor"), if agents { tr!("agents let in") } else { tr!("agents kept out") }, Some(agents), |ui| {
             prose(ui, t, tr!("The other way round: those apps drive Velo from outside, while Velo lets agents in (Preferences → AI and agents)."), t.fg_muted, false);
             if !agents {
-                let_in = kit::actions(ui, t, &[(kit::Variant::Secondary, None, tr!("Let agents in"))])[0].clicked();
+                let_in = kit::actions(ui, t, &[(kit::Variant::Secondary, Some(icons::ROBOT), tr!("Let agents in"))])[0].clicked();
             }
             // each one's code, and a button under it that copies it
             for (about, text, copy) in [
@@ -1051,7 +1051,7 @@ impl App {
                     ui.set_width(ui.available_width());
                     ui.add(egui::Label::new(RichText::new(text).font(Theme::mono(t.text_xs)).color(t.fg_text)).wrap());
                 });
-                if kit::actions(ui, t, &[(kit::Variant::Outline, None, copy)])[0].clicked() {
+                if kit::actions(ui, t, &[(kit::Variant::Outline, Some(icons::COPY), copy)])[0].clicked() {
                     copied = Some(text);
                 }
             }
