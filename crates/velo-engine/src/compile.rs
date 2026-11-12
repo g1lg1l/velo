@@ -8,7 +8,7 @@ use std::sync::mpsc;
 
 use std::borrow::Cow;
 
-use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, MEDIA_LIST, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
+use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, LIVE_PROGRAM, Layer, MEDIA_LIST, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, is_shader, node_kind, shows_media};
 
 use crate::media::{Reel, SLOTS};
 
@@ -60,6 +60,10 @@ pub struct Plan {
     /// Each Probe node that's on, and the engine node whose picture it reads (none: nothing
     /// wired, or only off nodes).
     pub probes: Vec<(String, Option<usize>)>,
+    /// The engine nodes that show what plays under the scene: the Live nodes on the program
+    /// ([`LIVE_PROGRAM`]) of a layer on top. In any other scene nothing is under it to read, so
+    /// there are none and such a node shows black.
+    pub under: Vec<usize>,
 }
 
 /// What a node runs: a built-in shader, or a Shader node's own code.
@@ -176,7 +180,9 @@ fn plan_of(scene: &Scene) -> Plan {
             topological(&specs, &feedback).ok().and_then(|order| order.into_iter().rev().find(|&n| !read(n))).and_then(|n| resolve(&all[n].0))
         }
     };
-    Plan { nodes, inputs, output, probes }
+    let reads_under = |id: &str| scene.node(id).is_some_and(|n| n.kind == LIVE && n.media.as_deref() == Some(LIVE_PROGRAM));
+    let under = nodes.iter().enumerate().filter(|(_, (id, _))| scene.layer == Layer::Top && reads_under(id)).map(|(n, _)| n).collect();
+    Plan { nodes, inputs, output, probes, under }
 }
 
 /// A graph built for a scene, with the plan it was built from (the UI maps node ids to the
@@ -275,8 +281,9 @@ fn build(
                 return Some(library.text(n.text.as_deref().unwrap_or_default(), n.media.as_deref()));
             }
             // a Live node's name is a feed, found by the library on a thread of its own
+            // (but the program: no feed, the render thread's own picture, below)
             if n.kind == LIVE {
-                return n.media.as_deref().map(|source| library.live(source));
+                return n.media.as_deref().filter(|source| *source != LIVE_PROGRAM).map(|source| library.live(source));
             }
             // a Particles node's file is its sprite
             n.media.as_deref().filter(|_| shows_media(&n.kind) || n.kind == PARTICLES || n.kind == MESH).map(|path| library.get(path))
@@ -334,7 +341,11 @@ fn build(
     }
     let models: Vec<(usize, std::sync::Arc<crate::media::Media>)> = (0..plan.nodes.len()).filter_map(|n| file(n).filter(|m| m.model.is_some()).map(|m| (n, m.clone()))).collect();
     let media = plan.nodes.iter().zip(files).filter_map(|((id, _), l)| Some((id.clone(), l?))).collect();
-    let views: Vec<(usize, wgpu::TextureView)> = playing.iter().map(|p| (p.node, p.texture.create_view(&Default::default()))).collect();
+    let mut views: Vec<(usize, wgpu::TextureView)> = playing.iter().map(|p| (p.node, p.texture.create_view(&Default::default()))).collect();
+    // what plays under the layer: one picture the render thread fills each frame, read by every
+    // node that shows it as an Image node reads its file
+    let under = (!plan.under.is_empty()).then(|| crate::gpu::texture_for(device, size, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST));
+    views.extend(under.iter().flat_map(|view| plan.under.iter().map(move |&n| (n, view.clone()))));
     let runner = Runner::new(device, &programs, &specs, &views, size, wave);
     if let Some(e) = [pollster::block_on(valid.pop()), pollster::block_on(memory.pop())].into_iter().flatten().next() {
         return Err(crate::gpu_error(&e));
@@ -396,7 +407,7 @@ fn build(
         })
         .collect();
     let shaders = specs.iter().map(|spec| programs[spec.program].node.clone()).collect();
-    Ok(Built { graph: Box::new(Graph { programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lists, lazy }), plan, signals, shaders, errors, media })
+    Ok(Built { graph: Box::new(Graph { programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lists, lazy, under }), plan, signals, shaders, errors, media })
 }
 
 #[cfg(test)]
@@ -564,7 +575,7 @@ mod tests {
         // upstream order, not scene order: blur reads noise, so blur is the end of the chain
         let p = plan(&scene(&["velo.blur", "velo.noise"], &[(1, 0, 0)]));
         assert_eq!(p.output, Some(0));
-        assert_eq!(plan(&scene(&[], &[])), Plan { nodes: vec![], inputs: vec![], output: None, probes: vec![] });
+        assert_eq!(plan(&scene(&[], &[])), Plan { nodes: vec![], inputs: vec![], output: None, probes: vec![], under: vec![] });
     }
 
     #[test]
@@ -576,6 +587,22 @@ mod tests {
         assert_eq!((&p.inputs[3], p.output), (&vec![Some(2)], Some(3)));
         let specs: Vec<NodeSpec> = p.inputs.iter().map(|i| NodeSpec { program: 0, inputs: i.clone() }).collect();
         assert_eq!(topological(&specs, &[false, false, true, false]).unwrap(), vec![0, 2, 1, 3]);
+    }
+
+    #[test]
+    fn only_a_layer_on_top_reads_what_plays_under_it() {
+        let mut s = scene(&[LIVE, "velo.kaleido", "velo.output"], &[(0, 1, 0), (1, 2, 0)]);
+        s.nodes[0].media = Some(LIVE_PROGRAM.into());
+        assert!(plan(&s).under.is_empty(), "a scene launched like the others has nothing under it");
+        s.layer = Layer::Bottom;
+        assert!(plan(&s).under.is_empty(), "nor has a layer underneath");
+        s.layer = Layer::Top;
+        assert_eq!(plan(&s).under, [0], "the Live node on the program");
+        s.nodes[0].off = true;
+        assert!(plan(&s).under.is_empty(), "switched off, it reads nothing");
+        s.nodes[0].off = false;
+        s.nodes[0].media = Some("ndi:Somewhere".into());
+        assert!(plan(&s).under.is_empty(), "a feed from outside is no picture of ours");
     }
 
     #[test]

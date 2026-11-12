@@ -4183,7 +4183,7 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::SHADER => tr!("A picture in WGSL: one of its presets (Plasma, Fire, Lasers…) or your own code, its knobs from its header."),
         velo_core::IMAGE => tr!("A picture, a GIF or a folder of frames from a file."),
         velo_core::VIDEO => tr!("A movie from a file, looping."),
-        velo_core::LIVE => tr!("A live picture: an NDI source, a Spout sender or a camera, as it comes."),
+        velo_core::LIVE => tr!("A live picture: an NDI source, a Spout sender or a camera, as it comes; or, in a layer on top, what plays under it."),
         velo_core::MEDIA_LIST => tr!("Pictures and movies in turn, streamed from disk: in order, at random or back and forth, on the beat."),
         velo_core::TEXT => tr!("Words set in a font, colored, sized and placed."),
         velo_core::TEXT_LIST => tr!("Lines of words one at a time: in order, at random or back and forth, on the beat."),

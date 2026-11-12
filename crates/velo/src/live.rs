@@ -815,6 +815,8 @@ fn structure(scene: Option<&Scene>, size: [u32; 2]) -> u64 {
         for n in &s.nodes {
             (&n.id, &n.kind, &n.code, &n.media, &n.text, n.off).hash(&mut h);
         }
+        // a layer on top is built with the picture under it, for its Live nodes on the program
+        (s.layer == velo_core::Layer::Top && s.nodes.iter().any(|n| n.media.as_deref() == Some(velo_core::LIVE_PROGRAM))).hash(&mut h);
         for e in &s.edges {
             (&e.from, &e.to).hash(&mut h);
         }

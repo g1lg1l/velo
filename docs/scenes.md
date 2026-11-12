@@ -67,6 +67,14 @@ pub struct Launch { pub transition: Transition, pub duration: f32, pub quantize:
 
 **Layers.** A scene's menu makes it a layer (`scene.set_layer`): always on top of, or always underneath, whichever scene goes out, a title, a logo, a background. Its blend says how it goes with the rest: Over (through its transparency; the program is solid, so under it only Add, Screen or Multiply show), Add, Screen (lights on black, the default) or Multiply (darks on white). Layers render every frame, are never evicted, and are composed onto the program before it goes anywhere (outputs, Spout and NDI, the preview); the scene card says ON TOP or UNDER. Launching a layer (its number key, a controller) switches it on or off, fading over half a second: that is the engine's state, like the live scene, not saved. The autopilot turning the scenes under a layer of words is a regia in two scenes, each costing only what it shows.
 
+**Effect layers.** A layer on top can process what is under it instead of covering it: a strobe, a glitch, a shake or a warp over everything, on one key. Its graph starts from a Live node whose source is **What plays under this layer** (`program` in the file), goes through any effects into the Output, and its blend is Over: the processed picture shows in place of what is under it, and switching the layer still fades over half a second, from the picture as it is to the processed one.
+
+- **What it reads.** When the layers are put together, the engine keeps what is under each such layer (the program and every layer before it) in a picture of the layer's own, just before the layer goes on; the layer's graph reads it the next frame. So the processed picture is one frame late, and it is never the layer's own picture: nothing feeds back.
+- **Several at once** stack, in the scenes' order: each reads what the one before it made.
+- **Off but selected**, the layer is given the program as it goes out (every layer that is on included), so its preview and its card show what switching it on would do.
+- **Anywhere else** the source is black, because nothing is under it: in a scene launched like the others, in a layer underneath, and in a layer on top that went out as the scene (the selected one does at start).
+- **Cost.** One canvas-sized picture of video memory for the layer and a copy into it a frame. A project with no such node pays nothing.
+
 ## 4. Controls that touch scenes
 
 | Gesture | Bindings |

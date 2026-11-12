@@ -766,7 +766,12 @@ fn multisampled(device: &wgpu::Device, [width, height]: [u32; 2], format: wgpu::
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-pub(crate) fn texture(device: &wgpu::Device, [width, height]: [u32; 2]) -> wgpu::TextureView {
+pub(crate) fn texture(device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
+    texture_for(device, size, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC)
+}
+
+/// A picture in the working format, for what `usage` says.
+pub(crate) fn texture_for(device: &wgpu::Device, [width, height]: [u32; 2], usage: wgpu::TextureUsages) -> wgpu::TextureView {
     device
         .create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -775,7 +780,7 @@ pub(crate) fn texture(device: &wgpu::Device, [width, height]: [u32; 2]) -> wgpu:
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            usage,
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())
