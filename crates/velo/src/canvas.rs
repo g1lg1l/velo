@@ -4087,6 +4087,8 @@ pub fn demo_macros(session: &mut Session) -> Option<String> {
     ] {
         session.run("binding.add", json!({ "control": midi(msg), "target": target, "behavior": behavior })).ok()?;
     }
+    // and a key of the computer's keyboard as a pad: 3 flips Spin
+    session.run("binding.add", json!({ "control": { "Key": "3" }, "target": { "Macro": 2 }, "behavior": "Toggle" })).ok()?;
     Some(kaleido)
 }
 
@@ -4336,7 +4338,7 @@ mod tests {
         let scene = s.active().unwrap();
         assert_eq!((scene.nodes.len(), scene.edges.len()), (10, 9), "every planned wire is legal");
         demo_macros(&mut s).expect("the macros demo builds on it");
-        assert_eq!((s.active().unwrap().variations.len(), s.project.bindings.len()), (3, 5));
+        assert_eq!((s.active().unwrap().variations.len(), s.project.bindings.len()), (3, 6));
         let mut s = Session::default();
         demo(&mut s, 200);
         let scene = s.active().unwrap();
@@ -5215,5 +5217,130 @@ mod midi_tests {
         h.app.run("binding.add", json!({ "control": { "Midi": { "port": null, "channel": 0, "msg": { "Note": 40 } } }, "target": { "Variation": 0 }, "behavior": "Trigger" }));
         h.midi(0, MidiMsg::Note(40), 127);
         assert_eq!(h.macro_value(0), 0.25, "any port: the pad recalls A");
+    }
+
+    #[test]
+    fn a_key_is_learned_and_flips_a_macro_and_a_parameter_between_their_ends() {
+        let mut h = Ui::new();
+        h.key(Key::L);
+        h.click(h.widget("Macro 1 0 %").center());
+        h.key(Key::Num4);
+        let b = h.app.session.project.bindings.first().expect("bound").clone();
+        assert_eq!((b.control, b.target, b.behavior), (Control::Key("4".into()), Target::Macro(0), Behavior::Toggle));
+        assert_eq!(h.macro_value(0), 0.0, "the learning press moved nothing");
+        assert!(h.app.learn.on && h.app.learn.target.is_none(), "learn mode goes on to the next control");
+        assert_eq!(h.app.binding_label(&Target::Macro(0)).as_deref(), Some("Key 4"), "its badge");
+        // L is never learned: with a control waiting it still leaves learn mode
+        h.click(h.widget("Macro 2 0 %").center());
+        assert_eq!(h.app.learn.target, Some(Target::Macro(1)));
+        h.key(Key::L);
+        assert!(!h.app.learn.on && h.app.learn.target.is_none() && h.app.session.project.bindings.len() == 1);
+        // each press flips the macro; a held key's repeats, its release and Shift+4 don't
+        let four = |pressed: bool, modifiers: Modifiers| vec![Event::Key { key: Key::Num4, physical_key: Some(Key::Num4), pressed, repeat: false, modifiers }];
+        h.frame(four(true, Modifiers::NONE));
+        assert_eq!(h.macro_value(0), 1.0);
+        // (egui marks a press of a key that is still down as a repeat)
+        h.frame(four(true, Modifiers::NONE));
+        h.frame(four(false, Modifiers::NONE));
+        h.frame(four(true, Modifiers::SHIFT));
+        h.frame(four(false, Modifiers::SHIFT));
+        assert_eq!(h.macro_value(0), 1.0);
+        h.key(Key::Num4);
+        assert_eq!(h.macro_value(0), 0.0);
+        // a parameter on a function key, bound by the operator: from one end of its range to the other
+        let node = h.app.session.active().unwrap().nodes[0].id.clone();
+        let target = Target::Param { node: node.clone(), param: "zoom".into() };
+        h.app.run("binding.add", json!({ "control": { "Key": "F5" }, "target": { "Param": { "node": node, "param": "zoom" } }, "behavior": "Toggle" }));
+        let end = if h.app.travel(&target).expect("a parameter") >= 0.5 { 0.0 } else { 1.0 };
+        h.key(Key::F5);
+        assert!((h.app.travel(&target).unwrap() - end).abs() < 1e-4, "{:?}", h.app.travel(&target));
+        let p = h.app.param_ref(&node, "zoom").unwrap();
+        assert!((p.value[p.axis] - if end == 1.0 { p.info.max } else { p.info.min }).abs() < 1e-4, "its end, in its units: {}", p.value[p.axis]);
+        h.key(Key::F5);
+        assert!((h.app.travel(&target).unwrap() - (1.0 - end)).abs() < 1e-4);
+        // Forget, from the control's menu, is the operator: undoable
+        h.app.run("binding.remove", json!({ "target": { "Macro": 0 } }));
+        h.key(Key::Num4);
+        assert_eq!(h.macro_value(0), 0.0, "forgotten");
+        h.app.run("edit.undo", json!({}));
+        h.key(Key::Num4);
+        assert_eq!(h.macro_value(0), 1.0);
+    }
+
+    #[test]
+    fn a_project_key_wins_over_the_keymap_and_typing_fires_nothing() {
+        let mut h = Ui::new();
+        // P is the keymap's: it hides the preview
+        h.key(Key::P);
+        assert!(h.app.settings.hide_preview);
+        // bound in the project (here over OSC, as an outside tool would), it's the project's
+        let bind = r#"{"control": {"Key": "P"}, "target": {"Macro": 0}, "behavior": "Toggle"}"#;
+        assert!(h.app.apply_osc(&crate::osc::Message { address: "/velo/op/binding.add".into(), args: vec![crate::osc::Arg::Str(bind.into())], at: Instant::now() }, 1.0));
+        h.key(Key::P);
+        assert!(h.app.settings.hide_preview && h.macro_value(0) == 1.0, "the binding, not the command");
+        // with a dialog open neither runs
+        h.app.show_help = true;
+        h.key(Key::P);
+        h.app.show_help = false;
+        assert!(h.app.settings.hide_preview && h.macro_value(0) == 1.0, "a dialog has the keyboard");
+        // nor while typing in a field (the canvas' search)
+        h.app.command("canvas.find");
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        assert!(h.ctx.text_edit_focused(), "the search field has the keyboard");
+        h.frame(vec![Event::Key { key: Key::P, physical_key: Some(Key::P), pressed: true, repeat: false, modifiers: Modifiers::NONE }, Event::Text("p".into())]);
+        h.frame(vec![Event::Key { key: Key::P, physical_key: Some(Key::P), pressed: false, repeat: false, modifiers: Modifiers::NONE }]);
+        assert!(h.app.settings.hide_preview && h.macro_value(0) == 1.0, "typing is typing");
+        h.app.canvas.find = None;
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        assert!(!h.ctx.text_edit_focused());
+        // unbound, the key is the keymap's again
+        h.app.run("binding.remove", json!({ "target": { "Macro": 0 } }));
+        h.key(Key::P);
+        assert!(!h.app.settings.hide_preview && h.macro_value(0) == 1.0);
+        // an agent binds it back through the bridge: the same control as JSON
+        let call = json!({ "id": "binding.add", "props": { "control": { "Key": "P" }, "target": { "Macro": 0 }, "behavior": "Toggle" } });
+        h.app.agent_call("run_operator", &call, true).expect("the agents' bridge takes a key");
+        h.key(Key::P);
+        assert!(!h.app.settings.hide_preview && h.macro_value(0) == 0.0);
+    }
+
+    #[test]
+    fn a_key_bound_to_a_scene_launches_it_where_the_keymap_would_launch_another() {
+        let Ok(engine) = velo_engine::Engine::start(None) else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let mut h = Ui::new();
+        let first = h.app.session.active().unwrap().id.clone();
+        h.app.run("node.add", json!({ "kind": "velo.output" }));
+        // a second scene that goes out at once
+        h.app.run("scene.add", json!({ "name": "Drop" }));
+        h.app.run("node.add", json!({ "kind": "velo.noise" }));
+        h.app.run("scene.set_launch", json!({ "transition": "Cut", "quantize": "Off" }));
+        let second = h.app.session.active().unwrap().id.clone();
+        h.app.run("scene.select", json!({ "scene": first }));
+        h.app.live = Some(crate::live::Live::new(std::rc::Rc::new(engine), std::rc::Rc::default()));
+        let until = |h: &mut Ui, what: &str, scene: &str| {
+            let deadline = Instant::now() + std::time::Duration::from_secs(10);
+            while h.app.live.as_ref().unwrap().live_scene() != Some(scene) {
+                assert!(Instant::now() < deadline, "{what} within 10 s");
+                h.frame(Vec::new());
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        until(&mut h, "the first scene live", &first);
+        // 1 is the keymap's "launch scene 1"; this project makes it launch scene 2
+        h.app.run("binding.add", json!({ "control": { "Key": "1" }, "target": { "LaunchScene": 1 }, "behavior": "Trigger" }));
+        h.key(Key::Num1);
+        until(&mut h, "scene 2 launched by the project's key", &second);
+        // the keymap's 1 would have left the first scene on; and B, bound to nothing, is still Blackout
+        h.key(Key::B);
+        assert!(h.app.live.as_ref().unwrap().blackout);
+        // a key takes blackout over, and flips it
+        h.app.run("binding.add", json!({ "control": { "Key": "X" }, "target": "Blackout", "behavior": "Toggle" }));
+        h.key(Key::X);
+        assert!(!h.app.live.as_ref().unwrap().blackout);
     }
 }

@@ -3,7 +3,8 @@
 //! `app.*` ids are handled by the app, `canvas.*` ones by the node canvas (only while it has
 //! the keyboard or the pointer); anything else is an operator id. The stage keys of
 //! docs/product.md §7.6 (1-9, Space, T, B, F, L, P) are kept free for the stage. A binding on
-//! Space fires when it's tapped: held, Space pans the canvas.
+//! Space fires when it's tapped: held, Space pans the canvas. A key the open project binds
+//! (docs/control.md §2) goes to its binding and never gets here.
 
 use std::collections::BTreeMap;
 

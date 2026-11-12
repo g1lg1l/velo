@@ -144,6 +144,8 @@ After Bitwig's modulators and Serum's drag-to-modulate.
 
 The stage keys: `1` to `9` launch scene n · `Space` (a tap) launches the selected scene · `0` auto (the autopilot on, every layer back on) · `D` drop (the autopilot's next scene now, through a flash) · `T` tap tempo · `B` blackout · `F` freeze · `P` show or hide the preview · `L` MIDI learn. They stay free of every other command.
 
+A project can give a key another job: in MIDI learn a letter, a digit or `F1` to `F12` pressed alone binds to the control that waits, like a pad (control.md §2 and §3), so `4` can flip a macro and `7` a parameter. A key bound in the open project does that instead of its command here; the others keep theirs. Bound keys follow the stage keys' rule: nothing fires while a text field, the code editor or a dialog has the keyboard.
+
 Everywhere: `Cmd+K` command palette · `Cmd+S` save · `Cmd+Shift+S` save as · `Cmd+O` open · `Cmd+N` new · `Cmd+Z` undo · `Cmd+Shift+Z` or `Cmd+Y` redo · `Cmd+I` the AI · `Cmd+Shift+H` frame-time HUD · `Cmd+Shift+T` test pattern · `Cmd+,` preferences · `F1` the shortcut sheet.
 
 On the node canvas: `Tab` node menu · `H` or `Shift+1` zoom to fit · `Shift+2` zoom to selection · `Shift+0` 100 % · `Cmd+=` / `Cmd+-` zoom · `E` turn the selection off or on · `Cmd+D` duplicate · `Delete` delete · `Cmd+A` select all · `Cmd+Shift+I` import an ISF shader · `Esc` deselect · `Space`+drag pan. Bare keys work where the canvas has the keyboard or the pointer; chords whenever it shows.

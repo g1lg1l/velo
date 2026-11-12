@@ -132,9 +132,12 @@ pub fn note_name(n: u8) -> String {
     format!("{}{}", NAMES[usize::from(n % 12)], i32::from(n / 12) - 2)
 }
 
-/// A control as its badge says it: "CC 21", "Note C1", "Program".
+/// A control as its badge says it: "CC 21", "Note C1", "Program", "Key 4".
 pub fn control_label(c: &Control) -> String {
-    let Control::Midi { msg, .. } = c;
+    let msg = match c {
+        Control::Midi { msg, .. } => msg,
+        Control::Key(name) => return tr!("Key {}", name),
+    };
     match msg {
         MidiMsg::Cc(n) => tr!("CC {}", n),
         MidiMsg::Note(n) => tr!("Note {}", note_name(*n)),
@@ -159,9 +162,22 @@ pub fn behavior_for(target: &Target, msg: MidiMsg) -> Behavior {
     match (target, msg) {
         (Target::Macro(_), MidiMsg::Cc(_) | MidiMsg::Cc14(_)) => Behavior::Absolute { takeover: Takeover::Pickup },
         (Target::Param { .. }, MidiMsg::Cc(_) | MidiMsg::Cc14(_)) => Behavior::Absolute { takeover: Takeover::Jump },
-        (Target::Macro(_) | Target::Param { .. } | Target::Blackout | Target::Freeze, _) => Behavior::Toggle,
+        _ => press_behavior(target),
+    }
+}
+
+/// How a pad or a key learned for `target` behaves: it flips what has two ends and fires the rest.
+pub fn press_behavior(target: &Target) -> Behavior {
+    match target {
+        Target::Macro(_) | Target::Param { .. } | Target::Blackout | Target::Freeze => Behavior::Toggle,
         _ => Behavior::Trigger,
     }
+}
+
+/// A key of the computer's keyboard as bindings name it ("4", "A", "F5"), if it can be bound:
+/// a letter, a digit or a function key (docs/control.md §3).
+pub fn key_name(key: egui::Key) -> Option<&'static str> {
+    Some(key.name()).filter(|name| Control::key_name(name))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -409,12 +425,41 @@ impl App {
             Some(mode) if matches!(target, Target::Macro(_) | Target::Param { .. }) => Behavior::Relative { mode, step: 1.0 / 128.0 },
             _ => behavior_for(&target, input.msg),
         };
-        let binding = Binding { behavior, control, target };
+        self.bind(Binding { behavior, control, target });
+        true
+    }
+
+    /// What learn found for the control that waited: bound, and said.
+    fn bind(&mut self, binding: Binding) {
         let text = tr!("{} now drives {}", control_label(&binding.control), self.target_name(&binding.target));
         self.run("binding.add", json!(binding));
         self.say(Tone::Done, text);
         self.learn.target = None;
-        true
+    }
+
+    /// Whether a key pressed alone is the project's, not the keymap's (docs/control.md §3): a
+    /// control waits to learn it, or a binding has it. In learn mode the key that leaves it
+    /// (`L`) stays the keymap's, so there is always a way out.
+    pub fn takes_key(&self, key: egui::Key) -> bool {
+        let Some(name) = key_name(key) else { return false };
+        let learning = self.learn.on || self.learn.target.is_some();
+        if learning && self.settings.keymap.keys("stage.learn").iter().any(|k| k.modifiers.is_none() && k.logical_key == key) {
+            return false;
+        }
+        self.learn.target.is_some() || self.session.project.bindings.iter().any(|b| matches!(&b.control, Control::Key(k) if k == name))
+    }
+
+    /// A key `takes_key` took, pressed: it binds the control that waits (and does nothing else),
+    /// or does what it's bound to, as a pad would.
+    pub fn key_press(&mut self, key: egui::Key, now: f64) {
+        let Some(control) = key_name(key).map(|name| Control::Key(name.into())) else { return };
+        if let Some(target) = self.learn.target.clone() {
+            return self.bind(Binding { behavior: press_behavior(&target), control, target });
+        }
+        let bound: Vec<Target> = self.session.project.bindings.iter().filter(|b| b.control == control).map(|b| b.target.clone()).collect();
+        for target in bound {
+            self.trigger(&target, Instant::now(), now);
+        }
     }
 
     /// The scene macros and variations from controllers go to: the one on the output (the
@@ -590,7 +635,7 @@ impl App {
         let label = if waiting { tr!("Waiting for a controller…") } else { tr!("Learn MIDI") };
         if ui.button(format!("{}  {label}", crate::icons::CROSSHAIR)).clicked() {
             self.learn.wait(target.clone());
-            self.say(Tone::Action, tr!("Move a knob or hit a pad on your controller (Esc cancels)"));
+            self.say(Tone::Action, tr!("Move a knob or hit a pad on your controller, or press a key (Esc cancels)"));
             ui.close();
         }
         if let Some(label) = self.binding_label(target)
@@ -627,7 +672,7 @@ impl App {
 /// Whether an input is a binding's control: the same message on the same channel, from its
 /// port or from any port.
 fn matches(control: &Control, input: &Input) -> bool {
-    let Control::Midi { port, channel, msg } = control;
+    let Control::Midi { port, channel, msg } = control else { return false };
     *channel == input.channel && *msg == input.msg && port.as_deref().is_none_or(|p| p == input.port.as_ref())
 }
 
@@ -773,6 +818,13 @@ mod tests {
         assert_eq!(note_name(127), "G8");
         assert_eq!(control_label(&Control::Midi { port: None, channel: 0, msg: MidiMsg::Cc(21) }), "CC 21");
         assert_eq!(control_label(&Control::Midi { port: None, channel: 0, msg: MidiMsg::Note(37) }), "Note C#1");
+        assert_eq!(control_label(&Control::Key("4".into())), "Key 4");
+        // the keys that bind: letters, digits, function keys; never the ones that move around
+        use egui::Key;
+        assert_eq!([Key::Num4, Key::A, Key::F5].map(key_name), [Some("4"), Some("A"), Some("F5")]);
+        assert_eq!([Key::Escape, Key::Space, Key::Tab, Key::Enter, Key::ArrowUp, Key::Delete, Key::F13, Key::Minus].map(key_name), [None; 8]);
+        assert_eq!(press_behavior(&Target::Macro(0)), Behavior::Toggle);
+        assert_eq!(press_behavior(&Target::Variation(0)), Behavior::Trigger);
         assert_eq!(variation_letter(2), 'C');
         // learned behaviors: knobs set, pads flip continuous targets and fire the rest
         assert_eq!(behavior_for(&Target::Macro(0), MidiMsg::Cc(1)), Behavior::Absolute { takeover: Takeover::Pickup });

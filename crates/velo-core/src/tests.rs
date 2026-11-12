@@ -679,6 +679,57 @@ fn bindings_replace_their_control_and_target_and_go() {
 }
 
 #[test]
+fn a_key_is_a_control_that_presses() {
+    let mut s = session();
+    let key = |name: &str, target: Value, behavior: Value| json!({ "control": { "Key": name }, "target": target, "behavior": behavior });
+    ok(&mut s, "binding.add", key("4", json!({ "Macro": 3 }), json!("Toggle")));
+    ok(&mut s, "binding.add", key("F5", json!({ "LaunchScene": 0 }), json!("Trigger")));
+    assert_eq!(s.project.binding(&Target::Macro(3)).map(|b| &b.control), Some(&Control::Key("4".into())));
+    // one binding a key and one a target, as for MIDI: the key moves over, a MIDI knob takes the macro
+    ok(&mut s, "binding.add", key("4", json!({ "Macro": 2 }), json!("Toggle")));
+    assert!(s.project.binding(&Target::Macro(3)).is_none() && s.project.bindings.len() == 2);
+    ok(&mut s, "binding.add", json!({ "control": { "Midi": { "port": null, "channel": 0, "msg": { "Cc": 21 } } }, "target": { "Macro": 2 }, "behavior": { "Absolute": { "takeover": "Pickup" } } }));
+    assert!(s.project.bindings.iter().all(|b| b.control != Control::Key("4".into())) && s.project.bindings.len() == 2);
+    // a key has no travel, and only letters, digits and function keys bind
+    let before = s.project.clone();
+    assert!(s.run("binding.add", key("4", json!({ "Macro": 0 }), json!({ "Absolute": { "takeover": "Jump" } }))).is_err());
+    assert!(s.run("binding.add", key("4", json!({ "Macro": 0 }), json!({ "Relative": { "mode": "TwosComplement", "step": 0.1 } }))).is_err());
+    for name in ["Escape", "Space", "a", "44", "F0", "F13", "F1 ", ""] {
+        assert!(s.run("binding.add", key(name, json!("Blackout"), json!("Toggle"))).is_err(), "{name:?}");
+    }
+    assert_eq!(s.project, before);
+    for name in ["A", "Z", "0", "9", "F1", "F9", "F10", "F12"] {
+        assert!(Control::key_name(name), "{name}");
+    }
+    // undone, removed by its target, saved and loaded
+    ok(&mut s, "binding.remove", json!({ "target": { "LaunchScene": 0 } }));
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.project, before);
+    let text = ron::ser::to_string(&s.project).unwrap();
+    assert!(text.contains(r#"control:Key("F5")"#), "{text}");
+    assert_eq!(ron::from_str::<Project>(&text).unwrap(), s.project);
+}
+
+#[test]
+fn a_format_4_project_opens_with_its_bindings_as_they_were() {
+    // format 4: before keys were controls. Nothing to change, only the number
+    let old = r#"(format: 4, scenes: [(id: "s_1", name: "Drop", nodes: [], edges: [])], bindings: [
+        (control: Midi(port: None, channel: 0, msg: Cc(21)), target: Macro(0), behavior: Absolute(takeover: Pickup)),
+        (control: Midi(port: Some("Pads"), channel: 9, msg: Note(36)), target: LaunchScene(0), behavior: Trigger),
+    ])"#;
+    let mut project: Project = ron::from_str(old).unwrap();
+    let bindings = project.bindings.clone();
+    project.migrate();
+    assert_eq!((project.format, &project.bindings), (5, &bindings));
+    assert_eq!(bindings[0].control, Control::Midi { port: None, channel: 0, msg: MidiMsg::Cc(21) });
+    // what format 5 adds: a key, which a format-4 Velo has no name for (it refuses the file by its number)
+    project.bindings.push(Binding { control: Control::Key("4".into()), target: Target::Macro(3), behavior: Behavior::Toggle });
+    let text = ron::ser::to_string(&project).unwrap();
+    assert!(text.starts_with("(format:5,") && text.contains(r#"(control:Key("4"),target:Macro(3),behavior:Toggle)"#), "{text}");
+    assert_eq!(ron::from_str::<Project>(&text).unwrap(), project);
+}
+
+#[test]
 fn macros_variations_and_bindings_round_trip_and_old_files_load() {
     let mut s = session();
     let kaleido = add(&mut s, "velo.kaleido", 0.0);

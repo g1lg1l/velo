@@ -36,7 +36,7 @@ Abridged from a real file:
 
 ```ron
 (
-    format: 4,
+    format: 5,
     name: "Untitled",
     canvas: (width: 1920, height: 1080, fps: 60),
     scenes: [(
@@ -67,6 +67,7 @@ Abridged from a real file:
     )],
     bindings: [
         (control: Midi(port: None, channel: 0, msg: Cc(21)), target: Macro(0), behavior: Absolute(takeover: Pickup)),
+        (control: Key("4"), target: Macro(3), behavior: Toggle),
     ],
 )
 ```
@@ -76,6 +77,7 @@ Abridged from a real file:
 - A mapping's `source` is a signal node's output, `"<node id>/<output index>"` (here the scene's Audio In, output 6: the hat).
 - `media` holds an Image or Video node's file (or folder of frames) and a Text node's font file, as an absolute path; `text` holds a Text node's words.
 - UI-only data lives inline and the engine ignores it: node positions, a node's emoji `icon`, a scene's cable `ties` (each `(id, pos, cables)`, a cable named by where it ends: a wire by its input, `"n_ab12/0"`, a signal's line by the node it moves and its source, `"n_cd34 n_ef56/2"`).
+- A binding's `control` is a MIDI message or, from format 5, a key of the computer's keyboard by its name (`Key("A")`, `Key("4")`, `Key("F5")`; control.md §2).
 - Empty lists and untouched macros are left out; maps are sorted, so saves give small diffs.
 
 ## 4. Saving safely
@@ -101,3 +103,4 @@ A file parses into the current model (new fields have defaults), then `Project::
 | 1 | 2 | A mapping of a shared source (`"kick"`, `"bar_phase"`) points at the scene's Audio In or Beat node output (`"n_ab12/4"`); the node is added left of the graph when the scene has none |
 | 2 | 3 | A Grid is no longer an output: where one went out, it now feeds the scene's Output node, added beside it when there's none |
 | 3 | 4 | A Shader node that reads an input (one is wired in, or its header asks for a texture) becomes a Shader FX |
+| 4 | 5 | Nothing in the file: a binding's control may now be a key (`Key("4")`), which format 4 has no name for. An older Velo refuses a format 5 file and never misreads it: by its number ("saved by a newer Velo") when no key is bound, and as not a valid project when one is, since it stops at the word it doesn't know before it gets to the number |

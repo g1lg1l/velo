@@ -1234,21 +1234,33 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "binding.add",
         label: "Bind Control",
-        description: "Make a controller's knob, key or pad do something: a macro, a parameter, launching a scene, a variation, blackout, tap tempo. It replaces that control's and that target's old binding.",
+        description: "Make a controller's knob, key or pad do something: a macro, a parameter, launching a scene, a variation, blackout, tap tempo. A key of the computer's keyboard is a control too: {\"Key\": \"4\"} (a letter, a digit, F1 to F12), with Trigger or Toggle. It replaces that control's and that target's old binding.",
         example: r#"{"control": {"Midi": {"port": null, "channel": 0, "msg": {"Cc": 21}}}, "target": {"Macro": 0}, "behavior": {"Absolute": {"takeover": "Pickup"}}}"#,
         undo: true,
         poll: always,
         exec: |s, v| {
             let b: Binding = props(v)?;
-            let Control::Midi { channel, msg, .. } = &b.control;
-            let number = match msg {
-                MidiMsg::Cc(n) | MidiMsg::Note(n) => *n,
-                MidiMsg::ProgramChange => 0,
-                MidiMsg::Cc14(n) if *n >= 32 => return Err("a 14-bit controller is CC 0 to 31 (its fine half is CC n + 32)".into()),
-                MidiMsg::Cc14(n) => *n,
-            };
-            if *channel > 15 || number > 127 {
-                return Err("channel is 0 to 15, controllers and notes 0 to 127".into());
+            match &b.control {
+                Control::Midi { channel, msg, .. } => {
+                    let number = match msg {
+                        MidiMsg::Cc(n) | MidiMsg::Note(n) => *n,
+                        MidiMsg::ProgramChange => 0,
+                        MidiMsg::Cc14(n) if *n >= 32 => return Err("a 14-bit controller is CC 0 to 31 (its fine half is CC n + 32)".into()),
+                        MidiMsg::Cc14(n) => *n,
+                    };
+                    if *channel > 15 || number > 127 {
+                        return Err("channel is 0 to 15, controllers and notes 0 to 127".into());
+                    }
+                }
+                Control::Key(name) => {
+                    if !Control::key_name(name) {
+                        return Err(r#"a key is a letter ("A"), a digit ("4") or a function key ("F1" to "F12")"#.into());
+                    }
+                    // a key has no travel: it can only press
+                    if !matches!(b.behavior, Behavior::Trigger | Behavior::Toggle) {
+                        return Err("a key presses: its behavior is Trigger or Toggle".into());
+                    }
+                }
             }
             if matches!(b.behavior, Behavior::Relative { step, .. } if !(step > 0.0 && step <= 1.0)) {
                 return Err("an encoder's step is a share of the travel, above 0 and at most 1".into());

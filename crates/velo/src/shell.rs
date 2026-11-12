@@ -558,7 +558,7 @@ impl App {
     }
 
     fn midi_chip(&mut self, ui: &mut Ui, t: &Theme, icon_only: bool) {
-        let learn_tip = self.tip(tr!("MIDI learn: click a control, then move a knob or hit a pad"), "stage.learn");
+        let learn_tip = self.tip(tr!("MIDI learn: click a control, then move a knob, hit a pad or press a key"), "stage.learn");
         let r = if icon_only { kit::icon_button(ui, t, icons::PIANO_KEYS, &learn_tip, self.learn.on) } else { kit::button(ui, t, Some(icons::PIANO_KEYS), "MIDI    ", self.learn.on) };
         // what comes in: a dot inside the button that flares with each message
         let k = ((self.midi.seen - ui.input(|i| i.time)) / 0.15).exp() as f32;
@@ -611,18 +611,25 @@ impl App {
                 egui::Frame::new().inner_margin(pad).show(ui, |ui| {
                     kit::heading(ui, t, icons::LINK, tr!("BINDINGS"));
                     if bindings.is_empty() {
-                        kit::hint(ui, t, tr!("Nothing bound yet. Press L, click a control, then move a knob or hit a pad."));
+                        kit::hint(ui, t, tr!("Nothing bound yet. Press L, click a control, then move a knob, hit a pad or press a key."));
                     }
                     for (i, (b, name)) in bindings.iter().zip(&names).enumerate() {
-                        let Control::Midi { port, channel, msg } = &b.control;
+                        // a key has no channel, port or dialect: its row is its name and Remove
+                        let midi = match &b.control {
+                            Control::Midi { port, channel, msg } => Some((port, channel, msg)),
+                            Control::Key(_) => None,
+                        };
                         // the control and its channel, what it turns on the right; under them what it's bound to
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(midi::control_label(&b.control)).font(Theme::mono(t.text_sm)).color(t.accent));
-                            ui.label(RichText::new(tr!("ch {}", channel + 1)).small().color(t.fg_muted));
+                            if let Some((_, channel, _)) = midi {
+                                ui.label(RichText::new(tr!("ch {}", channel + 1)).small().color(t.fg_muted));
+                            }
                             kit::right(ui, |ui| {
                                 if kit::icon_button(ui, t, icons::X, tr!("Remove this binding"), false).clicked() {
                                     remove = Some(i);
                                 }
+                                let Some((port, _, msg)) = midi else { return };
                                 match port {
                                     Some(p) => {
                                         if kit::button(ui, t, None, tr!("Any port"), false).on_hover_text(tr!("Bound to {}: make it answer the same control on any port", p)).clicked() {
@@ -660,7 +667,7 @@ impl App {
                     }
                 });
             });
-            kit::menu_footer(ui, t, tr!("L: click a control, then move a knob or hit a pad"));
+            kit::menu_footer(ui, t, tr!("L: click a control, then move a knob, hit a pad or press a key"));
         });
         if learn {
             self.command("stage.learn");
@@ -672,8 +679,9 @@ impl App {
             b.behavior = behavior;
             self.run("binding.add", json!(b));
         }
-        if let Some(mut b) = any_port.and_then(|i| bindings.get(i).cloned()) {
-            let Control::Midi { port, .. } = &mut b.control;
+        if let Some(mut b) = any_port.and_then(|i| bindings.get(i).cloned())
+            && let Control::Midi { port, .. } = &mut b.control
+        {
             *port = None;
             self.run("binding.add", json!(b));
         }
