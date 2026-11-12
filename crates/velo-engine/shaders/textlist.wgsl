@@ -33,13 +33,18 @@
     { "id": "box_radius", "type": "float", "default": 0.1, "min": 0.0, "max": 1.0 },
     { "id": "reveal", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 },
     { "id": "position", "type": "vec2", "default": [0.0, 0.0], "min": -1.0, "max": 1.0 },
-    { "id": "rotate", "type": "float", "default": 0.0, "min": -1.0, "max": 1.0 }
+    { "id": "rotate", "type": "float", "default": 0.0, "min": -1.0, "max": 1.0 },
+    { "id": "_now", "type": "float", "default": 0.0, "min": 0.0, "max": 255.0 },
+    { "id": "_before", "type": "float", "default": -1.0, "min": -1.0, "max": 255.0 },
+    { "id": "_turn", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 }
   ]
 }*/
 
 // Its words are the list's items, a word flagged in its record's last float starting each (an
 // item may run over lines); the drawing is text-draw.wgsl's. type_in: the share of each turn spent
-// typing the item in.
+// typing the item in. Which item shows is Velo's to say, as a Media List's file is: the line
+// (_now), the one before it, fading out (_before, -1 on the first turn), and how far through its
+// turn it is (_turn), from order, clock and every.
 
 // how many items the list has
 fn entries() -> i32 {
@@ -69,56 +74,6 @@ fn entry(k: i32, all: vec2i) -> vec2i {
     return vec2i(first, all.y - first);
 }
 
-fn hash(x: f32) -> f32 {
-    return fract(sin(x * 12.9898 + 78.233) * 43758.5453);
-}
-
-fn gcd(a: i32, b: i32) -> i32 {
-    var x = a;
-    var y = b;
-    for (var i = 0; i < 16 && y != 0; i++) {
-        let t = x % y;
-        x = y;
-        y = t;
-    }
-    return x;
-}
-
-// the line dealt `i`th in round `round` of n lines: a stride through them that shares no
-// factor with n (so every line comes once) from a start of its own, both new every round.
-// Worked out for every pixel, so no deck can be shuffled here: a stride costs nothing
-fn dealt(i: i32, round: i32, n: i32) -> i32 {
-    var stride = 1 + i32(hash(f32(round) * 1.7 + 3.0) * f32(n - 1)) % (n - 1);
-    for (var k = 0; k < 16 && gcd(stride, n) != 1; k++) {
-        stride = stride % (n - 1) + 1;
-    }
-    stride = select(1, stride, gcd(stride, n) == 1);
-    let start = i32(hash(f32(round) * 2.3 + 11.0) * f32(n)) % n;
-    return (stride * i + start) % n;
-}
-
-// the line a step of the clock shows (as the Media List picks its files)
-fn pick(step: i32, n: i32) -> i32 {
-    if n <= 1 {
-        return 0;
-    }
-    if order == 1 {
-        // at random as a deck is dealt: every line once, then all of them again another way
-        // round (as the Media List deals its files). A round doesn't start on the line the
-        // one before ended on: its first two swap
-        let round = step / n;
-        let i = step % n;
-        let clash = round > 0 && dealt(0, round, n) == dealt(n - 1, round - 1, n);
-        return dealt(select(i, 1 - i, clash && i < 2 && n > 2), round, n);
-    }
-    if order == 2 {
-        let period = 2 * n - 2;
-        let s = step % period;
-        return select(s, period - s, s >= n);
-    }
-    return step % n;
-}
-
 // line k drawn at uv, `typed` of its characters in
 fn show_line(k: i32, all: vec2i, typed: f32, uv: vec2f) -> vec4f {
     let r = entry(k, all);
@@ -143,15 +98,14 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     if n == 0 {
         return vec4f(0.0);
     }
-    let t = select(g.beats, g.time, clock == 1) / max(every, 0.01);
-    // a clock moved back (a resync, a tap) doesn't count below the first
-    let step = max(i32(floor(t)), 0);
-    let k = fract(t);
+    // Velo counts the turns and picks each one's line (media.rs, Lines): at random is a deck
+    // shuffled anew every round, which can't be dealt here, where every pixel works alone
+    let k = _turn;
     let typed = select(1.0, clamp(k / type_in, 0.0, 1.0), type_in > 0.0);
-    let now = show_line(pick(step, n), all, typed, uv);
-    // the first part of each turn crossfades from the one before
-    if fade > 0.0 && k < fade && step > 0 {
-        return mix(show_line(pick(step - 1, n), all, 1.0, uv), now, smoothstep(0.0, 1.0, k / fade));
+    let now = show_line(clamp(i32(round(_now)), 0, n - 1), all, typed, uv);
+    // the first part of each turn crossfades from the one before (none on the first turn)
+    if fade > 0.0 && k < fade && _before >= 0.0 {
+        return mix(show_line(min(i32(round(_before)), n - 1), all, 1.0, uv), now, smoothstep(0.0, 1.0, k / fade));
     }
     return now;
 }

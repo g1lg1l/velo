@@ -1395,6 +1395,31 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             // streamed: this turn's file and the next; in memory, all four
             assert!(if load == 0.0 { kept <= most } else { kept == most }, "load {load}: {kept} files in");
         }
+        // on hits: no clock moves it, each rise of `hit` past a half does
+        let values = programs[1].node.values(|p| (p == "clock").then_some([2.0, 0.0, 0.0, 0.0]));
+        runner.set_params(&queue, &programs, 3, &values);
+        let hit_at = crate::modulate::slot(&programs[1].node, "hit").unwrap().0;
+        let mut reel = crate::media::Reel::new(&device, &queue, "list".into(), 3, &programs[1].node, [0, 1, 2], files.clone(), false).unwrap();
+        let mut shown = |hit: f32, beats: f32| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                reel.step(&device, &queue, &mut runner, &programs, |p| if p == hit_at { hit } else { values[p][0] }, beats, beats, 1.0 / 60.0);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                runner.render(&queue, &mut encoder, &programs, &[beats, 1.0 / 60.0, 0.0, 2.0]);
+                queue.submit([encoder.finish()]);
+                let rgb: Vec<bool> = read(&device, &queue, &runner, 3)[..3].iter().map(|&c| c >= 0x3800).collect();
+                if rgb.contains(&true) || std::time::Instant::now() > deadline {
+                    return rgb;
+                }
+                std::thread::yield_now();
+            }
+        };
+        assert_eq!(shown(0.0, 0.0), [true, false, false], "on hits, before any: the first file");
+        assert_eq!(shown(0.4, 500.0), [true, false, false], "no hit: nothing changes, however long");
+        assert_eq!(shown(1.0, 500.5), [false, true, false], "a hit: the second");
+        assert_eq!(shown(0.9, 900.0), [false, true, false], "still up: the same hit");
+        assert_eq!(shown(0.1, 900.5), [false, true, false], "back down: nothing changes");
+        assert_eq!(shown(0.6, 901.0), [false, false, true], "the next hit: the third");
         assert!(crate::media::failed(&dir.join("0.png").to_string_lossy()).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
