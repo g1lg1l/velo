@@ -34,7 +34,7 @@ The groups in the node menu:
 | **Control** | Switch, Grid, Layer Stack |
 | **Output** | Output |
 | **Signals** | Audio In, Beat, Beat Kick, LFO, Time, Random, Probe |
-| **Logic** | Remap, Math, Envelope, Counter, Sequencer, Sample & Hold, Toggle, Compare, Timer, Smooth, Quantize, Speed, Delay, Spring, Slope |
+| **Logic** | Remap, Math, Gain, Envelope, Counter, Sequencer, Sample & Hold, Toggle, Compare, Timer, Smooth, Quantize, Speed, Delay, Spring, Slope |
 
 Each node's line in the menu says what it does, and the inspector shows its values once it's selected. Generators, effects and composites make pictures; signals and logic make numbers, which move values (see [Signals and jacks](./signals)).
 
@@ -73,7 +73,7 @@ The bar at the bottom of the canvas, from the left:
 | The scene's name | Which scene's graph this is |
 | **+** | Add a node (<kbd>Tab</kbd>) |
 | Split | The picture beside the nodes, under them, or off (<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>P</kbd>) |
-| Zoom to fit | Every node in view (<kbd>H</kbd>) |
+| Zoom to fit | Every node in view (<kbd>H</kbd>); a scene opens this way, and stays fitted as the window changes until you pan or zoom |
 | **Arrange** | Lays the graph out for you |
 | **Tie** | Turns a plain drag into a line that ties cables ([Cable ties](./cable-ties)) |
 | **Eye** | Hides the nodes: the picture alone behind them |

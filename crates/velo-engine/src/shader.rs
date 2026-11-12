@@ -532,6 +532,15 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     }
 
     #[test]
+    fn a_reserved_word_as_a_name_is_the_shaders_error() {
+        // WGSL keeps `from` to itself: naga says so at the author's line, as for any other mistake
+        let node = ShaderNode::parse("/*{ \"name\": \"From\" }*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f {\n    let from = 1.0;\n    return vec4f(from, 0.0, 0.0, 1.0);\n}\n").unwrap();
+        let e = node.validate().unwrap_err();
+        assert_eq!(e.line, Some(3), "{e}");
+        assert!(e.message.contains("from") && e.message.contains("reserved"), "{e}");
+    }
+
+    #[test]
     fn bad_headers_are_explained() {
         assert!(ShaderNode::parse("fn main_image(uv: vec2f, px: vec2f) -> vec4f { return vec4f(1.0); }").unwrap_err().message.contains("JSON header"));
         assert!(ShaderNode::parse("/*{ \"name\": \"X\" }*/ fn other() {}").unwrap_err().message.contains("main_image"));

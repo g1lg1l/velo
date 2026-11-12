@@ -180,31 +180,53 @@ impl Default for Autopilot {
     }
 }
 
-/// The autopilot's memory between frames: the next turn, and the music's level slow and fast
-/// (a drop is the fast one well over the slow one).
+/// The autopilot's memory between frames: the next turn, and the bass followed fast, slow and
+/// at its strongest lately (a drop is the fast one well over the slow one).
 #[derive(Default)]
 struct Pilot {
     /// The next turn: in beats, or in seconds when it's timed.
     next: Option<f64>,
     timed: bool,
-    slow: f32,
+    /// The bass as it is now: followed in 0.4 s, so a kick's pulse is evened out.
     fast: f32,
+    /// The bass as it has been: up in 1.5 s, down in 6, so it stays near the top of steady
+    /// kicks and has sunk by the end of a breakdown.
+    slow: f32,
+    /// The strongest `fast` of the last half minute: what a drop is measured against.
+    strong: f32,
     last_drop: f64,
 }
 
+/// How far over `slow` the bass must come back for a drop, as a part of `strong`. Measured on
+/// the test loop through the analyzer: steady kicks stay under 0, the bass back after a bar or
+/// two reaches 0.1, after 4 bars or more 0.2 to 0.5 (the least after a long breakdown that
+/// keeps some bass, which the analyzer's auto-gain has lifted by then).
+const DROP_RISE: f32 = 0.15;
+/// The least `strong` a drop is measured against: under it the input is too quiet to tell a
+/// drop from hiss.
+const DROP_QUIET: f32 = 0.05;
+
 impl Pilot {
-    /// The level this frame, `dt` seconds on: whether the music just dropped (back at full after
-    /// a quieter while, not within 4 bars of the last).
-    fn dropped(&mut self, level: f32, dt: f32, beats: f64) -> bool {
-        self.fast += (level - self.fast) * (dt / 0.3).min(1.0);
-        self.slow += (level - self.slow) * (dt / 6.0).min(1.0);
-        let drop = self.fast > 0.35 && self.fast > self.slow * 1.8 && beats - self.last_drop > 16.0;
+    /// The bass this frame, `dt` seconds on: whether the music just dropped (the bass back
+    /// after a while without it, not within 4 bars of the last). The level can't say: in a
+    /// breakdown the pads are as loud as the kick was. Measured against how strong the bass
+    /// has been lately, so a low input gain drops as a high one does.
+    fn dropped(&mut self, bass: f32, dt: f32, beats: f64) -> bool {
+        let toward = |from: f32, seconds: f32| from + (bass - from) * (dt / seconds).min(1.0);
+        self.fast = toward(self.fast, 0.4);
+        self.slow = toward(self.slow, if bass > self.slow { 1.5 } else { 6.0 });
+        self.strong = self.fast.max(self.strong * (1.0 - (dt / 30.0).min(1.0)));
+        // either side of the last: a clock set back must not wait for its old count
+        let drop = self.fast - self.slow > DROP_RISE * self.strong.max(DROP_QUIET) && (beats - self.last_drop).abs() > 16.0;
         if drop {
             self.last_drop = beats;
         }
         drop
     }
 }
+
+/// Where the bass is among [`SOURCES`], as `Live::sources` gives them.
+const BASS: usize = 1;
 
 /// Seconds as a short duration: "45 s", "3 min", "1 min 30 s".
 fn clock(seconds: u32) -> String {
@@ -1835,16 +1857,18 @@ impl App {
     fn autopilot(&mut self, dt: f32, now: f64) {
         let a = self.settings.autopilot;
         let Some(live) = &self.live else { return };
+        let beats = live.beats();
+        // heard every frame, the autopilot on or not: switched on mid-track it must not take
+        // the bass it never followed for one that just came back
+        let dropped = self.pilot.dropped(live.sources()[BASS], dt, beats) && a.drops;
         // a scene launched by hand that takes no turns is the performer's: it stays
         if !a.on || self.held_by_hand() || self.session.project.scenes.len() < 2 || self.pilot.timed != a.timed {
             (self.pilot.next, self.pilot.timed) = (None, a.timed);
             return;
         }
-        let beats = live.beats();
         // where the turn is counted, how long a turn is, and how early it's taken
         let (at, period, early) = if a.timed { (now, f64::from(a.seconds.max(1)), 0.0) } else { (beats, f64::from(a.bars.max(1)) * 4.0, 1.0) };
         let next = *self.pilot.next.get_or_insert(if a.timed { now + period } else { (beats / period).floor() * period + period });
-        let dropped = self.pilot.dropped(live.sources()[0], dt, beats) && a.drops;
         if live.engine.status.armed().is_some() || (at < next - early && !dropped) {
             return;
         }
@@ -3333,13 +3357,108 @@ mod pilot_tests {
         assert_eq!(next_turn(&scenes[..2], Some("a"), None), None, "one scene and a layer: nothing to turn to");
     }
 
+    const BPM: f64 = 120.0;
+
+    /// The bass of four-on-the-floor at 120 BPM, `gain` at its loudest: full on each kick,
+    /// falling to a tenth before the next.
+    fn kicks(seconds: f64, gain: f32) -> f32 {
+        gain * (0.1 + 0.9 * (-5.0 * (seconds * BPM / 60.0).fract() as f32).exp())
+    }
+
+    /// When (in seconds) a pilot fresh at `from` drops, hearing `bass` (a function of the time
+    /// in seconds) at 60 frames a second until `to`.
+    fn drops(p: &mut Pilot, from: f64, to: f64, bass: impl Fn(f64) -> f32) -> Vec<f64> {
+        let frames = (from * 60.0) as usize..(to * 60.0) as usize;
+        frames.map(|i| i as f64 / 60.0).filter(|&s| p.dropped(bass(s), 1.0 / 60.0, s * BPM / 60.0)).collect()
+    }
+
     #[test]
-    fn a_drop_is_the_music_back_at_full_after_a_quieter_while() {
+    fn steady_kicks_never_drop() {
+        for gain in [1.0, 0.25] {
+            let mut p = Pilot::default();
+            // the first bars are the bass coming in from nothing (the 4 bars after beat 0 never drop)
+            assert_eq!(drops(&mut p, 0.0, 8.0, |s| kicks(s, gain)), [0.0; 0]);
+            assert_eq!(drops(&mut p, 8.0, 240.0, |s| kicks(s, gain)), [0.0; 0], "gain {gain}");
+            assert!(p.fast - p.slow <= 0.0, "the fast bass stays under the slow one: {} {}", p.fast, p.slow);
+        }
+    }
+
+    #[test]
+    fn the_bass_back_after_a_breakdown_drops_once() {
+        // 16 s without the kick (pads, a twelfth of its bass), whatever the input gain
+        for gain in [1.0, 0.25] {
+            let music = |s: f64| if (30.0..46.0).contains(&s) { gain * 0.08 } else { kicks(s, gain) };
+            let mut p = Pilot::default();
+            assert_eq!(drops(&mut p, 0.0, 46.0, music), [0.0; 0], "none before or in the breakdown (gain {gain})");
+            let back = drops(&mut p, 46.0, 120.0, music);
+            assert_eq!(back.len(), 1, "one drop when the bass returns (gain {gain}): {back:?}");
+            assert!((46.0..48.0).contains(&back[0]), "within its first bar: {back:?}");
+        }
+        // a bar without the kick is a fill, not a breakdown
+        let fill = |s: f64| if (30.0..32.0).contains(&s) { 0.08 } else { kicks(s, 1.0) };
+        assert_eq!(drops(&mut Pilot::default(), 0.0, 60.0, fill), [0.0; 0]);
+    }
+
+    #[test]
+    fn quiet_input_never_drops() {
+        // hiss with the same shape: kicks, a breakdown, kicks again, all under the quiet floor
+        let hiss = |s: f64| if (30.0..46.0).contains(&s) { 0.0 } else { kicks(s, 0.04) };
+        assert_eq!(drops(&mut Pilot::default(), 0.0, 120.0, hiss), [0.0; 0]);
+        assert_eq!(drops(&mut Pilot::default(), 0.0, 120.0, |_| 0.0), [0.0; 0], "silence");
+    }
+
+    #[test]
+    fn two_drops_are_4_bars_apart() {
+        // the bass in from nothing at beat 20: a drop
         let mut p = Pilot::default();
-        let mut run = |level: f32, secs: f32, from: f64| (0..(secs * 60.0) as usize).any(|i| p.dropped(level, 1.0 / 60.0, from + i as f64 * 0.033));
-        assert!(!run(0.1, 10.0, 0.0), "a quiet stretch is no drop");
-        assert!(run(0.8, 1.0, 20.0), "full again: a drop");
-        assert!(!run(0.8, 3.0, 30.0), "staying full is no new one");
+        let first = drops(&mut p, 10.0, 12.0, |_| 1.0);
+        assert_eq!(first, [10.0]);
+        // from nothing again 2 bars later: it would be one, were the last not so near
+        (p.fast, p.slow) = (0.0, 0.0);
+        assert_eq!(drops(&mut p, 14.0, 16.0, |_| 1.0), [0.0; 0]);
+        // and past 4 bars (8 s) it is, once it's well over how strong the bass has been
+        (p.fast, p.slow) = (0.0, 0.0);
+        let again = drops(&mut p, 18.5, 20.0, |_| 1.0);
+        assert!(again.len() == 1 && again[0] < 19.0, "{again:?}");
+    }
+
+    /// The same through the analyzer the app listens with: the test loop for a minute, its
+    /// low end filtered out from 24 s to 40 s as a DJ's filter does (the level stays, the
+    /// bass goes).
+    #[test]
+    fn the_analyzers_bass_drops_once_after_a_filtered_breakdown() {
+        use velo_audio::{Analyzer, HOP, Tracker, synth};
+        const RATE: f32 = 48_000.0;
+        let mut samples = synth::techno(RATE, BPM as f32, 60.0, 7).samples;
+        // two one-pole high-passes at 800 Hz: the kick and the bass line 30 dB down
+        let k = 1.0 - (-std::f32::consts::TAU * 800.0 / RATE).exp();
+        let mut low = [0.0f32; 2];
+        for s in &mut samples[(24.0 * RATE) as usize..(40.0 * RATE) as usize] {
+            for l in &mut low {
+                *l += (*s - *l) * k;
+                *s -= *l;
+            }
+        }
+        let (mut analyzer, mut tracker, mut p) = (Analyzer::new(RATE), Tracker::new(), Pilot::default());
+        let dt = HOP as f32 / RATE;
+        let (mut hops, mut drops, mut levels) = (0usize, Vec::new(), [Vec::new(), Vec::new()]);
+        analyzer.push(&samples, |hop| {
+            tracker.hop(hop, dt);
+            let (f, seconds) = (tracker.features(), hops as f64 * f64::from(dt));
+            if p.dropped(f.bass, dt, seconds * BPM / 60.0) {
+                drops.push(seconds);
+            }
+            // the level and the bass over the last 8 s of the breakdown
+            if (32.0..40.0).contains(&seconds) {
+                levels[0].push(f.level);
+                levels[1].push(f.bass);
+            }
+            hops += 1;
+        });
+        let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+        assert!(mean(&levels[0]) > 3.0 * mean(&levels[1]), "the breakdown keeps its level, not its bass: {} {}", mean(&levels[0]), mean(&levels[1]));
+        assert_eq!(drops.len(), 1, "{drops:?}");
+        assert!((40.0..42.0).contains(&drops[0]), "when the bass returns: {drops:?}");
     }
 }
 

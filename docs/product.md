@@ -94,7 +94,7 @@ Targets, measured on the reference machines.
 
 - **Top bar: the live state.** The project and its menu; the sound (the audio input with its state, the tempo with what leads it); the stage (MIDI, the Output menu, Freeze, Blackout, red while on). On the right: preferences, the AI, the panel toggles, where the preview shows, undo and redo, command search.
 - **Scenes rail (left).** A card per scene: LIVE on the one going out, pulsing with the beat, a countdown ring while one waits to launch. Its + adds an empty scene or one from a template; the autopilot button is there too.
-- **Node canvas (center).** The selected scene's graph on an endless plane. The preview floats over it as a card you can move; it can also sit behind the canvas, beside or under the nodes (the split canvas), or hide.
+- **Node canvas (center).** The selected scene's graph on an endless plane, each scene with a view of its own: fitted to its nodes until you pan or zoom it (and fitted again whenever the canvas changes size meanwhile, so a window still settling at open never leaves the nodes off screen), yours from then on. The preview floats over it as a card you can move; it can also sit behind the canvas, beside or under the nodes (the split canvas), or hide.
 - **Inspector.** The selected node's parameters and what moves them; with nothing selected, the scene's launch settings. Docked on the right, beside the nodes when the canvas is split, or in a window of its own.
 - **AI panel (outermost right).** Closed until asked for (`Cmd+I`).
 - **The deck (bottom, the window's width).** What you play: the scene's variations, its eight macros, and every source as a live meter (levels as bars, hits as keys that flash). Drag a source onto any parameter to map it.
