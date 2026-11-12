@@ -778,6 +778,11 @@ impl Live {
         None
     }
 
+    /// The pictures drawn `ms` ahead of the music, for a projector that shows them that late.
+    pub fn set_lead(&self, ms: f32) {
+        self.engine.send(Command::Lead(ms.max(0.0) / 1000.0));
+    }
+
     /// A downbeat at `at` (a MIDI clock's Start, as it came).
     pub fn resync_at(&self, at: Instant) {
         self.engine.send(Command::Resync(at));

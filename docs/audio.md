@@ -80,7 +80,7 @@ The beat clock's tempo comes from one of: the music (auto-BPM), a tap, a typed v
 
 In the app, **Follow the music** in the tempo chip's menu shows what it hears and how sure. While on, an estimate at least 30 % sure that agrees with the one before sets the tempo and the beat. It is on by default for computer audio and one app. Setting the tempo by hand (typed, nudged, tapped, resynced) turns it off: that is the lock. A MIDI clock or Link peers lead over it.
 
-Projectors and LED processors add 30 to 100 ms of display latency. Not yet: a latency offset so tempo-synced motion can lead the audio, a user tempo range, a regression set of real tracks in CI.
+Projectors and LED processors add 30 to 100 ms of display latency: the tempo chip's Projector lag draws everything the beat clock drives that much ahead (control.md §4); what the analysis hears can only follow. Not yet: a user tempo range, a regression set of real tracks in CI.
 
 ## 5. Latency (48 kHz)
 

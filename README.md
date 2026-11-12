@@ -62,8 +62,8 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - Your own WGSL or ISF shaders become nodes with knobs, rebuilt as you type or save. A broken shader keeps the last one that worked. A WGSL shader can keep buffers from frame to frame, each drawn by a pass of its own, for simulations like reaction diffusion.
 - Particles are born wherever a picture is lit (a logo, an edge map, a movie), in a sphere, or on the points of a 3D model (.obj, .ply), and drawn as soft dots or a picture of your own; its Orbit view turns a camera round them.
 - A **Mesh** node draws a 3D model (.obj, .ply) solid, with a depth test and 4x antialiasing, lit by a light with a shine, a studio reflection and a rim, from a camera that turns round it; the surface breathes with the bass and the kick flashes it. A picture wired into its `skin` (a photo, a movie, a camera, any node) covers the model.
-- Stills, GIFs, image sequences, HAP, H.264 and HEVC movies.
-- Live pictures with the Live node: **NDI** sources on the network, cameras and capture cards (Windows and macOS), and on Windows **Spout** senders on this computer.
+- Stills (photos from a phone upright as their EXIF says, HEIC on macOS), GIFs, image sequences, HAP, H.264 and HEVC movies (a phone's turned ones upright on macOS).
+- Live pictures with the Live node: **NDI** sources on the network, cameras and capture cards (Windows and macOS), on Windows **Spout** senders on this computer, and in a layer on top what plays under it.
 
 **Patches by hand**
 - One graph per scene, TouchDesigner's way: every node shows its picture and what it costs the GPU.
@@ -76,7 +76,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - Eight macros and eight variations per scene on the deck, and an autopilot that moves to the next scene every few bars, seconds, or on a drop, among the scenes you leave in it.
 - Layer scenes: always on top of, or underneath, whatever is out (words, a logo, a background), over, added, screened or multiplied; launching one switches it on or off. A layer on top can also process what is under it (a Live node on "What plays under this layer", through effects): a strobe, a glitch or a shake over everything, on one key.
 - MIDI learn on everything, with soft takeover; the computer's keys learned as pads; OSC in.
-- Blackout, Freeze, and a test pattern for lining up the projector.
+- Blackout, Freeze, and a test pattern for lining up the projector; its lag set once, so what moves on the beat lands on the beat on the wall.
 
 **Goes out**
 - Fullscreen on any display, the picture's shape kept.
@@ -98,7 +98,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 
 <table>
 <tr>
-<td width="50%"><img src="docs/screenshots/patch.png" alt="The Audio In card: a cassette whose reels turn with the level, the test loop at 128 BPM, and graphs of level, bass, mid and high; the mid and high cables plug into jacks on the Velo shader card, beside the live preview"><br><sub><b>The patch.</b> Audio In's mid and high plug into the shader's jacks.</sub></td>
+<td width="50%"><img src="docs/screenshots/patch.png" alt="Signal cards on the canvas: the Audio In with its cassette and a graph per band, wired into a Kick (trigger times in, silent under 0.20), a Pulse envelope, an Energy follower, a sequencer stepping every 4 bars and a counter; each card says what it does in a line, draws what comes in in grey and what goes out in green on a grid, and names its inputs with their values"><br><sub><b>Signals.</b> Every card says what it does and draws what goes in and out.</sub></td>
 <td width="50%"><img src="docs/screenshots/node-menu.png" alt="The node menu: a search box, a tab per group (All, Generators, Effects, Composite, Control, Output, Signals, Logic) and each node with its icon and a line on what it does"><br><sub><b>The node menu.</b> 63 nodes, one key away.</sub></td>
 </tr>
 <tr>
@@ -106,7 +106,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 <td width="50%"><img src="docs/screenshots/ai-panel.png" alt="The AI panel beside the canvas: an empty chat with three example prompts, Codex ready, and a picture attached as a reference"><br><sub><b>The AI panel.</b> Describe a visual, attach a picture, pick who answers.</sub></td>
 </tr>
 <tr>
-<td colspan="2"><img src="docs/screenshots/deck.png" alt="The deck: variations A to H, eight numbered macro knobs (Spread, Smoke, Light, Rays) and the sources as segment meters with keycap hits for kick, snare and hat"><br><sub><b>The deck.</b> Variations, eight macros and every source, live.</sub></td>
+<td colspan="2"><img src="docs/screenshots/deck.png" alt="The deck: variations A to H, eight macros named Zoom, Hue, Spin, Trails and more with their controller badges, and the sources as segment meters with keycap hits for kick, snare and hat"><br><sub><b>The deck.</b> Variations, eight macros and every source, live.</sub></td>
 </tr>
 </table>
 

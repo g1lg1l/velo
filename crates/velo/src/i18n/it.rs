@@ -595,6 +595,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Launch", "Lancia"),
     ("LAUNCH", "LANCIO"),
     ("Launch the selected scene", "Lancia la scena selezionata"),
+    ("Projector lag", "Ritardo del proiettore"),
+    ("The pictures ahead of the music by this much", "Le immagini in anticipo sulla musica di tanto"),
     ("Preparing the scenes · {} of {}", "Preparo le scene · {} di {}"),
     ("Esc or a click goes on without waiting", "Esc o un click per continuare senza aspettare"),
     ("out", "esce"),

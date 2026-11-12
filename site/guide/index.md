@@ -5,7 +5,7 @@ Velo is an instrument for live visuals. It listens to the music your computer pl
 It is free and open source, built in Rust on wgpu, and runs on Windows and macOS.
 
 <figure>
-  <img src="/shots/demo.webp" alt="The Velo window: the scenes on the left, the node canvas with Audio In wired into a V Beams shader and the Output, the live preview, the inspector, and the deck of macros and sources along the bottom" />
+  <img src="/shots/demo.jpg" alt="The Velo window: the scenes on the left, the node canvas with Audio In wired into a V Beams shader and the Output, the live preview, the inspector, and the deck of macros and sources along the bottom" />
   <figcaption>The demo Velo opens with: Audio In's bands moving the V Beams shader, live.</figcaption>
 </figure>
 

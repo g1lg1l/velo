@@ -3,7 +3,7 @@
 A **scene** is one look you can launch: "Intro", "Build", "Drop". Each scene has its own graph, so two scenes can be built completely differently. The scenes panel on the left shows a card for each, with a live thumbnail.
 
 <figure>
-  <img src="/shots/scenes.webp" alt="Two scenes: Intro live, Drop selected and previewed, its launch set to four bars with a Crossfade" />
+  <img src="/shots/scenes.jpg" alt="Two scenes: Intro live, Drop selected and previewed, its launch set to four bars with a Crossfade" />
   <figcaption>Intro is live; Drop is selected, shown in the preview and ready to launch on four bars.</figcaption>
 </figure>
 

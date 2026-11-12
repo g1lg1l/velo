@@ -3,7 +3,7 @@
 The canvas is where you work: the selected scene's graph on an endless plane. It works the way TouchDesigner does, with Figma's feel for moving around. Every node is a card that shows what it makes, and wires carry pictures from outputs to inputs.
 
 <figure>
-  <img src="/shots/macros.webp" alt="A patch on the canvas: Noise, Gradient and Shapes through Kaleido, Color, Transform and Displace, blended and fed back into the Output" />
+  <img src="/shots/macros.jpg" alt="A patch on the canvas: Noise, Gradient and Shapes through Kaleido, Color, Transform and Displace, blended and fed back into the Output" />
   <figcaption>A scene's graph: generators on the left, the Output last.</figcaption>
 </figure>
 

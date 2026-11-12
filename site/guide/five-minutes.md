@@ -25,7 +25,7 @@ Type a few letters (`kal` for Kaleido, `plas` for the Plasma shader) or browse a
 - A node shows on the output once a wire leads from it into the **Output** node. Drag from a card's output port (on its right edge) to the Output's input.
 
 <figure>
-  <img src="/shots/menu.webp" alt="The node menu: a search box, a tab per group and every node with its icon and a line on what it does" />
+  <img src="/shots/menu.jpg" alt="The node menu: a search box, a tab per group and every node with its icon and a line on what it does" />
   <figcaption>The node menu. <kbd>Ctrl</kbd> <kbd>Tab</kbd> moves between groups.</figcaption>
 </figure>
 

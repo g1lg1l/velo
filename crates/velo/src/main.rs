@@ -142,6 +142,9 @@ struct Settings {
     auto_bpm: bool,
     /// Ableton Link on (in builds with it).
     link: bool,
+    /// How far ahead of the music the pictures are drawn, in ms: the projector's lag, so the
+    /// beat lands on the beat on the wall. A property of this computer's output, not the show.
+    lead_ms: f32,
     /// The first-run demo was shown (it opens once, then Project → Open the demo).
     demo_seen: bool,
     /// The frame-time HUD over the canvas (click the fps in the top bar).
@@ -666,6 +669,7 @@ impl App {
         if let Some(live) = &mut app.live {
             live.audio.listen(live::Audio::first_input(&app.settings.audio));
             live.set_link(app.settings.link);
+            live.set_lead(app.settings.lead_ms);
         }
         app
     }
@@ -1893,6 +1897,7 @@ impl App {
                 live.share(sharing);
                 live.audio.listen(live::Audio::first_input(&self.settings.audio));
                 live.set_link(self.settings.link);
+                live.set_lead(self.settings.lead_ms);
                 live.set_blackout(blackout);
                 live.set_pattern(pattern);
                 if let Some(scene) = was.and_then(|id| self.session.project.scene(&id)) {

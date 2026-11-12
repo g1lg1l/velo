@@ -5,7 +5,7 @@ Every scene has **eight macros**: knobs that each drive any number of values at 
 The deck along the bottom (<kbd>Ctrl</kbd> <kbd>J</kbd> shows or hides it) holds them for the selected scene: the variations on the left, the eight macros across the middle, the sources on the right.
 
 <figure>
-  <img src="/shots/macros.webp" alt="The deck: variations A to H, eight macros named Zoom, Hue, Spin, Trails and more with their controller badges, and the sources as meters and pads" />
+  <img src="/shots/macros.jpg" alt="The deck: variations A to H, eight macros named Zoom, Hue, Spin, Trails and more with their controller badges, and the sources as meters and pads" />
   <figcaption>Named macros with their MIDI badges, and variations A, B and C stored.</figcaption>
 </figure>
 

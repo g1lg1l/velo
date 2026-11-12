@@ -235,6 +235,10 @@ pub enum Command {
     Tap(Instant),
     Tempo(f32),
     Resync(Instant),
+    /// How far ahead of the music the pictures are drawn (seconds, 0 to [`MAX_LEAD`]): a
+    /// projector shows them that much late, so they land on the beat. Taps, resyncs and a
+    /// followed beat stay where they happened; only what the clock shows moves ahead.
+    Lead(f32),
     /// An outside clock's beat (MIDI clock): its tempo, and which beat since its Start it was
     /// (None: joined while running, only the beat's phase is known), at the time it came.
     Follow {
@@ -809,6 +813,8 @@ impl Thread {
         let mut output: Option<Output> = None;
         let mut blackout = false;
         let mut clock = Clock::default();
+        // how far ahead of the music the pictures are drawn, seconds (Command::Lead)
+        let mut lead = 0.0f64;
         let mut wave = [[0.0f32; 4]; WAVE_COLUMNS * WAVE_ROWS];
         let mut wave_bytes = [0u8; WAVE_COLUMNS * WAVE_ROWS * 16];
         let secs = |at: Instant| at.saturating_duration_since(start).as_secs_f64();
@@ -874,7 +880,7 @@ impl Thread {
                     }
                     Command::Morph { key, to, beats } => {
                         if let Some(g) = find(&mut graphs, key) {
-                            g.macros.morph(clock.beats(secs(Instant::now())), to, beats);
+                            g.macros.morph(clock.beats(secs(Instant::now()) + lead), to, beats);
                         }
                     }
                     Command::MacroTargets { key, routes } => {
@@ -895,6 +901,7 @@ impl Thread {
                     Command::Tap(at) => clock.tap(secs(at)),
                     Command::Tempo(bpm) => clock.set_bpm(start.elapsed().as_secs_f64(), bpm),
                     Command::Resync(at) => clock.resync(secs(at)),
+                    Command::Lead(seconds) => lead = f64::from(seconds.clamp(0.0, MAX_LEAD)),
                     Command::Follow { bpm, beat, at } => clock.follow(secs(at), bpm, beat),
                     Command::Shared { mut signals, keys } => {
                         crate::signal::carry(&mut signals, &keys, &mut shared, &shared_keys);
@@ -985,8 +992,10 @@ impl Thread {
                 _ => tick,
             };
 
-            // launches: a waiting one lands on its boundary once its graph is built
-            let t = secs(now);
+            // launches: a waiting one lands on its boundary once its graph is built. Everything the
+            // clock drives (launches, transitions, the beat, the bar, signals, media turns) is
+            // drawn `lead` ahead, so a projector that shows it late shows it on the beat
+            let t = secs(now) + lead;
             show.step(t, clock.beats(t), clock.bpm(), |key| graphs.iter().any(|g| g.0 == key));
             let fade = show.fade(t);
             let fading = fade.map_or(0, |f| f.0);
@@ -1339,6 +1348,10 @@ fn find(graphs: &mut [(u64, Box<Graph>)], key: u64) -> Option<&mut Graph> {
 fn drop_later(graph: Box<Graph>) {
     std::thread::spawn(move || drop(graph));
 }
+
+/// The most the pictures can be drawn ahead of the music (Command::Lead), in seconds: more than
+/// any projector's lag, little enough not to lose the beat.
+pub const MAX_LEAD: f32 = 0.25;
 
 /// How long a layer takes to come in or go out when it's switched, in seconds.
 const LAYER_FADE: f32 = 0.5;
@@ -2014,6 +2027,34 @@ mod tests {
         // launched as the scene it has nothing under it: black, not what it last read
         engine.send(Command::Launch { scene: first, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
         wait("black", &|[r, b]| r < 5.0 && b < 5.0);
+    }
+
+    #[test]
+    fn a_projectors_lag_draws_the_clock_ahead_and_leaves_the_downbeat_where_it_was() {
+        let _gpu = crate::gpu_lock();
+        let Ok(engine) = Engine::start(None) else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // 120 BPM, the downbeat now: two beats a second from here
+        engine.send(Command::Tempo(120.0));
+        let downbeat = Instant::now();
+        engine.send(Command::Resync(downbeat));
+        let beats_after = |wait: u64| {
+            std::thread::sleep(Duration::from_millis(wait));
+            let seen = f64::from_bits(engine.status.beats.load(Relaxed));
+            (seen, downbeat.elapsed().as_secs_f64() * 2.0)
+        };
+        let (seen, real) = beats_after(400);
+        assert!((seen - real).abs() < 0.15, "no lag: the clock on the music ({seen:.3} beats, the music at {real:.3})");
+        // a quarter second of lag: half a beat ahead, the downbeat unmoved
+        engine.send(Command::Lead(0.25));
+        let (seen, real) = beats_after(400);
+        assert!((seen - real - 0.5).abs() < 0.15, "a quarter second ahead: half a beat ({seen:.3} beats, the music at {real:.3})");
+        // more than the most is the most
+        engine.send(Command::Lead(5.0));
+        let (seen, real) = beats_after(300);
+        assert!((seen - real - 2.0 * f64::from(MAX_LEAD)).abs() < 0.15, "held at the most ({seen:.3} beats, the music at {real:.3})");
     }
 
     #[test]

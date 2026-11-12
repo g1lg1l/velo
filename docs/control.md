@@ -80,7 +80,9 @@ One beat clock on the render thread drives everything on the beat. Its tempo com
 | **The music** | Auto-BPM (audio.md §4): on by default for computer audio. |
 | **By hand** | Tap (`T`, Tap in the chip's menu, or a pad): the first tap after a 2-s pause is a downbeat, the tempo is the average gap of the last 8 taps, to the half BPM. Typed or nudged ±1 in the chip's menu; Resync puts the downbeat on now. Setting it by hand stops following the music. |
 
-The clock gives `bpm`, `beat_phase` and `bar_phase` to shaders, and `beat` and `bar_phase` as sources for mappings. Not yet: Pioneer Pro DJ Link and Denon StageLinq, a latency offset to lead a slow projector.
+The clock gives `bpm`, `beat_phase` and `bar_phase` to shaders, and `beat` and `bar_phase` as sources for mappings. **Projector lag** (the tempo chip's menu, 0 to 250 ms, kept with the preferences: it belongs to the computer's output, not the show): a projector or an LED processor shows a picture 30 to 100 ms after it's drawn, so everything the clock drives is drawn that much ahead (launches and their transitions, the beat, the bar, Beat Kick's trigger, LFOs, sequencers, a Media List's turns), and lands on the beat on the wall. Taps, resyncs, a MIDI clock's beats and Link's stay where they happened: only what the clock shows moves. What the music itself makes (a kick heard, the bass) can't be drawn before it's heard, so it still shows the projector's lag. The preview and the laptop's own screen run that much early too.
+
+Not yet: Pioneer Pro DJ Link and Denon StageLinq.
 
 ## 5. Threading and timing
 

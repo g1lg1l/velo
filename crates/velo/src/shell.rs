@@ -480,7 +480,7 @@ impl App {
             ui.put(egui::Rect::from_center_size(pos2(text.right() + t.gap + b.x / 2.0, slot.center().y), b), |ui: &mut Ui| widgets::model_badge(ui, t));
         }
         let (mut set, mut resync, mut tap) = (None, false, false);
-        let (mut auto_bpm, mut link) = (self.settings.auto_bpm, self.settings.link);
+        let (mut auto_bpm, mut link, mut lead) = (self.settings.auto_bpm, self.settings.link, self.settings.lead_ms);
         if !learned {
             let popup = Popup::menu(&r).frame(kit::popover_frame(ui.ctx(), t).inner_margin(0)).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(300.0);
             popup.show(|ui| {
@@ -513,6 +513,15 @@ impl App {
                         };
                         kit::setting(ui, t, tr!("Ableton Link"), &text, |ui| kit::switch(ui, t, &mut link, tr!("Ableton Link")));
                     }
+                });
+                kit::menu_line(ui, t);
+                // the projector's lag: the pictures drawn that much ahead, so the beat lands on time
+                egui::Frame::new().inner_margin(pad).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    let most = velo_engine::runtime::MAX_LEAD * 1000.0;
+                    kit::setting(ui, t, tr!("Projector lag"), tr!("The pictures ahead of the music by this much"), |ui| {
+                        ui.add(egui::DragValue::new(&mut lead).range(0.0..=most).speed(1.0).fixed_decimals(0).suffix(" ms"))
+                    });
                 });
                 kit::menu_line(ui, t);
                 // by hand: a step either way, typed, tapped, the downbeat put
@@ -548,6 +557,10 @@ impl App {
         }
         if resync {
             live.resync();
+        }
+        if lead != self.settings.lead_ms {
+            live.set_lead(lead);
+            self.settings.lead_ms = lead;
         }
         if link != self.settings.link {
             live.set_link(link);

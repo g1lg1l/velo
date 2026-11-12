@@ -113,14 +113,16 @@ const stats = [
 ]
 
 const shots = [
-  { src: '/shots/demo.webp', title: 'The demo', alt: 'The Velo scene live: Audio In’s bands moving a V Beams shader, the preview, the inspector and the deck of macros and sources.' },
-  { src: '/shots/menu.webp', title: 'The node menu', alt: 'Tab opens every node with its icon and a line on what it does, a tab per group.' },
-  { src: '/shots/mapping.webp', title: 'A mapping', alt: 'Kick moving Kaleido’s zoom: its amount, attack, release and invert on the link itself.' },
-  { src: '/shots/macros.webp', title: 'Macros and MIDI', alt: 'Eight macros with their controller badges, variations A to H, and MIDI learn waiting for a knob.' },
-  { src: '/shots/shader.webp', title: 'Your own shader', alt: 'A WGSL shader open in Velo’s editor, its knobs made from its header.' },
-  { src: '/shots/scenes.webp', title: 'Scenes', alt: 'Two scenes: one live, the next one previewed and armed to launch on four bars.' },
-  { src: '/shots/tunnel.webp', title: 'Tunnel', alt: 'The Tunnel template in split view: the picture beside its nodes, its Speed and Trails macros on the deck.' },
-  { src: '/shots/rings.webp', title: 'Pulse Rings', alt: 'The Pulse Rings template: Shapes through Feedback, its Size, Spin and Trails macros.' },
+  { src: '/shots/demo.jpg', title: 'The demo', alt: 'The Velo scene live: Audio In’s bands moving a V Beams shader, the preview, the inspector and the deck of macros and sources.' },
+  { src: '/shots/menu.jpg', title: 'The node menu', alt: 'Tab opens every node with its icon and a line on what it does, a tab per group.' },
+  { src: '/shots/shared.jpg', title: 'Shared signals', alt: 'One signal graph for the whole show: a kick and an energy built once, mapped by every scene.' },
+  { src: '/shots/signals.jpg', title: 'Signal cards', alt: 'Each signal card says what it does and draws what comes in and what goes out, on a grid.' },
+  { src: '/shots/mapping.jpg', title: 'A mapping', alt: 'Kick moving Kaleido’s zoom: its amount, attack, release and invert on the link itself.' },
+  { src: '/shots/macros.jpg', title: 'Macros and MIDI', alt: 'Eight macros with their controller badges, variations A to H, and MIDI learn waiting for a knob.' },
+  { src: '/shots/shader.jpg', title: 'Your own shader', alt: 'A WGSL shader open in Velo’s editor, its knobs made from its header.' },
+  { src: '/shots/scenes.jpg', title: 'Scenes', alt: 'Two scenes: one live, the next one previewed and armed to launch on four bars.' },
+  { src: '/shots/tunnel.jpg', title: 'Tunnel', alt: 'The Tunnel template in split view: the picture beside its nodes, its Speed and Trails macros on the deck.' },
+  { src: '/shots/rings.jpg', title: 'Pulse Rings', alt: 'The Pulse Rings template: Shapes through Feedback, its Size, Spin and Trails macros.' },
   { src: '/shots/ai.webp', title: 'The AI panel', alt: 'Asked for a purple tunnel that pulses on the kick, the AI built it from Velo’s own nodes.' },
 ]
 

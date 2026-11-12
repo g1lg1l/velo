@@ -77,7 +77,7 @@ Click a mapping's green chip under its slider, or click its cable on the canvas,
 The envelope screen in the popover draws the attack and release, and the part a knob sets lights up as you point at it.
 
 <figure>
-  <img src="/shots/mapping.webp" alt="A mapping's popover: Audio In's Kick moving Kaleido's Zoom by 50 percent, its envelope drawn, with Attack 5 ms, Release 150 ms and Invert off" />
+  <img src="/shots/mapping.jpg" alt="A mapping's popover: Audio In's Kick moving Kaleido's Zoom by 50 percent, its envelope drawn, with Attack 5 ms, Release 150 ms and Invert off" />
   <figcaption>Kick moving Kaleido's zoom: 50 %, a 5 ms attack and a 150 ms release.</figcaption>
 </figure>
 
@@ -102,7 +102,21 @@ A show often reads the music the same way in every scene: one kick made of the b
 - Change a threshold in the shared signals and every scene follows. Select a shared node to see what it moves in every scene, and change any of those links from there.
 - A card moved by a shared signal has a jack for it, like any other, with no cable on the canvas: its node lives on the shared canvas.
 
+<figure>
+  <img src="/shots/shared.jpg" alt="The Shared signals canvas: Audio In feeding a Beat Kick named Pump, an Energy follower and their product, the shared signals entry lit at the top of the scenes panel, a scene playing in the preview" />
+  <figcaption>The shared signals: one kick, one energy, for every scene.</figcaption>
+</figure>
+
 The shared signals can't be launched, made a layer or deleted. If you delete one of their nodes, the values it moved go back to where they were set; undo brings it back.
+
+## Reading a signal's card
+
+A signal node's card says what happens inside it. At the top, what it does with its settings, in a line (`trigger × in · silent under 0.20 · falls in 260 ms`). In the middle, the last second and a half on a grid from 0 to 1: what comes in as thin grey lines, the level it must cross as a dashed one, what it gives as the green curve running to its port. A Sequencer's steps and a Counter's places are a row of squares, the one it's on lit. In the foot, each input by name with its value, and what goes out in green.
+
+<figure>
+  <img src="/shots/signals.jpg" alt="Signal cards: Audio In wired into a Kick and an Energy follower, the Kick into a Pulse envelope moving a Noise, a sequencer stepping a counter every 4 bars; each card with its line, its grid and its values" />
+  <figcaption>Each card says what it does, and draws what goes in and what comes out.</figcaption>
+</figure>
 
 ## Other signals
 
