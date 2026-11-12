@@ -1,6 +1,7 @@
 //! 3D models: an .obj (its vertices and faces) or a .ply (its vertices and, when they follow,
 //! its faces; ASCII or binary little endian). A model gives a Particles node (shape Model)
-//! points to be born on, and a Mesh node its triangles with their normals. Everything comes out
+//! points to be born on, and a Mesh node its triangles with their normals and, when the file
+//! has them, their texture coordinates. Everything comes out
 //! centered and scaled into a unit ball, y flipped to run down as the canvas does. A model file
 //! is untrusted: sizes are capped and every count in it is checked against the bytes there are
 //! before anything is allocated for it.
@@ -30,6 +31,11 @@ pub struct Model {
     /// The surface: a triangle list, each corner a position and a normal (six floats), the
     /// normals smooth where triangles share a vertex. Empty with no faces, or too many.
     pub mesh: Vec<[f32; 6]>,
+    /// Where each corner of [`Self::mesh`] sits on a picture the mesh wears, from the file's own
+    /// texture coordinates (an .obj's `vt`, a .ply's `s t`): u, v counted from the picture's top
+    /// left, then 1; all 0 on a face that has none. Empty when no face of the file has any: the
+    /// Mesh node then lays the picture on by where the surface faces.
+    pub uv: Vec<[f32; 3]>,
     /// How many triangles the file has (as many as are read).
     pub faces: usize,
 }
@@ -39,6 +45,13 @@ pub struct Model {
 struct Raw {
     vertices: Vec<[f32; 3]>,
     triangles: Vec<[usize; 3]>,
+    /// Each triangle's corners on a picture, as [`Model::uv`]; empty when the file has none.
+    uvs: Vec<[[f32; 3]; 3]>,
+}
+
+/// A corner's place on a picture from a file's `u v`, which count from the bottom left.
+fn own(uv: [f32; 2]) -> [f32; 3] {
+    [uv[0], 1.0 - uv[1], 1.0]
 }
 
 /// Whether `path` names a model, by its extension.
@@ -60,13 +73,15 @@ pub fn load(path: &Path) -> Result<Model, String> {
 
 /// A model from what was read: fitted, with its normals, its points and its mesh.
 fn build(raw: Raw) -> Result<Model, String> {
-    let Raw { vertices, triangles } = raw;
+    let Raw { vertices, triangles, uvs } = raw;
     let finite: Vec<bool> = vertices.iter().map(|p| p.iter().all(|c| c.is_finite())).collect();
     if !finite.contains(&true) {
         return Err("no points in it".into());
     }
     // a face on a vertex that isn't a number goes, the rest stay (the indices stay as they are)
-    let triangles: Vec<[usize; 3]> = triangles.into_iter().filter(|t| t.iter().all(|&i| finite.get(i) == Some(&true))).collect();
+    let keep: Vec<bool> = triangles.iter().map(|t| t.iter().all(|&i| finite.get(i) == Some(&true))).collect();
+    let triangles: Vec<[usize; 3]> = triangles.into_iter().zip(&keep).filter(|t| *t.1).map(|t| t.0).collect();
+    let uvs: Vec<[[f32; 3]; 3]> = uvs.into_iter().zip(&keep).filter(|t| *t.1).map(|t| t.0).collect();
     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
     for p in vertices.iter().zip(&finite).filter(|v| *v.1).map(|v| v.0) {
         for i in 0..3 {
@@ -107,8 +122,10 @@ fn build(raw: Raw) -> Result<Model, String> {
             })
             .collect()
     };
+    // a triangle with a coordinate that isn't a number has none
+    let uv = if mesh.is_empty() { Vec::new() } else { uvs.into_iter().flat_map(|t| if t.iter().flatten().all(|x| x.is_finite()) { t } else { [[0.0; 3]; 3] }).collect() };
     let points = if triangles.is_empty() { thin(fitted.into_iter().zip(&finite).filter(|v| *v.1).map(|v| v.0).collect()) } else { surface(&fitted, &triangles) };
-    Ok(Model { points, mesh, faces: triangles.len() })
+    Ok(Model { points, mesh, uv, faces: triangles.len() })
 }
 
 /// Every `k`-th of `all`, so that at most [`MAX_POINTS`] stay.
@@ -153,11 +170,19 @@ fn surface(vertices: &[[f32; 3]], triangles: &[[usize; 3]]) -> Vec<[f32; 3]> {
         .collect()
 }
 
-/// An .obj: `v x y z` lines for the vertices, `f` lines (a face of three or more, indices from
-/// 1, negative ones back from the last so far, `a/b/c` as `a`) for the triangles.
+/// An .obj: `v x y z` lines for the vertices, `vt u v` lines for the texture coordinates, `f`
+/// lines (a face of three or more, indices from 1, negative ones back from the last so far;
+/// `a/b/c` is vertex `a` at texture coordinate `b`) for the triangles.
 fn obj(bytes: &[u8]) -> Result<Raw, String> {
     let text = String::from_utf8_lossy(bytes);
     let (mut vertices, mut triangles): (Vec<[f32; 3]>, Vec<[usize; 3]>) = (Vec::new(), Vec::new());
+    let (mut coords, mut uvs): (Vec<[f32; 2]>, Vec<[[f32; 3]; 3]>) = (Vec::new(), Vec::new());
+    // an index as a face writes it, among the `len` read so far
+    let nth = |word: Option<&str>, len: usize| match word?.parse::<i64>().ok()? {
+        i @ 1.. => usize::try_from(i - 1).ok().filter(|&i| i < len),
+        i @ ..=-1 => len.checked_sub(usize::try_from(-i).ok()?),
+        0 => None,
+    };
     for line in text.lines() {
         let mut words = line.split_whitespace();
         match words.next() {
@@ -167,25 +192,40 @@ fn obj(bytes: &[u8]) -> Result<Raw, String> {
                     vertices.push([x, y, z]);
                 }
             }
+            Some("vt") if coords.len() < MAX_ITEMS => {
+                let c: Vec<f32> = words.take(2).filter_map(|w| w.parse().ok()).collect();
+                // one that isn't two numbers keeps its place, so the faces' indices stay right
+                coords.push(if let [u, v] = c[..] { [u, v] } else { [f32::NAN; 2] });
+            }
             Some("f") if triangles.len() < MAX_ITEMS => {
-                // the face's corners that point at a vertex there is; a fan of triangles from the first
-                let corners: Vec<usize> = words
-                    .filter_map(|w| w.split('/').next()?.parse::<i64>().ok())
-                    .filter_map(|i| match i {
-                        1.. => usize::try_from(i - 1).ok(),
-                        ..=-1 => vertices.len().checked_sub(usize::try_from(-i).ok()?),
-                        0 => None,
+                // the face's corners that point at a vertex there is, each with its texture
+                // coordinate if it names one; a fan of triangles from the first
+                let corners: Vec<(usize, Option<[f32; 2]>)> = words
+                    .filter_map(|w| {
+                        let mut parts = w.split('/');
+                        Some((nth(parts.next(), vertices.len())?, nth(parts.next(), coords.len()).map(|i| coords[i])))
                     })
-                    .filter(|&i| i < vertices.len())
                     .collect();
                 for pair in corners.windows(2).skip(1) {
-                    triangles.push([corners[0], pair[0], pair[1]]);
+                    let three = [corners[0], pair[0], pair[1]];
+                    // a triangle wears the picture its own way when all three corners say where;
+                    // nothing is kept for a file that never does
+                    let place = three.map(|c| c.1.map(own));
+                    if let [Some(a), Some(b), Some(c)] = place {
+                        uvs.resize(triangles.len(), [[0.0; 3]; 3]);
+                        uvs.push([a, b, c]);
+                    }
+                    triangles.push(three.map(|c| c.0));
                 }
             }
             _ => {}
         }
     }
-    Ok(Raw { vertices, triangles })
+    // the faces after the last one with coordinates have none
+    if !uvs.is_empty() {
+        uvs.resize(triangles.len(), [[0.0; 3]; 3]);
+    }
+    Ok(Raw { vertices, triangles, uvs })
 }
 
 /// What a .ply property holds.
@@ -254,7 +294,8 @@ struct Element {
 
 /// A .ply: its first element must be the vertices, with plain properties (x, y and z among
 /// them); a face element right after them gives the triangles (its first list is the vertex
-/// indices); the rest of the file is left alone. ASCII or binary little endian.
+/// indices); the rest of the file is left alone. ASCII or binary little endian. Vertices with
+/// `s t` (or `u v`, or `texture_u texture_v`) carry their texture coordinates.
 fn ply(bytes: &[u8]) -> Result<Raw, String> {
     let head = &bytes[..bytes.len().min(MAX_HEADER)];
     let end = head.windows(11).position(|w| w == b"end_header\n" || w == b"end_header\r").ok_or("not a .ply, or its header never ends")?;
@@ -287,8 +328,12 @@ fn ply(bytes: &[u8]) -> Result<Raw, String> {
             Prop::List(..) => Err("a list among the vertices' properties isn't read"),
         })
         .collect::<Result<_, _>>()?;
-    let at = |axis: &str| scalars.iter().position(|p| p.0 == axis).ok_or_else(|| format!("the vertices have no {axis}"));
+    let find = |name: &str| scalars.iter().position(|p| p.0 == name);
+    let at = |axis: &str| find(axis).ok_or_else(|| format!("the vertices have no {axis}"));
     let (x, y, z) = (at("x")?, at("y")?, at("z")?);
+    // texture coordinates, under the names exporters give them
+    let st = [("s", "t"), ("u", "v"), ("texture_u", "texture_v")].iter().find_map(|(u, v)| find(u).zip(find(v)));
+    let mut coords = Vec::new();
     let count = vertex.count;
     if count > MAX_ITEMS {
         return Err(format!("{count} vertices: {MAX_ITEMS} at most"));
@@ -307,6 +352,7 @@ fn ply(bytes: &[u8]) -> Result<Raw, String> {
             let v = &body[i * stride..(i + 1) * stride];
             let read = |p: usize| scalars[p].1.read(&v[offsets[p]..]);
             vertices.push([read(x), read(y), read(z)]);
+            coords.extend(st.map(|(s, t)| [read(s), read(t)]));
         }
         if let Some(face) = face {
             let rest = &body[count * stride..];
@@ -350,6 +396,7 @@ fn ply(bytes: &[u8]) -> Result<Raw, String> {
             let number = |p: usize| w.get(p).and_then(|v| v.parse::<f32>().ok()).unwrap_or(f32::NAN);
             // a line that isn't a vertex stays as one that isn't a number: the faces' indices stay right
             vertices.push([number(x), number(y), number(z)]);
+            coords.extend(st.map(|(s, t)| [number(s), number(t)]));
         }
         if let Some(face) = face {
             for _ in 0..face.count {
@@ -379,7 +426,8 @@ fn ply(bytes: &[u8]) -> Result<Raw, String> {
             }
         }
     }
-    Ok(Raw { vertices, triangles })
+    let uvs = if coords.is_empty() { Vec::new() } else { triangles.iter().map(|t| t.map(|i| own(coords[i]))).collect() };
+    Ok(Raw { vertices, triangles, uvs })
 }
 
 /// A face's corners (vertex indices as read) as a fan of triangles from the first; a face with
@@ -417,7 +465,7 @@ mod tests {
         assert_eq!(m.points[2], [0.0, 0.0, 0.0], "the middle");
         assert!(m.points[1][1] < 0.0 && m.points[0][1] > 0.0, "the top (y 51) is up on a canvas: y runs down");
         assert!(m.mesh.is_empty() && m.faces == 0, "no faces, no mesh");
-        assert!(build(Raw { vertices: vec![[f32::NAN, 0.0, 0.0]], triangles: Vec::new() }).is_err() && build(Raw { vertices: Vec::new(), triangles: Vec::new() }).is_err());
+        assert!(build(Raw { vertices: vec![[f32::NAN, 0.0, 0.0]], triangles: Vec::new(), uvs: Vec::new() }).is_err() && build(Raw { vertices: Vec::new(), triangles: Vec::new(), uvs: Vec::new() }).is_err());
     }
 
     #[test]
@@ -451,6 +499,35 @@ mod tests {
         // a face with no area has normals that point somewhere, not nowhere
         let flat = model("v 0 0 0\nv 1 0 0\nv 2 0 0\nf 1 2 3\n");
         assert!(flat.mesh.iter().all(|c| c.iter().all(|x| x.is_finite())) && flat.points.len() <= SURFACE);
+    }
+
+    #[test]
+    fn texture_coordinates_are_kept_when_the_file_has_them_and_none_when_it_doesn_t() {
+        // none in the file: nothing kept, and the mesh is what it was
+        let bare = model(&format!("{CUBE}f 1 2 3 4\n"));
+        assert!(bare.uv.is_empty() && bare.mesh.len() == 6);
+        // a quad with a vt a corner, v counted from the bottom in the file and from the top here
+        let quad = "v -1 -1 0\nv 1 -1 0\nv 1 1 0\nv -1 1 0\nvt 0 0\nvt 1 0\nvt 1 1\nvt 0.25 0.75\n";
+        let m = model(&format!("{quad}f 1/1 2/2 3/3 4/4\n"));
+        assert_eq!(m.uv, [[0.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0], [1.0, 0.0, 1.0], [0.25, 0.25, 1.0]], "a corner of the mesh each, in its order");
+        assert_eq!(m.uv.len(), m.mesh.len());
+        // with normals' indices, negative ones, and a vertex whose seam gives it two places
+        let m = model(&format!("{quad}f 1/1/1 2/2/1 3/-2/1\nf 1/4 3/3 4/-1\n"));
+        assert_eq!((m.uv[2], m.uv[3], m.uv[5]), ([1.0, 0.0, 1.0], [0.25, 0.25, 1.0], [0.25, 0.25, 1.0]));
+        // a face without them among faces with them, before or after: that face says it has none
+        let m = model(&format!("{quad}f 1 2 3\nf 1/1 3/3 4/4\nf 1//1 2//1 4//1\nf 1/1 2/99 3/3\nf 1/1 2/2 3/3\n"));
+        assert_eq!(m.uv.len(), 15);
+        assert_eq!(m.uv.iter().map(|c| c[2]).collect::<Vec<_>>(), [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], "the second and the last");
+        // a vt that isn't numbers keeps its place in the count and gives its faces none
+        let m = model(&format!("{quad}vt x y\nf 1/1 2/2 3/5\nf 1/1 2/2 3/3\n"));
+        assert_eq!(m.uv.iter().map(|c| c[2]).collect::<Vec<_>>(), [0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        // a face on a vertex that isn't a number goes with its coordinates
+        let m = model(&format!("{quad}v nan 0 0\nf 1/1 2/2 5/3\nf 1/1 2/2 3/3\n"));
+        assert_eq!((m.faces, m.uv.len()), (1, 3));
+        // a .ply's are a vertex each
+        let ascii = format!("{}0 0 0 0 0\n1 0 0 1 0\n0 1 0 0 1\n3 0 1 2\n", ply_header("ascii", 3, "property float x\nproperty float y\nproperty float z\nproperty float s\nproperty float t\n", LIST));
+        assert_eq!(build(ply(ascii.as_bytes()).unwrap()).unwrap().uv, [[0.0, 1.0, 1.0], [1.0, 1.0, 1.0], [0.0, 0.0, 1.0]]);
+        assert!(ply(format!("{}0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n", ply_header("ascii", 3, FLOATS, LIST)).as_bytes()).unwrap().uvs.is_empty());
     }
 
     fn ply_header(format: &str, count: impl std::fmt::Display, properties: &str, faces: &str) -> String {

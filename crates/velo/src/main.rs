@@ -2365,7 +2365,7 @@ impl App {
                 (Some(e), _) => kit::warning(ui, t, e),
                 (None, Some((0, _))) => kit::warning(ui, t, tr!("It has no faces, only points: a Particles node can be born on them.")),
                 (None, Some((n, 0))) => kit::warning(ui, t, &tr!("{} triangles: a Mesh draws {} at most.", n, velo_engine::model::MAX_TRIANGLES)),
-                (None, _) => kit::hint(ui, t, tr!("Drawn solid and lit by a light; the camera settings turn it round. One mesh: no textures, shadows or animation.")),
+                (None, _) => kit::hint(ui, t, tr!("Drawn solid and lit by a light; the camera settings turn it round. A picture wired into skin covers it. One mesh: no shadows or animation.")),
             };
             ui.add_space(t.gap);
             pick = kit::actions(ui, t, &[(kit::Variant::Outline, Some(icons::ARROWS_CLOCKWISE), tr!("Replace…"))])[0].clicked();

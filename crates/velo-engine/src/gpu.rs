@@ -35,6 +35,8 @@ pub const MAX_POINTS: usize = 131_072;
 /// (wgpu's format table), resolved into the node's picture. Pipelines and textures both read this.
 pub const MSAA: u32 = 4;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Bytes a corner of a mesh takes: a position, a normal and its place on a picture, three floats each.
+const CORNER: u64 = 36;
 /// Bytes a particle takes (particles.wgsl's `Particle`), after the emitter's 16.
 const PARTICLE: u64 = 48;
 const EMITTER: u64 = 16;
@@ -99,9 +101,10 @@ impl Program {
         // a particle node draws a quad a particle, read from its buffer: position and age, velocity and life, seed and size
         let attributes = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4];
         let sprites = [Some(wgpu::VertexBufferLayout { array_stride: PARTICLE, step_mode: wgpu::VertexStepMode::Instance, attributes: &attributes })];
-        // a mesh node draws its triangles from a vertex buffer: a position, then a normal
-        let corner = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
-        let corners = [Some(wgpu::VertexBufferLayout { array_stride: 24, step_mode: wgpu::VertexStepMode::Vertex, attributes: &corner })];
+        // a mesh node draws its triangles from a vertex buffer: a position, a normal, then its
+        // place on a picture (u, v, and whether it has one)
+        let corner = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3];
+        let corners = [Some(wgpu::VertexBufferLayout { array_stride: CORNER, step_mode: wgpu::VertexStepMode::Vertex, attributes: &corner })];
         // their light adds up; their alpha covers
         let add = |dst_factor| wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor, operation: wgpu::BlendOperation::Add };
         let blend = node.particles.then(|| wgpu::BlendState { color: add(wgpu::BlendFactor::One), alpha: add(wgpu::BlendFactor::OneMinusSrcAlpha) });
@@ -439,14 +442,16 @@ impl Runner {
     }
 
     /// A mesh node's triangles, each corner a position and a normal (a corner short of a whole
-    /// triangle is left out); none draws nothing. Nothing for a node that isn't a mesh.
-    pub fn set_mesh(&mut self, device: &wgpu::Device, node: usize, corners: &[[f32; 6]]) {
+    /// triangle is left out); none draws nothing. `uv` is each corner's place on the picture the
+    /// mesh wears ([`crate::model::Model::uv`]: u, v, then 1); a corner it doesn't reach has none,
+    /// and the shader lays the picture on by itself. Nothing for a node that isn't a mesh.
+    pub fn set_mesh(&mut self, device: &wgpu::Device, node: usize, corners: &[[f32; 6]], uv: &[[f32; 3]]) {
         let Some(mesh) = &mut self.nodes[node].mesh else { return };
         let corners = &corners[..corners.len() / 3 * 3];
         mesh.vertices = (!corners.is_empty()).then(|| {
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh"), size: (corners.len() * 24) as u64, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: true });
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("mesh"), size: corners.len() as u64 * CORNER, usage: wgpu::BufferUsages::VERTEX, mapped_at_creation: true });
             if let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() {
-                let bytes: Vec<u8> = corners.iter().flatten().flat_map(|c| c.to_ne_bytes()).collect();
+                let bytes: Vec<u8> = corners.iter().enumerate().flat_map(|(i, c)| c.iter().chain(uv.get(i).unwrap_or(&[0.0; 3]))).flat_map(|c| c.to_ne_bytes()).collect();
                 view.slice(..).copy_from_slice(&bytes);
             }
             buffer.unmap();
@@ -1626,7 +1631,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     fn mesh_picture(device: &wgpu::Device, queue: &wgpu::Queue, set: &[(&str, [f32; 4])], corners: &[[f32; 6]]) -> Vec<[f32; 4]> {
         let programs = [program(device, "mesh")];
         let mut runner = Runner::new(device, &programs, &[NodeSpec { program: 0, inputs: vec![] }], &[], [64, 64], &wave_texture(device)).unwrap();
-        runner.set_mesh(device, 0, corners);
+        runner.set_mesh(device, 0, corners, &[]);
         let v = |x: f32| [x, 0.0, 0.0, 0.0];
         let base = [("size", v(1.0)), ("tilt", v(0.0)), ("turn", v(0.0)), ("ambient", v(0.0)), ("shine", v(0.0)), ("rim", v(0.0)), ("light", v(1.0)), ("tint", [1.0; 4]), ("light_color", [1.0; 4]), ("light_at", v(0.0))];
         runner.set_params(queue, &programs, 0, &programs[0].node.values(|p| set.iter().chain(&base).find(|s| s.0 == p).map(|s| s.1)));
@@ -1705,6 +1710,61 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         }
     }
 
+    #[test]
+    fn a_mesh_wears_the_picture_wired_into_its_skin() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // a picture red on its right half, see-through on its bottom third
+        const HALVES: &str = r#"/*{ "name": "Halves" }*/
+fn main_image(uv: vec2f, px: vec2f) -> vec4f {
+    return vec4f(step(0.5, uv.x), 0.0, 0.0, 1.0) * step(uv.y, 0.66);
+}"#;
+        let programs = [Program::new(&device, ShaderNode::parse(HALVES).unwrap()).unwrap(), program(&device, "mesh")];
+        let wall = quad(0.0, 0.5, [0.0, 0.0, 1.0]);
+        // the wall on the canvas: its left, its right, and low on it, lit 1 by a white light on a white tint
+        let (left, right, low) = (20 * 64 + 22, 20 * 64 + 42, 50 * 64 + 42);
+        let picture = |wired: bool, set: &[(&str, [f32; 4])], uv: &[[f32; 3]]| -> Vec<[f32; 4]> {
+            let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![wired.then_some(0)] }];
+            let mut runner = Runner::new(&device, &programs, &nodes, &[], [64, 64], &wave_texture(&device)).unwrap();
+            runner.set_mesh(&device, 1, &wall, uv);
+            let v = |x: f32| [x, 0.0, 0.0, 0.0];
+            let base = [("size", v(1.0)), ("tilt", v(0.0)), ("turn", v(0.0)), ("ambient", v(0.0)), ("shine", v(0.0)), ("rim", v(0.0)), ("light", v(1.0)), ("tint", [1.0; 4]), ("light_color", [1.0; 4]), ("light_at", v(0.0))];
+            runner.set_params(&queue, &programs, 0, &programs[0].node.values(|_| None));
+            runner.set_params(&queue, &programs, 1, &programs[1].node.values(|p| set.iter().chain(&base).find(|s| s.0 == p).map(|s| s.1)));
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runner.render(&queue, &mut encoder, &programs, &[0.0, 1.0 / 60.0, 0.0, 1.0]);
+            queue.submit([encoder.finish()]);
+            read(&device, &queue, &runner, 1).as_chunks::<4>().0.iter().map(|p| p.map(half)).collect()
+        };
+        let v = |x: f32| [x, 0.0, 0.0, 0.0];
+        let near = |p: [f32; 4], want: [f32; 3]| (0..3).all(|k| (p[k] - want[k]).abs() < 0.02) && p[3] == 1.0;
+        // nothing wired: the bare mesh, whatever picture says, to the bit
+        let bare = picture(false, &[], &[]);
+        assert!(near(bare[left], [1.0; 3]) && near(bare[right], [1.0; 3]), "{:?}", bare[left]);
+        assert_eq!(bare, picture(false, &[("picture", v(0.0))], &[]), "nothing wired is no picture at all");
+        assert_eq!(bare, picture(true, &[("picture", v(0.0))], &[]), "and so is a picture that shows 0");
+        // wired, a model with no coordinates of its own: laid on from the front, the right way round
+        let worn = picture(true, &[], &[]);
+        assert!(near(worn[left], [0.0; 3]) && near(worn[right], [1.0, 0.0, 0.0]), "black on the left, red on the right: {:?} {:?}", worn[left], worn[right]);
+        assert!(near(worn[low], [1.0; 3]), "the tint where the picture is see-through: {:?}", worn[low]);
+        let half_on = picture(true, &[("picture", v(0.5))], &[]);
+        assert!(near(half_on[left], [0.5; 3]) && near(half_on[right], [1.0, 0.5, 0.5]), "half of it over the tint: {:?} {:?}", half_on[left], half_on[right]);
+        // smaller on the model, it comes back mirrored past its right edge: red again, where a
+        // picture starting over would be black
+        let small = picture(true, &[("picture_scale", v(0.25))], &[]);
+        assert!(near(small[20 * 64 + 49], [1.0, 0.0, 0.0]) && small.iter().all(|p| p.iter().all(|c| c.is_finite())), "{:?}", small[20 * 64 + 49]);
+        // a model with coordinates of its own wears it their way: here the other way round
+        let flipped: Vec<[f32; 3]> = wall.iter().map(|c| [0.5 - c[0], 0.5 + c[1], 1.0]).collect();
+        let own = picture(true, &[], &flipped);
+        assert!(near(own[left], [1.0, 0.0, 0.0]) && near(own[right], [0.0; 3]), "red on the left: {:?} {:?}", own[left], own[right]);
+        // and corners that say they have none are laid on as a model without
+        let none: Vec<[f32; 3]> = flipped.iter().map(|c| [c[0], c[1], 0.0]).collect();
+        assert_eq!(picture(true, &[], &none), worn);
+    }
+
     /// Not a check: `VELO_MESH_SHOT=<file.png> cargo test -p velo-engine mesh_shot -- --ignored`
     /// draws a Mesh node on a torus (a mesh of 9,000 triangles), chrome and rim light, 640 × 360.
     #[test]
@@ -1728,7 +1788,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
                 corners.extend([a, b, c, a, c, d]);
             }
         }
-        runner.set_mesh(&device, 0, &corners);
+        runner.set_mesh(&device, 0, &corners, &[]);
         let v = |x: f32| [x, 0.0, 0.0, 0.0];
         let set = [("mirror", v(0.55)), ("shine", v(1.0)), ("rim", v(0.8)), ("orbit", v(0.08)), ("tilt", v(0.1)), ("turn", v(0.0)), ("tint", [0.55, 0.7, 1.0, 1.0]), ("distance", v(1.9)), ("size", v(0.9))];
         runner.set_params(&queue, &programs, 0, &programs[0].node.values(|p| set.iter().find(|s| s.0 == p).map(|s| s.1)));

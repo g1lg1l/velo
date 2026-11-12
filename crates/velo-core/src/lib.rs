@@ -627,7 +627,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(TEXT, "Text", Category::Generator, &[], OUT),
     kind(TEXT_LIST, "Text List", Category::Generator, &[], OUT),
     kind(PARTICLES, "Particles", Category::Generator, &["emit", "sprite"], OUT),
-    kind(MESH, "Mesh", Category::Generator, &[], OUT),
+    kind(MESH, "Mesh", Category::Generator, &["skin"], OUT),
     kind("velo.transform", "Transform", Category::Effect, IN, OUT),
     kind("velo.kaleido", "Kaleido", Category::Effect, IN, OUT),
     kind("velo.color", "Color", Category::Effect, IN, OUT),
@@ -855,7 +855,7 @@ pub fn media_list(n: &Node) -> Vec<&str> {
 /// Sprites thrown from an emitter: soft dots, or the picture of its file ([`Node::media`]).
 pub const PARTICLES: &str = "velo.particles";
 /// A 3D model ([`Node::media`], an .obj or .ply with faces) drawn solid, lit, from a camera
-/// that turns round it.
+/// that turns round it, wearing the picture wired into `skin`.
 pub const MESH: &str = "velo.mesh";
 
 /// The nodes that show a file: an Image or a Video node.
