@@ -343,14 +343,7 @@ impl Live {
                     self.errors.extend(b.errors);
                     slot.installed = b.plan.nodes.into_iter().map(|(id, _)| id).zip(b.shaders).collect();
                     (slot.signals, slot.kinds) = (b.signals, None);
-                    slot.media = b
-                        .media
-                        .into_iter()
-                        .map(|(id, l)| {
-                            let built = l.get().is_some();
-                            (id, l, built)
-                        })
-                        .collect();
+                    slot.media = b.media;
                     // the build set the values it was asked with; anything newer goes below
                     slot.sent = vec![Vec::new(); slot.installed.len()];
                     slot.routed = vec![Vec::new(); slot.installed.len()];

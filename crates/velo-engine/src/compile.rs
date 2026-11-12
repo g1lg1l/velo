@@ -191,8 +191,10 @@ pub struct Built {
     pub shaders: Vec<ShaderNode>,
     pub errors: Vec<(String, ShaderError)>,
     /// Each Image node's file (node id): built in once decoded; a load still going (or failed)
-    /// showed black, and the graph is built again when it's in.
-    pub media: Vec<(String, crate::media::Loading)>,
+    /// showed black, and the graph is built again when it's in. The flag says whether it was in
+    /// when this graph was built: a file that lands while its graph is building isn't in it, and
+    /// asking the file again once the graph arrives would say it is.
+    pub media: Vec<(String, crate::media::Loading, bool)>,
 }
 
 /// Builds graphs on its own thread with the engine's device. Each shader is compiled once and
@@ -282,6 +284,8 @@ fn build(
             n.media.as_deref().filter(|_| shows_media(&n.kind) || n.kind == PARTICLES || n.kind == MESH).map(|path| library.get(path))
         })
         .collect();
+    // the files in before anything is built from them
+    let was_in: Vec<bool> = files.iter().map(|l| l.as_ref().is_some_and(|l| l.get().is_some())).collect();
     let file = |n: usize| files[n].as_ref().and_then(|l| l.get()).and_then(|r| r.as_ref().ok());
     let (mut programs, mut slots, mut errors) = (Vec::new(), HashMap::new(), Vec::new());
     let mut uses = Vec::with_capacity(plan.nodes.len());
@@ -333,7 +337,7 @@ fn build(
         }
     }
     let models: Vec<(usize, std::sync::Arc<crate::media::Media>)> = (0..plan.nodes.len()).filter_map(|n| file(n).filter(|m| m.model.is_some()).map(|m| (n, m.clone()))).collect();
-    let media = plan.nodes.iter().zip(files).filter_map(|((id, _), l)| Some((id.clone(), l?))).collect();
+    let media = plan.nodes.iter().zip(files).zip(was_in).filter_map(|(((id, _), l), was_in)| Some((id.clone(), l?, was_in))).collect();
     let views: Vec<(usize, wgpu::TextureView)> = playing.iter().map(|p| (p.node, p.texture.create_view(&Default::default()))).collect();
     let runner = Runner::new(device, &programs, &specs, &views, size, wave);
     if let Some(e) = [pollster::block_on(valid.pop()), pollster::block_on(memory.pop())].into_iter().flatten().next() {
@@ -344,7 +348,7 @@ fn build(
     for (n, media) in &models {
         if let Some(model) = &media.model {
             runner.set_points(queue, *n, &model.points);
-            runner.set_mesh(device, *n, &model.mesh);
+            runner.set_mesh(device, *n, &model.mesh, &model.uv);
         }
     }
     // the Probes' picture sides, each reading its node for its signal node
@@ -477,6 +481,20 @@ mod tests {
         assert_eq!((p.nodes.len(), p.output), (0, None));
         let p = plan(&scene(&["velo.noise", "velo.output"], &[]));
         assert_eq!((shaders(&p), p.output), (vec!["noise"], None));
+    }
+
+    #[test]
+    fn a_mesh_plans_alone_as_it_did_and_with_the_picture_wired_into_its_skin() {
+        // nothing wired: the mesh alone, its skin reading black, as a project from before has it
+        let p = plan(&scene(&[MESH, "velo.output"], &[(0, 1, 0)]));
+        assert_eq!((shaders(&p), &p.inputs, p.output), (vec!["mesh", "output"], &vec![vec![None], vec![Some(0)]], Some(1)));
+        // a picture wired in is what its skin reads, and renders before it
+        let mut s = scene(&["velo.noise", MESH, "velo.output"], &[(0, 1, 0), (1, 2, 0)]);
+        let p = plan(&s);
+        assert_eq!((shaders(&p), &p.inputs, p.output), (vec!["noise", "mesh", "output"], &vec![vec![], vec![Some(0)], vec![Some(1)]], Some(2)));
+        // an off mesh shows nothing: its skin feeds it, it isn't what it shows
+        s.nodes[1].off = true;
+        assert_eq!(plan(&s).output, None);
     }
 
     #[test]

@@ -60,7 +60,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - 76 shader presets, from Plasma and Fire to Lasers, Fractal, Reaction and V Beams, and 25 effect presets, from Glitch and VHS to LED Wall and God Rays.
 - Your own WGSL or ISF shaders become nodes with knobs, rebuilt as you type or save. A broken shader keeps the last one that worked. A WGSL shader can keep buffers from frame to frame, each drawn by a pass of its own, for simulations like reaction diffusion.
 - Particles are born wherever a picture is lit (a logo, an edge map, a movie), in a sphere, or on the points of a 3D model (.obj, .ply), and drawn as soft dots or a picture of your own; its Orbit view turns a camera round them.
-- A **Mesh** node draws a 3D model (.obj, .ply) solid, with a depth test and 4x antialiasing, lit by a light with a shine, a studio reflection and a rim, from a camera that turns round it; the surface breathes with the bass and the kick flashes it.
+- A **Mesh** node draws a 3D model (.obj, .ply) solid, with a depth test and 4x antialiasing, lit by a light with a shine, a studio reflection and a rim, from a camera that turns round it; the surface breathes with the bass and the kick flashes it. A picture wired into its `skin` (a photo, a movie, a camera, any node) covers the model.
 - Stills, GIFs, image sequences, HAP, H.264 and HEVC movies.
 - Live pictures with the Live node: **NDI** sources on the network, cameras and capture cards (Windows and macOS), and on Windows **Spout** senders on this computer.
 
@@ -109,7 +109,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 </tr>
 </table>
 
-Not a 3D engine (a Mesh draws one model solid and lit and Particles fly a camera round points, with no scene graph, shadows, textures or animation), a mapping suite or a timeline editor: see [what Velo is not](docs/product.md#3-what-it-is-what-it-is-not).
+Not a 3D engine (a Mesh draws one model solid and lit, wearing a picture, and Particles fly a camera round points, with no scene graph, shadows, materials or animation), a mapping suite or a timeline editor: see [what Velo is not](docs/product.md#3-what-it-is-what-it-is-not).
 
 > **Making the beats too?** [Ravune](https://github.com/g1lg1l/ravune), from the same maker, is a modular DAW for deep sound design.
 

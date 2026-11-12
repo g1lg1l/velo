@@ -4188,7 +4188,7 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::TEXT => tr!("Words set in a font, colored, sized and placed."),
         velo_core::TEXT_LIST => tr!("Lines of words one at a time: in order, at random or back and forth, on the beat."),
         velo_core::PARTICLES => tr!("Thousands of glowing points or pictures of your own, thrown, pulled and stirred: map Kick onto Emission for bursts."),
-        velo_core::MESH => tr!("A 3D model drawn solid and lit, seen from a camera that turns round it."),
+        velo_core::MESH => tr!("A 3D model drawn solid and lit, seen from a camera that turns round it; wire a picture into skin and the model wears it."),
         "velo.transform" => tr!("Moves, scales and turns what comes in."),
         "velo.kaleido" => tr!("Mirrors what comes in into a kaleidoscope."),
         "velo.color" => tr!("Brightness, contrast, hue, tint and more."),
