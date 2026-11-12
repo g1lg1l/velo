@@ -2,7 +2,7 @@
 //! frame and handed to mappings as sources, like Kick or Bass. An Audio In puts what the input
 //! hears on the canvas, a Beat the clock; a Beat Kick hits on the beat as hard as the bass, not
 //! at all while the bass is low; an LFO is a shape over a number of beats; a Remap
-//! brings a signal into the range wanted; a Math puts two together; an Envelope plays a shape
+//! brings a signal into the range wanted; a Math puts two together; a Gain makes one stronger; an Envelope plays a shape
 //! on each hit; a Counter steps on each hit; a Random picks a value on the beat; a Smooth
 //! follows its input slowly; a Quantize snaps it to steps; a Speed goes round a cycle as fast
 //! as its input says; a Delay plays its input back some beats later; a Probe reads a picture
@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 use std::f64::consts::TAU;
 
-use velo_core::{AUDIO, BEAT_KICK, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind};
+use velo_core::{AUDIO, BEAT_KICK, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, GAIN, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind};
 
 use crate::shader::{Param, ParamType};
 
@@ -59,6 +59,8 @@ pub fn params(kind: &str) -> Option<Vec<Param>> {
             p("invert", ParamType::Bool, 0.0, 0.0, 1.0),
         ],
         MATH => vec![named("operation", &MATH_OPS), p("value", float, 0.5, 0.0, 1.0)],
+        // twice as strong to start with; a Math's value stops at 1, so it can't amplify
+        GAIN => vec![p("gain", float, 2.0, 0.0, GAIN_MAX)],
         TIME => vec![p("seconds", float, 10.0, 0.5, 600.0), named("shape", &TIME_SHAPES)],
         ENVELOPE => vec![p("threshold", float, 0.5, 0.0, 1.0), p("attack_ms", float, 5.0, 1.0, 2000.0), p("release_ms", float, 300.0, 1.0, 4000.0), named("curve", &CURVES)],
         COUNTER => vec![p("steps", ParamType::Int, 4.0, 2.0, 16.0), named("mode", &COUNT_MODES), p("threshold", float, 0.5, 0.0, 1.0)],
@@ -108,6 +110,9 @@ pub const SMOOTH_MODES: [&str; 2] = ["Glide", "Lag"];
 pub const SLOPE_DIRECTIONS: [&str; 3] = ["Rising", "Falling", "Either way"];
 /// What a Probe reads of the color, in its `measure` parameter's order.
 pub const PROBE_MEASURES: [&str; 5] = ["Brightness", "Red", "Green", "Blue", "Alpha"];
+
+/// The most a Gain multiplies its input by.
+pub const GAIN_MAX: f32 = 16.0;
 
 /// The longest a Delay holds its input back, in beats.
 pub const DELAY_BEATS: f32 = 16.0;
@@ -545,6 +550,8 @@ pub enum Kind {
     BeatKick(Envelope, f32),
     Remap(Remap),
     Math(Math),
+    /// How many times its input.
+    Gain(f32),
     Envelope(Envelope),
     Counter(Counter),
     Sequencer(Sequencer),
@@ -584,6 +591,7 @@ impl Kind {
             TIME => Kind::Time(v("seconds", 10.0).clamp(0.5, 600.0), index("shape", TIME_SHAPES.len() - 1)),
             REMAP => Kind::Remap(Remap::from_params(get)),
             MATH => Kind::Math(Math { op: index("operation", MATH_OPS.len() - 1), value: v("value", 0.5) }),
+            GAIN => Kind::Gain(v("gain", 2.0).clamp(0.0, GAIN_MAX)),
             ENVELOPE => Kind::Envelope(Envelope { threshold: v("threshold", 0.5), attack: v("attack_ms", 5.0) / 1000.0, release: v("release_ms", 300.0) / 1000.0, curve: index("curve", CURVES.len() - 1) }),
             COUNTER => Kind::Counter(Counter { steps: v("steps", 4.0).round().clamp(2.0, 16.0) as u8, mode: index("mode", COUNT_MODES.len() - 1), threshold: v("threshold", 0.5) }),
             SEQUENCER => Kind::Sequencer(Sequencer {
@@ -716,6 +724,8 @@ pub fn run(signals: &mut [Signal], sources: &mut [f32], beats: f64, dt: f32) {
             Kind::Slope(slope) => sources[s.slot] = slope.step(input(0), dt, &mut s.state),
             Kind::Remap(remap) => sources[s.slot] = remap.step(input(0), dt, &mut s.state),
             Kind::Math(math) => sources[s.slot] = math.at(input(0), s.inputs[1].map_or(math.value, |i| sources[i])),
+            // amplified, never past full: a mapping's amount already says how far 1 moves
+            Kind::Gain(gain) => sources[s.slot] = (input(0) * gain).clamp(0.0, 1.0),
             Kind::Envelope(envelope) => sources[s.slot] = envelope.step(input(0), dt, &mut s.state),
             Kind::Counter(counter) => sources[s.slot] = counter.step(input(0), input(1), &mut s.state),
             Kind::Sequencer(seq) => sources[s.slot] = seq.at(beats),
@@ -1044,6 +1054,32 @@ mod tests {
         let mut q = node(Kind::Quantize(4), [true, false]);
         let snapped = outputs(&mut q, &[(0.1, 0.0, 0.0), (0.2, 0.0, 0.0), (0.6, 0.0, 0.0), (0.95, 0.0, 0.0), (1.4, 0.0, 0.0)]);
         assert_eq!(snapped, [0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn a_gain_multiplies_its_input_and_stays_within_0_and_1() {
+        let scene_node = |gain: Option<f32>| velo_core::Node {
+            id: "n".into(),
+            kind: GAIN.into(),
+            name: String::new(),
+            off: false,
+            pos: [0.0; 2],
+            params: gain.map(|g| ("gain".to_string(), [g, 0.0, 0.0, 0.0])).into_iter().collect(),
+            mappings: Vec::new(),
+            code: None,
+            file: None,
+            media: None,
+            text: None,
+            icon: String::new(),
+        };
+        // twice by default; a gain from a file past its range is brought back into it
+        assert_eq!(Kind::of(&scene_node(None)), Some(Kind::Gain(2.0)));
+        assert_eq!(Kind::of(&scene_node(Some(40.0))), Some(Kind::Gain(GAIN_MAX)));
+        assert_eq!(params(GAIN).unwrap()[0].default[0], 2.0);
+        let mut g = node(Kind::Gain(4.0), [true, false]);
+        assert_eq!(outputs(&mut g, &[(0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.25, 0.0, 0.0), (0.6, 0.0, 0.0), (-0.5, 0.0, 0.0)]), [0.0, 0.4, 1.0, 1.0, 0.0]);
+        // nothing wired in gives nothing
+        assert_eq!(outputs(&mut node(Kind::Gain(16.0), [false, false]), &[(1.0, 0.0, 0.0)]), [0.0]);
     }
 
     #[test]

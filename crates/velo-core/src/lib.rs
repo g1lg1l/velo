@@ -664,6 +664,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(PROBE, "Probe", Category::Signal, IN, OUT),
     kind(REMAP, "Remap", Category::Signal, IN, OUT),
     kind(MATH, "Math", Category::Signal, &["a", "b"], OUT),
+    kind(GAIN, "Gain", Category::Signal, IN, OUT),
     kind(ENVELOPE, "Envelope", Category::Signal, IN, OUT),
     kind(COUNTER, "Counter", Category::Signal, &["in", "reset"], OUT),
     kind(SEQUENCER, "Sequencer", Category::Signal, &[], OUT),
@@ -913,6 +914,8 @@ pub const DELAY: &str = "velo.delay";
 pub const SPRING: &str = "velo.spring";
 /// How fast its input changes, rising, falling or either way.
 pub const SLOPE: &str = "velo.slope";
+/// Its input times a gain of up to 16, kept within 0 and 1: what makes a faint signal strong.
+pub const GAIN: &str = "velo.gain";
 /// A picture read as a number: its brightness (or a channel) over a region, or at a point. The
 /// one signal node a picture goes into.
 pub const PROBE: &str = "velo.probe";

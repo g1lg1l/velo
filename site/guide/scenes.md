@@ -62,7 +62,7 @@ The airplane at the top of the scenes panel turns on the **autopilot**, for nigh
 
 - every **4, 8, 16 or 32 bars**, or every so many seconds;
 - in order, or at random (never the scene that's going out);
-- and, if you ask, **on a drop**: when the music suddenly gets much louder than it has been, at least 4 bars after the last change.
+- and, if you ask, **on a drop**: when the bass comes back after a breakdown, at least 4 bars after the last drop. It listens to the bass, not the volume, so a breakdown as loud as the rest still counts.
 
 The autopilot launches a beat ahead, so each scene's own boundary lands on the turn. It's off every time Velo starts; its settings stay.
 

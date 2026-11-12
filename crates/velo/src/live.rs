@@ -6,10 +6,11 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Acquire, Ordering::Relaxed, Ordering::Release};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
@@ -186,6 +187,9 @@ pub struct Live {
     /// When the scene going out was last pictured for its card.
     shot_at: Instant,
     peeked: std::collections::HashSet<String>,
+    /// Where the cards' pictures are kept between runs (`shots` in Velo's data folder), so a
+    /// project opened again builds no scene for its card; nowhere in the tests.
+    shot_dir: Option<PathBuf>,
     /// The video memory the system lets Velo hold, where it says (Windows), and the graphs held
     /// with what their pictures take, as of the last sync.
     pub budget: Option<u64>,
@@ -240,6 +244,8 @@ impl Live {
             peek: None,
             shot_at: Instant::now(),
             peeked: Default::default(),
+            // the tests have no data folder of their own: the user's is not theirs to write in
+            shot_dir: if cfg!(test) { None } else { crate::files::data_dir().map(|d| d.join("shots")) },
             budget: None,
             held: (0, 0),
             off: Default::default(),
@@ -285,12 +291,19 @@ impl Live {
             self.edit = edit;
             self.engine.send(Command::Edit(edit));
         }
-        // a card with no picture yet: its scene held, built, rendered a moment and pictured
-        if self.peek.is_none()
+        // a card with no picture yet: the one kept on disk from when this scene, as it is now,
+        // was last pictured (nothing is built for it); else its scene held, built, rendered a
+        // moment and pictured, and that picture kept
+        while self.peek.is_none()
             && let Some(scene) = project.scenes.iter().find(|s| !self.shots.contains_key(&s.id) && !self.peeked.contains(&s.id))
         {
-            let key = self.slot(&scene.id).key;
-            self.peek = Some(Peek { scene: scene.id.clone(), key, since: Instant::now(), sent: false });
+            let kept = self.shot_dir.as_deref().and_then(|dir| shot_file(dir, scene, size)).and_then(|file| load_shot(&file));
+            if let Some(image) = kept {
+                set_shot(&mut self.shots, ctx, &scene.id, image);
+            } else {
+                let key = self.slot(&scene.id).key;
+                self.peek = Some(Peek { scene: scene.id.clone(), key, since: Instant::now(), sent: false, keep: true });
+            }
         }
         // the scene going out: its card's picture again now and then, as it looks on air (the
         // edited one's comes with its nodes')
@@ -301,7 +314,7 @@ impl Live {
             && let Some(slot) = self.slots.iter().find(|s| s.key == live)
         {
             self.shot_at = Instant::now();
-            self.peek = Some(Peek { scene: slot.scene.clone(), key: live, since: Instant::now(), sent: false });
+            self.peek = Some(Peek { scene: slot.scene.clone(), key: live, since: Instant::now(), sent: false, keep: false });
         }
         // the layers switched on, held and rendered every frame
         let on: Vec<&Scene> = project.scenes.iter().filter(|s| s.layer != velo_core::Layer::Scene && !self.off.contains(&s.id)).collect();
@@ -365,9 +378,14 @@ impl Live {
             let mut got = false;
             if p.sent {
                 let shots = &mut self.shots;
+                // named by the scene as it is now, which is what was just rendered
+                let keep = self.shot_dir.as_deref().filter(|_| p.keep).zip(project.scene(&p.scene)).and_then(|(dir, scene)| shot_file(dir, scene, size));
                 self.engine.take_shot(|rgba| {
                     use velo_engine::runtime::THUMB;
                     set_shot(shots, ctx, &p.scene, egui::ColorImage::from_rgba_premultiplied([THUMB[0] as usize, THUMB[1] as usize], rgba));
+                    if let Some(file) = &keep {
+                        keep_shot(file, rgba, SHOTS_KEPT);
+                    }
                     got = true;
                 });
             } else if slot.is_some_and(|s| s.built && s.output.is_some()) {
@@ -756,6 +774,52 @@ struct Peek {
     key: u64,
     since: Instant,
     sent: bool,
+    /// A card's first picture, to keep on disk; not the scene going out's, taken again every
+    /// two seconds.
+    keep: bool,
+}
+
+/// How many cards' pictures are kept on disk (about 10 KB each): past it, the least recently
+/// used go.
+const SHOTS_KEPT: usize = 400;
+
+/// The file in `dir` a scene's card's picture is kept in: named by a hash of all the scene is
+/// (its nodes with their values, mappings, code, files and words, its wires, its macros) and of
+/// the canvas size, so a scene changed in any way has another name and is pictured again.
+fn shot_file(dir: &Path, scene: &Scene, size: [u32; 2]) -> Option<PathBuf> {
+    let text = ron::to_string(&(scene, size)).ok()?;
+    // FNV-1a: the same in every version of Velo, as a file's name must be (std's hasher
+    // doesn't promise that)
+    let hash = text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    Some(dir.join(format!("{hash:016x}.png")))
+}
+
+/// The picture kept in `file`, if there's one and it's a card's; read, it's the last used.
+fn load_shot(file: &Path) -> Option<egui::ColorImage> {
+    use velo_engine::runtime::THUMB;
+    let picture = image::open(file).ok()?.into_rgba8();
+    if picture.dimensions() != (THUMB[0], THUMB[1]) {
+        return None;
+    }
+    let _ = std::fs::File::options().write(true).open(file).and_then(|f| f.set_modified(SystemTime::now()));
+    Some(egui::ColorImage::from_rgba_premultiplied([THUMB[0] as usize, THUMB[1] as usize], &picture))
+}
+
+/// Keeps a card's picture (as the engine gives it, premultiplied) in `file`, and no more than
+/// `most` pictures in its folder: the least recently used go. One that can't be written is
+/// pictured again at the next open, which is all a failure costs.
+fn keep_shot(file: &Path, rgba: &[u8], most: usize) {
+    use velo_engine::runtime::THUMB;
+    let Some(dir) = file.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() || image::save_buffer(file, rgba, THUMB[0], THUMB[1], image::ColorType::Rgba8).is_err() {
+        return;
+    }
+    let pictures = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "png"));
+    let mut kept: Vec<(SystemTime, PathBuf)> = pictures.filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p))).collect();
+    kept.sort();
+    for (_, old) in kept.iter().rev().skip(most) {
+        let _ = std::fs::remove_file(old);
+    }
 }
 
 /// How long a card's picture may take to build, and then to come, before its scene's turn ends.
@@ -1229,6 +1293,69 @@ fn hop_out(hop: &velo_audio::Hop, tracker: &mut Tracker, dt: f32, tempo: &mut Te
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cards_picture_is_kept_under_all_its_scene_is() {
+        let dir = Path::new("shots");
+        let node = |id: &str, kind: &str| velo_core::Node {
+            id: id.into(),
+            kind: kind.into(),
+            name: String::new(),
+            off: false,
+            pos: [0.0; 2],
+            params: Default::default(),
+            mappings: Vec::new(),
+            code: None,
+            file: None,
+            media: None,
+            text: None,
+            icon: String::new(),
+        };
+        let scene = Scene { id: "s_a".into(), nodes: vec![node("n_a", "velo.noise"), node("n_b", "velo.output")], ..Default::default() };
+        let file = |s: &Scene| shot_file(dir, s, [1920, 1080]).unwrap();
+        let kept = file(&scene);
+        assert_eq!(kept, file(&scene.clone()), "the same scene, the same file");
+        assert!(kept.starts_with(dir) && kept.extension().is_some_and(|e| e == "png"));
+        // a value, a mapping, a wire, a shader's code, the canvas: each is another picture
+        let mut changed = vec![scene.clone(); 4];
+        changed[0].nodes[0].params.insert("scale".into(), [3.0, 0.0, 0.0, 0.0]);
+        changed[1].nodes[0].mappings.push(velo_core::Mapping { param: "scale".into(), source: "kick".into(), amount: 0.5, attack_ms: 5.0, release_ms: 150.0, invert: false });
+        changed[2].edges.push(velo_core::Edge { from: ("n_a".into(), 0), to: ("n_b".into(), 0) });
+        changed[3].nodes[0].code = Some("fn main() {}".into());
+        let mut files: Vec<PathBuf> = changed.iter().map(file).chain([kept, shot_file(dir, &scene, [1280, 720]).unwrap()]).collect();
+        files.sort();
+        files.dedup();
+        assert_eq!(files.len(), 6, "{files:?}");
+    }
+
+    #[test]
+    fn kept_pictures_come_back_and_the_least_recently_used_go() {
+        use velo_engine::runtime::THUMB;
+        let dir = std::env::temp_dir().join(format!("velo-shots-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = |name: &str| dir.join(format!("{name}.png"));
+        let picture = |shade: u8| vec![shade; (THUMB[0] * THUMB[1] * 4) as usize];
+        // used a while ago, each a little later than the one before
+        let aged = |name: &str, seconds: u64| std::fs::File::options().write(true).open(file(name)).unwrap().set_modified(SystemTime::now() - Duration::from_secs(seconds)).unwrap();
+        assert!(load_shot(&file("a")).is_none(), "nothing kept yet");
+        keep_shot(&file("a"), &picture(10), 2);
+        aged("a", 300);
+        keep_shot(&file("b"), &picture(20), 2);
+        aged("b", 200);
+        // read: the picture as it was kept, and now the last used
+        let a = load_shot(&file("a")).unwrap();
+        assert_eq!((a.size, a.pixels[0].to_array()), ([THUMB[0] as usize, THUMB[1] as usize], [10; 4]));
+        // a third is one too many: the one not used for longest goes
+        keep_shot(&file("c"), &picture(30), 2);
+        assert_eq!([file("a").exists(), file("b").exists(), file("c").exists()], [true, false, true]);
+        // what isn't a card's picture is no picture, and nothing else in the folder is touched
+        std::fs::write(file("d"), b"not a png").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"").unwrap();
+        assert!(load_shot(&file("d")).is_none());
+        keep_shot(&file("e"), &picture(40), 1);
+        assert!(file("e").exists() && dir.join("notes.txt").exists() && !file("a").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn an_audio_in_starts_with_the_analyzers_defaults() {

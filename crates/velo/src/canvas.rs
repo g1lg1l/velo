@@ -87,6 +87,10 @@ pub fn id() -> Id {
     Id::unique("node-canvas")
 }
 
+/// What a fit depends on beside the nodes: the canvas' uncovered part, the card floating over
+/// it, the canvas' center.
+type FitRoom = (Rect, Option<Rect>, Pos2);
+
 /// Where the canvas looks: the plane's origin sits `pan` from the canvas' center, scaled by
 /// `zoom`. Centered, so panels opening and closing leave the graph where it was.
 #[derive(Clone, Copy, PartialEq)]
@@ -269,6 +273,10 @@ pub struct State {
     trails: HashMap<(String, u8), VecDeque<f32>>,
     trail_at: f64,
     cameras: HashMap<String, Camera>,
+    /// The scenes whose view is still the fit they were given, each with that view and the
+    /// room it was fitted to (the canvas' uncovered part, the card over it, its center): fitted
+    /// again when the room changes, until the view is panned or zoomed.
+    fitted: HashMap<String, (Camera, FitRoom)>,
     anim: Option<(Camera, Camera, f64)>,
     /// Where a wheel or pinch zoom is headed, and the screen point it zooms about.
     goal: Option<(f32, Pos2)>,
@@ -1488,6 +1496,7 @@ impl Settings<'_> {
             velo_core::BEAT_KICK => tr!("trigger × in · silent under {} · falls in {}", two(v("threshold")), time(v("release_ms"))),
             velo_core::SMOOTH => tr!("{} · up in {} · down in {}", named("mode"), time(v("rise_ms")), time(v("fall_ms"))),
             velo_core::MATH => ["a + b", "a − b", "a × b", "min(a, b)", "max(a, b)", "(a + b) / 2", "|a − b|"].get(v("operation").round().max(0.0) as usize).map(|e| e.replace('b', &b)).unwrap_or_default(),
+            velo_core::GAIN => tr!("in × {}", format!("{:.1}", v("gain"))),
             velo_core::COMPARE => tr!("1 while a is {} {}", named("operation").to_lowercase(), b),
             velo_core::ENVELOPE => tr!("On a hit over {}: up in {}, down in {}", two(v("threshold")), time(v("attack_ms")), time(v("release_ms"))),
             velo_core::COUNTER => tr!("A step on each hit, through {} · {}", v("steps"), named("mode")),
@@ -1694,7 +1703,19 @@ impl App {
         // where fitting puts the nodes: clear of the preview card and of the toolbar along the
         // bottom (its pill and the gap under it)
         let free = uncovered(view.with_max_y(view.bottom() - TOOLBAR_ROOM), st.covered, bounds(scene, None));
-        let mut cam = st.cameras.get(&scene.id).copied().unwrap_or_else(|| fit(bounds(scene, None), center, free, 1.0));
+        // a view nobody chose is the fit, and stays one: fitted once and kept, the nodes were
+        // left off screen when the canvas changed size right after (the panels laying out, the
+        // OS clamping the window at open). A pan or a zoom makes the view the user's: it differs
+        // from the fit it was given, and is kept as it is from then on
+        let room: FitRoom = (view, st.covered, center);
+        let fitted = st.fitted.get(&scene.id).copied();
+        let kept = st.cameras.get(&scene.id).copied().filter(|cam| fitted.is_none_or(|(fit, to)| *cam != fit || to == room));
+        let mut cam = kept.unwrap_or_else(|| fit(bounds(scene, None), center, free, 1.0));
+        if kept.is_none() {
+            st.fitted.insert(scene.id.clone(), (cam, room));
+        } else if fitted.is_some_and(|(fit, _)| cam != fit) {
+            st.fitted.remove(&scene.id);
+        }
         let min = min_zoom(scene, view);
         if let Some(to) = st.zoom_to.take() {
             // keys and the zoom menu ease there; the pointer if it's on the canvas, else the view's center
@@ -4145,6 +4166,7 @@ fn node_icon(id: &str) -> &'static str {
         v::PROBE => icons::CROSSHAIR,
         v::REMAP => icons::ARROWS_DOWN_UP,
         v::MATH => icons::MATH_OPERATIONS,
+        v::GAIN => icons::GAUGE,
         v::ENVELOPE => icons::WAVE_TRIANGLE,
         v::COUNTER => icons::HASH,
         v::SEQUENCER => icons::DOTS_NINE,
@@ -4225,6 +4247,7 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::TIME => tr!("A ramp or a wave over a number of seconds."),
         velo_core::REMAP => tr!("Brings a signal into the range you want, smoothed."),
         velo_core::MATH => tr!("Two signals made one: added, multiplied, the larger…"),
+        velo_core::GAIN => tr!("Makes what comes in stronger: up to 16 times, never past 1."),
         velo_core::ENVELOPE => tr!("A rise and a fall on each hit."),
         velo_core::COUNTER => tr!("Steps on each hit, up, down or at random."),
         velo_core::SEQUENCER => tr!("A value a step on each beat."),
@@ -4510,6 +4533,60 @@ mod tests {
         fn wires(&self) -> Vec<(String, String, u8)> {
             self.scene().edges.iter().map(|e| (e.from.0.clone(), e.to.0.clone(), e.to.1)).collect()
         }
+    }
+
+    #[test]
+    fn a_fitted_view_fits_again_when_the_canvas_changes_size_until_it_is_panned() {
+        let mut h = Harness::new();
+        let scene = h.scene().id.clone();
+        // a frame of a window of another size (Harness::frame's is always SCREEN)
+        fn frame(h: &mut Harness, screen: Vec2, events: Vec<Event>) {
+            h.time += 1.0 / 60.0;
+            let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, screen)), time: Some(h.time), events, ..Default::default() };
+            let (ctx, app) = (&h.ctx, &mut h.app);
+            ctx.run_ui(input, |ui| app.draw(ui)).drop_without_applying_deltas();
+        }
+        // every node inside the canvas of a window that size
+        let shown = |h: &Harness, screen: Vec2| {
+            let canvas = Rect::from_min_max(pos2(0.0, Theme::dark().bar_h), pos2(screen.x, screen.y - 24.0));
+            h.scene().nodes.iter().all(|n| canvas.contains_rect(node_rect(&h.cam(), canvas.center(), n.pos)))
+        };
+        let small = vec2(560.0, 400.0);
+        // a scene just opened has no view of its own: it's fitted
+        h.app.canvas.cameras.remove(&scene);
+        for _ in 0..3 {
+            frame(&mut h, SCREEN, Vec::new());
+        }
+        let wide = h.cam();
+        assert!(shown(&h, SCREEN));
+        // the window shrinks right after: fitted again, where the nodes had been left off it
+        for _ in 0..3 {
+            frame(&mut h, small, Vec::new());
+        }
+        assert!(h.cam() != wide && shown(&h, small), "fitted to the smaller canvas");
+        assert!(!{
+            let canvas = Rect::from_min_max(pos2(0.0, Theme::dark().bar_h), pos2(small.x, small.y - 24.0));
+            h.scene().nodes.iter().all(|n| canvas.contains_rect(node_rect(&wide, canvas.center(), n.pos)))
+        });
+        // moving a node is no reason to: the view stays under the hand
+        let fitted = h.cam();
+        let id = h.id(0);
+        h.app.run("node.move", json!({ "node": id, "pos": [-900.0, -100.0] }));
+        frame(&mut h, small, Vec::new());
+        assert!(h.cam() == fitted && !shown(&h, small));
+        // panned, the view is the user's: the window growing back leaves it alone
+        let at = Rect::from_min_size(Pos2::ZERO, small).center();
+        frame(&mut h, small, vec![Event::PointerMoved(at)]);
+        frame(&mut h, small, vec![Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -40.0), phase: egui::TouchPhase::Move, source: egui::MouseWheelSource::Trackpad, modifiers: NONE }]);
+        for _ in 0..30 {
+            frame(&mut h, small, Vec::new());
+        }
+        let panned = h.cam();
+        assert!(panned.pan.y < fitted.pan.y - 10.0, "scrolled: {:?} → {:?}", fitted.pan, panned.pan);
+        for _ in 0..3 {
+            frame(&mut h, SCREEN, Vec::new());
+        }
+        assert!(h.cam() == panned, "a panned view is kept");
     }
 
     #[test]

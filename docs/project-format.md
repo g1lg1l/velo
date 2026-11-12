@@ -28,7 +28,7 @@ Show.velo            a zip (a bundle is the same as a folder)
 - The shader files (the bundle's, or the editing folder's) are checked twice a second: a save from an outside editor comes in as one undoable `node.set_code`. "Open in editor" in the inspector opens the file in the editor set in Preferences → Code.
 - Open dialogs that can't pick a folder open a bundle through its `project.ron`; the macOS app declares `.velo` a package, so Finder shows a bundle as one file.
 
-Outside the project, in Velo's data folder (the OS app-data folder, or `VELO_DATA` when set): preferences, the autosave and the crash lock, the AI chats and their pictures, the agents' server port and secret.
+Outside the project, in Velo's data folder (the OS app-data folder, or `VELO_DATA` when set): preferences, the autosave and the crash lock, the AI chats and their pictures, the agents' server port and secret, the scene cards' pictures (`shots/`, safe to delete: they're made again).
 
 ## 3. `project.ron`
 

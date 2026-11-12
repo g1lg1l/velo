@@ -103,6 +103,7 @@ Signals and logic nodes turn numbers into other numbers. A few to start with:
 - **Envelope**: a rise and a fall on each hit.
 - **Remap**: brings a signal into the range you want, smoothed.
 - **Math**: two signals made one: added, multiplied, the larger.
+- **Gain**: what comes in made stronger, up to 16 times and never past 1: for a signal too faint to move much.
 - **Probe**: a picture read as a number (its brightness or a channel, over all of it, a part or a point), so a picture can move any value.
 
 Each one's line in the node menu says what it does.
