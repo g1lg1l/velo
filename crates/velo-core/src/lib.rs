@@ -109,7 +109,7 @@ pub const CANVAS: [ParamInfo; 3] = [canvas_param("Width", (16.0, 8192.0, 1920.0)
 // ---------------------------------------------------------------------------
 
 /// The project file format: bumped, with a migration, whenever saved files change shape.
-pub const FORMAT: u32 = 4;
+pub const FORMAT: u32 = 5;
 
 /// Everything that is saved and undoable.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -134,6 +134,8 @@ impl Project {
     /// A file of an older format brought to this one. 1 → 2: a mapping of a shared source
     /// ("kick") comes from the scene's Audio In or Beat node, added where there's none. 2 → 3:
     /// a Grid isn't an output any more, so where one went out it now feeds the Output node.
+    /// 4 → 5: nothing to change. A binding's control may now be a key, which a format-4 Velo
+    /// has no name for: it refuses the file (by its number, or at the key) and never misreads it.
     pub fn migrate(&mut self) {
         // a hand-edited canvas inside what the GPU can draw
         let c = &mut self.canvas;
@@ -337,11 +339,26 @@ pub struct Binding {
     pub behavior: Behavior,
 }
 
-/// Which physical control: for now a MIDI message on a port (by name; `None` is any port, so a
-/// project moves between machines) and a channel (0..15).
+/// Which physical control: a MIDI message on a port (by name; `None` is any port, so a
+/// project moves between machines) and a channel (0..15), or a key of the computer's keyboard.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Control {
-    Midi { port: Option<String>, channel: u8, msg: MidiMsg },
+    Midi {
+        port: Option<String>,
+        channel: u8,
+        msg: MidiMsg,
+    },
+    /// A key pressed alone, by the name on it: "A" to "Z", "0" to "9", "F1" to "F12". It only
+    /// presses, so its behavior is Trigger or Toggle.
+    Key(String),
+}
+
+impl Control {
+    /// Whether `name` is a key a binding can have. Letters, digits and function keys only: the
+    /// rest (Esc, Space, Tab, Enter, the arrows, Delete) moves around the interface.
+    pub fn key_name(name: &str) -> bool {
+        matches!(name.as_bytes(), [b'A'..=b'Z' | b'0'..=b'9'] | [b'F', b'1'..=b'9'] | [b'F', b'1', b'0'..=b'2'])
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

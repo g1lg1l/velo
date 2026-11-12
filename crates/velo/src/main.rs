@@ -868,7 +868,7 @@ impl App {
         let shown = self.session.active().is_some();
         // the keymap; exact modifiers, so Ctrl+K never fires for Ctrl+Shift+K
         let bindings = self.settings.keymap.bindings();
-        let mut fired = Vec::new();
+        let (mut fired, mut keys) = (Vec::new(), Vec::new());
         // Space is shared (docs/product.md §7.6): held with a drag it pans the canvas; a tap
         // fires its binding when it's let go
         const TAP: f64 = 0.35;
@@ -889,6 +889,12 @@ impl App {
                     } else if !*pressed {
                         return true;
                     }
+                    // the project's keys come before the keymap's (docs/control.md §3): a key a
+                    // control waits to learn, or one a binding has, runs no command
+                    if modifiers.is_none() && self.takes_key(key) {
+                        keys.push(key);
+                        return false;
+                    }
                     let ours = |id: &str, k: &egui::KeyboardShortcut| !id.starts_with("canvas.") || canvas || (shown && !k.modifiers.is_none());
                     let found = bindings.iter().find(|(id, k)| keymap::fires(key, *modifiers, k) && ours(id, k));
                     match found {
@@ -903,6 +909,9 @@ impl App {
             })
         });
         self.space = space;
+        for key in keys {
+            self.key_press(key, now);
+        }
         for id in fired {
             self.command(id);
         }
@@ -3008,7 +3017,7 @@ impl App {
         }
         if let Some(target) = learn {
             if !self.learn.on {
-                self.say(Tone::Action, tr!("Move a knob or hit a pad on your controller (Esc cancels)"));
+                self.say(Tone::Action, tr!("Move a knob or hit a pad on your controller, or press a key (Esc cancels)"));
             }
             self.learn.wait(target);
         }
@@ -3303,9 +3312,9 @@ impl App {
         self.splash_ui(&ctx);
         // learn mode says what it waits for, over whatever the mouse is on
         if let Some(target) = &self.learn.target {
-            self.info_next = tr!("Waiting for {}: move a knob or hit a pad on your controller · Esc cancels", self.target_name(target));
+            self.info_next = tr!("Waiting for {}: move a knob, hit a pad or press a key · Esc cancels", self.target_name(target));
         } else if self.learn.on {
-            self.info_next = tr!("MIDI learn: click a control, then move a knob or hit a pad · L or Esc leaves").into();
+            self.info_next = tr!("MIDI learn: click a control, then move a knob, hit a pad or press a key · L or Esc leaves").into();
         }
         if let Some(board) = &mut self.specimen
             && !board.show(&ctx, &t, self.cpu.stats(), self.cpu.layout())
@@ -3463,7 +3472,7 @@ impl eframe::App for App {
             if !SHOWN.swap(true, Relaxed) {
                 match tone.as_str() {
                     "error" => self.say(Tone::Error, tr!("A node couldn't be built: {}", "line 12: no identifier `tim` (did you mean `time`?)")),
-                    "action" => self.say(Tone::Action, tr!("Move a knob or hit a pad on your controller (Esc cancels)")),
+                    "action" => self.say(Tone::Action, tr!("Move a knob or hit a pad on your controller, or press a key (Esc cancels)")),
                     _ => self.say(Tone::Done, tr!("Saved {}", "Friday set.velo")),
                 }
             }

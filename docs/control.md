@@ -15,7 +15,7 @@ MIDI clock, Ableton Link -------------------------------------------------------
 - Bindings act through the same operators as the mouse, so undo and saving work as usual. A controller sweep is one undo step; a second's pause starts the next.
 - Launches, blackout, freeze and taps are engine commands. A tap carries the time it arrived, so tap tempo isn't late.
 - Values reach the render thread with the next sync: at most one UI frame (16 ms at 60 Hz) after they arrived. A UI stalled by a dialog holds control meanwhile; the output keeps running.
-- Keys are the keymap's (product.md §7.6), not bindings.
+- A key of the computer's keyboard is a control too (§2). It comes with the frame's other key events, on the UI thread, and presses its target as a pad does. A key no binding has is the keymap's (product.md §7.6).
 
 ## 2. Bindings
 
@@ -24,7 +24,8 @@ A binding is project data, the same in every scene:
 ```rust
 pub struct Binding { pub control: Control, pub target: Target, pub behavior: Behavior }
 
-pub enum Control  { Midi { port: Option<String>, channel: u8, msg: MidiMsg } } // port None: any port
+pub enum Control  { Midi { port: Option<String>, channel: u8, msg: MidiMsg },  // port None: any port
+                    Key(String) }                                              // "A".."Z", "0".."9", "F1".."F12"
 pub enum MidiMsg  { Cc(u8), Note(u8), ProgramChange, Cc14(u8) }
 pub enum Target   { Macro(u8), Param { node, param }, LaunchScene(usize), LaunchSelected,
                     Variation(usize), Blackout, Freeze, TapTempo }
@@ -38,10 +39,17 @@ pub enum Takeover { Jump, Pickup }
 |---|---|---|
 | Absolute | knob, fader | Sets the value along its travel. A 14-bit pair (CC n coarse, CC n + 32 fine, n under 32) is one fine control, learned whole. |
 | Relative | endless encoder | Turns the value by `step` of its travel a click (1/128 when learned). Three dialects: two's complement (1 / 127), binary offset (65 / 63), sign-magnitude (1 / 65). A frame's clicks add up. |
-| Trigger | pad, key | Fires on a press: a note-on, a CC rising past 64, a program change. |
+| Trigger | pad, key | Fires on a press: a note-on, a CC rising past 64, a program change, a key going down. |
 | Toggle | pad, key | Each press flips it. |
 
 On a press, continuous targets (a macro, a parameter, blackout, freeze) flip between their ends and the rest fire. A latching pad (127 on, 0 off) flips only on its 127. A **program change** launches scene `index + program`: `LaunchScene(0)`, what learn makes, maps program 0 to the first scene.
+
+**Keys.** `Control::Key` is a key of the computer's keyboard pressed alone, by the name on it: a letter, a digit or `F1` to `F12`. It has no travel, so `binding.add` takes it with Trigger or Toggle only, on any target; as JSON (the agents' bridge, OSC's `/velo/op/binding.add`) it is `{"Key": "4"}`.
+
+- **The project comes first.** A key a binding has does what the binding says and runs no keymap command: a show can take `1` to `0` for its macros. Without a binding the key is the keymap's, as before, and it is again once the binding is removed.
+- **Alone, and once.** A key held with Shift, Ctrl, Alt or Cmd is never a binding (those are the app's chords), nor is a held key's auto-repeat or its release.
+- **Never while typing.** As for the stage keys, nothing fires while a text field or the code editor has the keyboard, or a dialog, the command palette or the node menu is open.
+- **Which keys.** Not Esc, Space, Tab, Enter, the arrows or Delete: they move around the interface. The key is the one the keymap sees (the letter or digit the layout types), so a binding and a command on the same key are always about the same key.
 
 **Soft takeover.** After a scene launch a physical knob at 20 % may drive a macro now at 70 %. `Pickup` moves the value only once the knob is within 1.5 steps of it or has crossed it since its last message; a knob that set the value last time is on it, so it keeps driving. `Jump` applies at once. Learn makes macro knobs Pickup and parameter knobs Jump.
 
@@ -52,10 +60,12 @@ Not yet: Momentary, Scale takeover, a range or curve on a binding, pitch bend, M
 ## 3. MIDI learn
 
 1. Press `L` or click the MIDI chip for **learn mode**: macro knobs, parameter sliders, scene cards, variation buttons, the preview's Launch, the tempo, Freeze and Blackout get an accent outline. Click one: it is picked (it doesn't act) and breathes while it waits.
-2. Move a knob or hit a pad. The first meaningful message binds it: a CC 2 steps from where it was, a note-on, a program change, or a few small steps around 0 or 64 (an endless encoder, learned as Relative). That message does nothing else.
-3. The control shows a badge: `CC 21`, `Note C1` (60 is C3, as in Ableton) or `Program`.
+2. Move a knob, hit a pad or press a key. The first meaningful message binds it: a CC 2 steps from where it was, a note-on, a program change, or a few small steps around 0 or 64 (an endless encoder, learned as Relative). That message does nothing else.
+3. The control shows a badge: `CC 21`, `Note C1` (60 is C3, as in Ableton), `Program` or `Key 4`.
 
-Right-click a control → **Learn MIDI** binds that one without learn mode; **Forget** removes its binding. `Esc` leaves. The MIDI chip's menu lists the open ports and every binding (control, channel, target), switches a CC binding between knob and the three encoder dialects, makes one answer any port, or removes it.
+**Keys in learn.** While a control waits, a letter, a digit or `F1` to `F12` pressed alone binds it (Toggle on a macro, a parameter, blackout and freeze; Trigger on the rest) and runs no command, whatever the keymap has on that key. Two keys are never learned: `Esc`, which leaves, and the key of the keymap's MIDI learn command (`L`), which in learn mode always turns it off, so there is a way out even from a project that bound `L` with the operator. Chords are not learned.
+
+Right-click a control → **Learn MIDI** binds that one without learn mode; **Forget** removes its binding. `Esc` leaves. The MIDI chip's menu lists the open ports and every binding (control, channel, target), switches a CC binding between knob and the three encoder dialects, makes one answer any port, or removes it; a key's row has its name, its target and Remove.
 
 MIDI runs on a `velo midi` thread that rescans the ports every second: a new port connects, a gone one is dropped, one another app holds is retried. Clock, sysex and active sensing are not bound.
 

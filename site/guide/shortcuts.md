@@ -19,6 +19,8 @@ The keys you play with.
 | <kbd>P</kbd> | Show or hide the preview |
 | <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>T</kbd> | Test pattern |
 
+A project can give a letter, a digit or a function key another job, such as flipping a macro: see [Keys as pads](./midi-osc#keys-as-pads). A key bound that way does it instead of its command above, in that project.
+
 ## Nodes
 
 | Key | Does |

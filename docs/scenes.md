@@ -71,9 +71,9 @@ pub struct Launch { pub transition: Transition, pub duration: f32, pub quantize:
 
 | Gesture | Bindings |
 |---|---|
-| Launch scene n | Keys `1` to `9`; right-click a card, Launch; a MIDI note, CC or Program Change |
-| Launch the selected scene | A tap of `Space` (a hold with a drag pans the canvas); the preview card's Launch; MIDI |
-| Recall a variation | Click it on the deck; MIDI |
+| Launch scene n | Keys `1` to `9`; right-click a card, Launch; a MIDI note, CC or Program Change; a key bound to it |
+| Launch the selected scene | A tap of `Space` (a hold with a drag pans the canvas); the preview card's Launch; MIDI; a key bound to it |
+| Recall a variation | Click it on the deck; MIDI; a key bound to it |
 | Morph to a variation | Shift+click it (one bar) |
 
 Controllers drive the scene on the output, not the selected one: macros and variations from MIDI go to the live scene. After a launch a knob that no longer matches its macro is in **pickup** until it crosses the value (or jumps, per binding); see [control.md](control.md) §2.

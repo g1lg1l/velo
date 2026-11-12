@@ -10,7 +10,7 @@ Velo finds MIDI controllers by itself: a controller plugged in while it runs con
 
 1. Press <kbd>L</kbd>, or click the **MIDI** chip in the top bar. Every control you can learn gets an outline.
 2. Click a control: a macro knob, a slider in the inspector, a scene card, a variation, the preview's **Launch**, the **Blackout** chip or the tempo chip. It breathes while it waits.
-3. Move a knob or hit a pad. Bound: the control shows a badge such as `CC 21` or `Note C1`.
+3. Move a knob, hit a pad, or press a key on the computer's keyboard. Bound: the control shows a badge such as `CC 21`, `Note C1` or `Key 4`.
 4. Click the next control, move the next knob. <kbd>L</kbd> or <kbd>Esc</kbd> leaves.
 
 For a single control, right-click it and choose **Learn MIDI**. **Forget** on the same menu removes its binding.
@@ -40,7 +40,7 @@ Endless encoders work too. Learn spots the two common kinds; the MIDI menu switc
 
 ## The bindings list
 
-Click the arrow beside the **MIDI** chip: it lists the open ports and every binding, with its control, channel and target. A binding learned on one port can be made to listen on any port, or removed there.
+Click the arrow beside the **MIDI** chip: it lists the open ports and every binding, with its control, channel and target. A binding learned on one port can be made to listen on any port, or removed there. Keys are in the same list, by their name.
 
 Bindings are saved with the project, by port name. Unplug a controller and its bindings stay; plug it back and they work again.
 
@@ -67,3 +67,12 @@ Turn OSC on in **Preferences → OSC**. It shows this computer's address and the
 ## Keys
 
 Every command has a key on the computer's keyboard too. The stage keys (scenes, blackout, freeze, tap, learn) are listed in [Shortcuts](./shortcuts).
+
+### Keys as pads
+
+No controller at hand? A key works as a pad. In learn mode, click a control and press a letter, a digit or <kbd>F1</kbd> to <kbd>F12</kbd>, alone: from then on that key flips the macro or the value between its two ends, launches the scene, recalls the variation, taps the tempo, or turns blackout or freeze on and off.
+
+- A key you bind does that **instead of** its usual command, in this project only: bind <kbd>4</kbd> to a macro and <kbd>4</kbd> no longer launches scene 4 here. Remove the binding (**Forget**, or the bindings list) and the key is back to its command.
+- <kbd>Esc</kbd> and <kbd>L</kbd> can't be learned: they leave learn mode. Nor can <kbd>Space</kbd>, <kbd>Tab</kbd>, <kbd>Enter</kbd>, the arrows, <kbd>Delete</kbd>, or a key held with <kbd>Shift</kbd>, <kbd>Ctrl</kbd>, <kbd>Alt</kbd> or <kbd>Cmd</kbd>.
+- Nothing fires while you type in a field or the code editor, or while a dialog is open.
+- Key bindings are saved with the project, like the others. A project saved by this version doesn't open in an older Velo: update that one first.
