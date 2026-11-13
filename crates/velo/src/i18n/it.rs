@@ -1664,4 +1664,10 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Linger", "Persistenza"),
     ("Length", "Lunghezza"),
     ("Colored", "A colori"),
+    ("Blocks", "Blocchi"),
+    ("Shuffle", "Rimescola"),
+    ("Cracks", "Crepe"),
+    ("Shift", "Spostamento"),
+    ("Lines", "Linee"),
+    ("Trail", "Scia"),
 ];

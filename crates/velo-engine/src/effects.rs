@@ -1,6 +1,6 @@
 //! Input effects for the Shader node.
 
-pub const EFFECT_PRESETS: [(&str, &str); 31] = [
+pub const EFFECT_PRESETS: [(&str, &str); 36] = [
     ("glitch", include_str!("../shaders/effects/glitch.wgsl")),
     ("vhs", include_str!("../shaders/effects/vhs.wgsl")),
     ("pixelate", include_str!("../shaders/effects/pixelate.wgsl")),
@@ -32,6 +32,11 @@ pub const EFFECT_PRESETS: [(&str, &str); 31] = [
     ("life", include_str!("../shaders/effects/life.wgsl")),
     ("pixel-sort", include_str!("../shaders/effects/pixel-sort.wgsl")),
     ("solarize", include_str!("../shaders/effects/solarize.wgsl")),
+    ("scramble", include_str!("../shaders/effects/scramble.wgsl")),
+    ("rekt", include_str!("../shaders/effects/rekt.wgsl")),
+    ("rolling", include_str!("../shaders/effects/rolling.wgsl")),
+    ("crack", include_str!("../shaders/effects/crack.wgsl")),
+    ("solitaire", include_str!("../shaders/effects/solitaire.wgsl")),
 ];
 
 #[cfg(test)]
