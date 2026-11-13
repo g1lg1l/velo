@@ -99,7 +99,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 <table>
 <tr>
 <td width="50%"><img src="docs/screenshots/patch.png" alt="Signal cards on the canvas: the Audio In with its cassette and a graph per band, wired into a Kick (trigger times in, silent under 0.20), a Pulse envelope, an Energy follower, a sequencer stepping every 4 bars and a counter; each card says what it does in a line, draws what comes in in grey and what goes out in green on a grid, and names its inputs with their values"><br><sub><b>Signals.</b> Every card says what it does and draws what goes in and out.</sub></td>
-<td width="50%"><img src="docs/screenshots/node-menu.png" alt="The node menu: a search box, a tab per group (All, Generators, Effects, Composite, Control, Output, Signals, Logic) and each node with its icon and a line on what it does"><br><sub><b>The node menu.</b> 63 nodes, one key away.</sub></td>
+<td width="50%"><img src="docs/screenshots/node-menu.png" alt="The node menu: a search box, a tab per group (All, Generators, Effects, Composite, Control, Output, Signals, Logic) and each node with its icon and a line on what it does"><br><sub><b>The node menu.</b> 64 nodes, one key away.</sub></td>
 </tr>
 <tr>
 <td width="50%"><img src="docs/screenshots/mapping.png" alt="A mapping's popover: Audio In's kick moving Kaleido's zoom, with its amount, an envelope drawing the attack and release, and an invert key"><br><sub><b>A mapping.</b> The kick moves Kaleido's zoom, with its own envelope.</sub></td>
