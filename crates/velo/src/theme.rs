@@ -1,7 +1,7 @@
 //! Theme tokens: the only place colors, fonts and sizes are defined.
 //! From Ravune (bd10814), trimmed for Velo.
 //! CI fails if `Color32::` shows up in any other file (CONTRIBUTING.md, UI rules).
-//! Themes are data: three built in, the rest imported from `.velo-theme` files (RON, colors as
+//! Themes are data: three built in plus Velo Stage (a switch of its own), the rest imported from `.velo-theme` files (RON, colors as
 //! "#rrggbb"). A file missing a token takes Velo Dark's.
 
 use std::sync::Arc;
@@ -104,6 +104,10 @@ pub struct Theme {
     pub text_mono: f32,
     /// Seconds for hover / selection / tab transitions; 0 turns motion off.
     pub motion: f32,
+    /// How bright the pictures in the UI (previews, scene cards, node viewers) and the fixed
+    /// colors that aren't tokens (the TE caps, the toast tones) are drawn, 1 as they are. The
+    /// output itself is never dimmed.
+    pub brightness: f32,
 }
 
 impl Default for Theme {
@@ -135,7 +139,8 @@ impl Theme {
     /// A toast's message: white at half strength.
     pub const TOAST_TEXT: Color32 = Color32::from_rgba_premultiplied(128, 128, 128, 128);
 
-    /// The built-in themes, Velo Dark first.
+    /// The built-in themes, Velo Dark first. Velo Stage isn't among them: it has a switch of
+    /// its own, so it can be flipped on before a set and off again to the theme picked here.
     pub fn builtins() -> [Theme; 3] {
         [Self::dark(), Self::oled(), Self::light()]
     }
@@ -180,6 +185,7 @@ impl Theme {
             text_lg: 15.0,
             text_mono: 12.0,
             motion: 0.16,
+            brightness: 1.0,
         }
     }
 
@@ -227,6 +233,51 @@ impl Theme {
             cat_signal: rgb(0x65a30d),
             ..Self::dark()
         }
+    }
+
+    /// For a dark club: near-black panels, dim warm greys for text (never white), one amber
+    /// accent (amber and red spoil night vision least), warnings yellower and errors redder so
+    /// LIVE and danger stay apart, and the pictures in the UI at 65%, so the laptop doesn't
+    /// light up the performer's face.
+    pub fn stage() -> Self {
+        Self {
+            name: "Velo Stage".into(),
+            bg_base: rgb(0x050505),
+            bg_panel: rgb(0x080808),
+            bg_card: rgb(0x0e0d0c),
+            bg_control: rgb(0x1a1817),
+            bg_field: rgb(0x030303),
+            line: rgb(0x1c1a19),
+            // 4.5:1 for small text on the cards, the least the muted grey can be
+            fg_text: rgb(0x9c968f),
+            fg_muted: rgb(0x837d77),
+            accent: rgb(0xc27a38),
+            select: rgb(0xa8a199),
+            warn: rgb(0xb3a03c),
+            error: rgb(0xcc4a40),
+            toast: rgb(0x000000),
+            // Velo Dark's categories, darker and greyer
+            cat_generator: rgb(0x7e6eaa),
+            cat_effect: rgb(0x4a9a7a),
+            cat_composite: rgb(0xa08a48),
+            cat_control: rgb(0x5a7fa8),
+            cat_output: rgb(0xa8628a),
+            cat_signal: rgb(0x82a048),
+            brightness: 0.65,
+            ..Self::dark()
+        }
+    }
+
+    /// The painter's tint for a picture in the UI, at the theme's brightness.
+    pub fn picture_tint(&self) -> Color32 {
+        Color32::from_gray((255.0 * self.brightness.clamp(0.0, 1.0)).round() as u8)
+    }
+
+    /// One of the fixed colors (a TE cap, a toast tone) at the theme's brightness.
+    pub fn lit(&self, c: Color32) -> Color32 {
+        let k = self.brightness.clamp(0.0, 1.0);
+        let dim = |v: u8| (f32::from(v) * k).round() as u8;
+        Color32::from_rgba_premultiplied(dim(c.r()), dim(c.g()), dim(c.b()), c.a())
     }
 
     /// A few colors that show what a theme looks like (theme lists).
@@ -350,7 +401,7 @@ mod tests {
 
     #[test]
     fn themes_round_trip_through_files() {
-        for theme in Theme::builtins() {
+        for theme in Theme::builtins().into_iter().chain([Theme::stage()]) {
             let text = ron::ser::to_string_pretty(&theme, ron::ser::PrettyConfig::default()).unwrap();
             assert!(text.contains("accent: \"#"), "colors are written as hex");
             assert!(ron::from_str::<Theme>(&text).unwrap() == theme, "{}", theme.name);
@@ -360,6 +411,55 @@ mod tests {
         assert_eq!(partial.accent, rgb(0x00ff00));
         assert_eq!(partial.bg_base, Theme::dark().bg_base);
         assert!(ron::from_str::<Theme>(r#"(accent: "green")"#).is_err());
+    }
+
+    /// WCAG's contrast ratio between two colors (1 to 21).
+    fn contrast(a: Color32, b: Color32) -> f32 {
+        let lum = |c: Color32| {
+            let lin = |v: u8| {
+                let v = v as f32 / 255.0;
+                if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            };
+            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+        };
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn every_theme_keeps_its_text_readable() {
+        for t in Theme::builtins().into_iter().chain([Theme::stage()]) {
+            for bg in [t.bg_base, t.bg_panel, t.bg_card, t.bg_control, t.bg_field] {
+                assert!(contrast(t.fg_text, bg) >= 4.5, "{}: text on {bg:?}", t.name);
+            }
+            for bg in [t.bg_panel, t.bg_card] {
+                assert!(contrast(t.fg_muted, bg) >= 4.5, "{}: muted text on {bg:?}", t.name);
+            }
+            // state colors and the focus ring stand out from the cards
+            for (what, c) in [("accent", t.accent), ("warn", t.warn), ("error", t.error), ("select", t.select)] {
+                assert!(contrast(c, t.bg_card) >= 3.0, "{}: {what}", t.name);
+            }
+        }
+    }
+
+    #[test]
+    fn the_stage_theme_stays_dim() {
+        let (stage, dark) = (Theme::stage(), Theme::dark());
+        assert!(contrast(stage.fg_text, dark.fg_text) > 1.5, "text dimmer than Velo Dark's");
+        for c in [stage.bg_base, stage.bg_panel, stage.bg_card, stage.bg_field] {
+            assert!(c.r().max(c.g()).max(c.b()) <= 0x10, "near black: {c:?}");
+        }
+        for c in [stage.fg_text, stage.fg_muted, stage.select, stage.accent, stage.warn, stage.error] {
+            assert!(c.r().max(c.g()).max(c.b()) <= 0xd0, "nothing near white: {c:?}");
+        }
+        // the live accent, warnings and errors are three different hues
+        let hue = |c: Color32| egui::ecolor::Hsva::from(c).h;
+        let (a, w, e) = (hue(stage.accent), hue(stage.warn), hue(stage.error));
+        assert!((w - a).abs() > 0.04 && (a - e).abs() > 0.04, "{a} {w} {e}");
+        assert!(stage.brightness < 1.0 && dark.brightness == 1.0);
+        assert_eq!(stage.picture_tint(), Color32::from_gray(166));
+        assert_eq!(stage.lit(Color32::WHITE), Color32::from_gray(166));
+        assert_eq!(dark.lit(TE_BLUE), TE_BLUE);
     }
 
     #[test]

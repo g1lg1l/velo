@@ -10,7 +10,6 @@ The milestones that got it here, named in some code comments: M1 First Light (a 
 
 - **Trust on install:** a signed Windows installer and a signed, notarized macOS app.
 - **Lessons** for the first five minutes, in English and Italian.
-- **A stage theme:** a dimmed UI that doesn't light up the performer's face.
 - **Show control:** a setlist or cue list; more than one output, each with crop and rotation.
 - **Controllers:** profiles for common controllers, MIDI out and LED feedback; OSC out.
 - **Inputs:** one app's sound on Windows (macOS has it), several audio inputs at once, a channel pair from a multichannel interface, screen capture; HEIC stills and turned phone movies upright on Windows (macOS has them).

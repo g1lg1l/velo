@@ -37,6 +37,8 @@ The share sends the program at full size, whatever the display does.
 
 All three are in the Output menu too, and Blackout and Freeze have their own buttons in the top bar. Blackout, Freeze and the tempo can also be bound to a controller or sent by OSC.
 
+**Stage theme.** In a dark club the laptop lights up your face. <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd> (<kbd>Cmd</kbd> on a Mac), or the switch in **Preferences → General → Theme**, turns the interface near black: dim grey text, one amber accent, warnings yellow and errors red, and the preview and scene pictures at about two thirds of their brightness. The output isn't touched. It stays on until you flip it back, to the theme you had.
+
 **Projector lag.** A projector shows the picture a little after it's drawn, often 30 to 100 ms, so on the wall the beat lands late. In the tempo chip's menu, set **Projector lag** to that delay: everything that moves on the beat (launches, transitions, the Beat, LFOs, sequencers, a Media List's turns) is drawn that much early and lands on time. Clap along with a scene that flashes on the beat and raise it until the flash is on your clap. What the music itself moves (a kick heard, the bass) can't be drawn before it's heard, so it stays a little late. The setting stays with this computer, not with the show.
 
 ## The Output's grade

@@ -62,6 +62,7 @@ A project can give a letter, a digit or a function key another job, such as flip
 | <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>B</kbd> | Inspector in a window of its own, or docked |
 | <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>H</kbd> | Show or hide the frame times |
 | <kbd>Ctrl</kbd> <kbd>I</kbd> | Show or hide the AI |
+| <kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>L</kbd> | Stage theme on or off: a dimmed UI for a dark club |
 
 ## Project
 

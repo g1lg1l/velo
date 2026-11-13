@@ -114,6 +114,8 @@ struct Settings {
     theme: Theme,
     /// Themes the user imported.
     themes: Vec<Theme>,
+    /// Velo Stage drawn instead of `theme`, for a dark club.
+    stage: bool,
     keymap: keymap::Keymap,
     language: i18n::Lang,
     panels: Panels,
@@ -314,10 +316,10 @@ impl Panels {
 }
 
 impl Settings {
-    /// The theme as drawn: the chosen one, with motion off if asked.
+    /// The theme as drawn: the chosen one (or Velo Stage), with motion off if asked.
     fn effective_theme(&self) -> Theme {
         // a built-in is taken by name, so its updates reach people who picked it before
-        let mut theme = Theme::builtins().into_iter().find(|b| b.name == self.theme.name).unwrap_or_else(|| self.theme.clone());
+        let mut theme = if self.stage { Theme::stage() } else { Theme::builtins().into_iter().find(|b| b.name == self.theme.name).unwrap_or_else(|| self.theme.clone()) };
         if self.reduce_motion {
             theme.motion = 0.0;
         }
@@ -347,6 +349,8 @@ struct App {
     session: Session,
     settings: Settings,
     theme: Theme,
+    /// The theme changed where no egui context was at hand: applied next frame.
+    restyle: bool,
     canvas: canvas::State,
     /// The center between the panels, as it was last frame (the split canvas' parts come from it).
     center_rect: Option<egui::Rect>,
@@ -417,7 +421,11 @@ struct App {
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, live: Option<live::Live>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
-        let settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
+        let mut settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
+        // VELO_DEMO_THEME=stage: the stage theme on (screenshots)
+        if std::env::var("VELO_DEMO_THEME").as_deref() == Ok("stage") {
+            settings.stage = true;
+        }
         i18n::set(settings.language);
         let theme = settings.effective_theme();
         theme.apply(&cc.egui_ctx);
@@ -427,6 +435,7 @@ impl App {
             session: Session::default(),
             settings,
             theme,
+            restyle: false,
             canvas: canvas::State::default(),
             center_rect: None,
             palette: None,
@@ -795,6 +804,11 @@ impl App {
             "app.demo" => self.request(files::Pending::Demo),
             "canvas.import_isf" => self.import_isf_dialog(),
             "app.hud" => self.settings.hud ^= true,
+            "app.stage_theme" => {
+                self.settings.stage ^= true;
+                self.theme = self.settings.effective_theme();
+                self.restyle = true;
+            }
             "app.shortcuts" => self.show_help = !self.show_help,
             "app.specimen" => self.specimen = self.specimen.is_none().then(specimen::Specimen::default),
             "app.rename" => {
@@ -1246,7 +1260,7 @@ impl App {
         let size = if area.width() / area.height().max(1.0) > aspect { egui::vec2(area.height() * aspect, area.height()) } else { egui::vec2(area.width(), area.width() / aspect) };
         let rect = egui::Rect::from_center_size(area.center(), size);
         match self.live.as_ref().and_then(live::Live::picture) {
-            Some(id) => egui::Image::new((id, size)).corner_radius(t.radius_sm).paint_at(ui, rect),
+            Some(id) => egui::Image::new((id, size)).corner_radius(t.radius_sm).tint(t.picture_tint()).paint_at(ui, rect),
             None => {
                 painter.rect_filled(rect, t.radius_sm, t.bg_field);
                 kit::fit_text(&painter, rect.center(), egui::Align2::CENTER_CENTER, tr!("Nothing goes out yet"), t.small(), t.fg_muted, rect.width());
@@ -2203,7 +2217,7 @@ impl App {
                 });
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
                 match picture {
-                    Some(id) => egui::Image::new((id, rect.size())).corner_radius(t.radius_sm).paint_at(ui, rect),
+                    Some(id) => egui::Image::new((id, rect.size())).corner_radius(t.radius_sm).tint(t.picture_tint()).paint_at(ui, rect),
                     None => {
                         ui.painter().rect_filled(rect, t.radius_sm, t.bg_field);
                         kit::fit_text(ui.painter(), rect.center(), egui::Align2::CENTER_CENTER, tr!("Nothing goes out yet"), t.small(), t.fg_muted, rect.width());
@@ -2296,7 +2310,7 @@ impl App {
                 let corner = (s[2] * k).clamp(0.0, cell.min_elem() / 2.0);
                 let source = input.checked_sub(1).and_then(|i| feeds.get(i)).and_then(|f| f.as_ref());
                 match source.and_then(|(id, _)| self.live.as_ref().and_then(|l| l.thumb(id))) {
-                    Some((tex, uv)) => egui::Image::new((tex, r.size())).uv(uv).corner_radius(corner).paint_at(ui, r),
+                    Some((tex, uv)) => egui::Image::new((tex, r.size())).uv(uv).corner_radius(corner).tint(t.picture_tint()).paint_at(ui, r),
                     None => {
                         ui.painter().rect_filled(r, corner, t.bg_field);
                     }
@@ -3479,7 +3493,7 @@ impl App {
             let c = self.session.project.canvas;
             let aspect = c.width.max(1) as f32 / c.height.max(1) as f32;
             let size = if area.width() / area.height().max(1.0) > aspect { egui::vec2(area.height() * aspect, area.height()) } else { egui::vec2(area.width(), area.width() / aspect) };
-            egui::Image::new((id, size)).paint_at(ui, egui::Rect::from_center_size(area.center(), size));
+            egui::Image::new((id, size)).tint(self.theme.picture_tint()).paint_at(ui, egui::Rect::from_center_size(area.center(), size));
         }
         // split: the nodes keep the canvas but the picture's side (as the center was last frame)
         let nodes = match (self.split_panes(), self.settings.split) {
@@ -3713,6 +3727,7 @@ impl App {
             pilot: Pilot::default(),
             session: Session::default(),
             theme: settings.effective_theme(),
+            restyle: false,
             settings,
             canvas: canvas::State::default(),
             center_rect: None,
@@ -3761,6 +3776,9 @@ impl App {
 impl eframe::App for App {
     /// Housekeeping that must also run while the window is minimized.
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if std::mem::take(&mut self.restyle) {
+            self.theme.apply(ctx);
+        }
         let now = ctx.input(|i| i.time);
         self.autosave(now);
         self.watch_shaders(now);

@@ -1531,9 +1531,9 @@ fn viewer_paint(ui: &Ui, painter: &Painter, t: &Theme, viewer: Rect, zoom: f32, 
         Some((id, uv)) => {
             let k = (viewer.width() / viewer.height()) / (16.0 / 9.0);
             let uv = if k < 1.0 { Rect::from_center_size(uv.center(), vec2(uv.width() * k, uv.height())) } else { Rect::from_center_size(uv.center(), vec2(uv.width(), uv.height() / k)) };
-            egui::Image::new((id, viewer.size())).uv(uv).paint_at(ui, viewer);
+            egui::Image::new((id, viewer.size())).uv(uv).tint(t.picture_tint()).paint_at(ui, viewer);
         }
-        None => wash(painter, viewer, 0.0, widgets::wash(look.hue)),
+        None => wash(painter, viewer, 0.0, widgets::wash(t, look.hue)),
     }
     // asleep: its last picture, dimmed, saying why it doesn't move
     if look.asleep {
@@ -2465,7 +2465,7 @@ impl App {
         // the groups' frames under everything, each in a hue of its own, its name on its strip
         for (g, frame, title) in &frames {
             let group = &scene.groups[*g];
-            let (tint, _) = widgets::wash(widgets::hue_of(&group.id));
+            let (tint, _) = widgets::wash(&t, widgets::hue_of(&group.id));
             let lit = if lit_groups.contains(g) { 1.0 } else { 0.0 };
             let round = CornerRadius::same((10.0 * cam.zoom.max(0.5)) as u8);
             painter.rect_filled(*frame, round, tint.gamma_multiply(0.07 + 0.04 * lit));
@@ -3297,7 +3297,7 @@ impl App {
             if st.typing.as_ref().is_some_and(|w| w.id == group.id) {
                 continue;
             }
-            let (tint, _) = widgets::wash(widgets::hue_of(&group.id));
+            let (tint, _) = widgets::wash(&t, widgets::hue_of(&group.id));
             let lit = if lit_groups.contains(g) { 0.1 } else { 0.0 };
             let corner = (10.0 * cam.zoom.max(0.5)) as u8;
             painter.rect_filled(*title, CornerRadius { nw: corner, ne: corner, sw: 0, se: 0 }, Theme::mix(t.bg_base, tint, 0.3 + lit));
