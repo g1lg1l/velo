@@ -1670,4 +1670,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Flow", "Flusso"),
     ("Shift", "Spostamento"),
     ("Lines", "Righe"),
+    ("Blocks", "Blocchi"),
+    ("Shuffle", "Rimescola"),
+    ("Cracks", "Crepe"),
+    ("Trail", "Scia"),
 ];
