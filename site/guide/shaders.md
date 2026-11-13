@@ -2,7 +2,7 @@
 
 A **Shader** node is a picture written in WGSL. It comes with 76 presets, from Plasma to Liquid Chrome, Fire, Lasers, Fractal, Code Rain, Traces, Reaction and V Beams, and it runs your own code just as well. Its parameters become knobs in the inspector, mappable like any other value, and the music is already in it to read.
 
-**Shader FX** is the same for effects: it takes a picture in and changes it, with 25 presets from Glitch and VHS to LED Wall, God Rays and Shake.
+**Shader FX** is the same for effects: it takes a picture in and changes it, with 31 presets from Glitch and VHS to LED Wall, God Rays, Shake, Motion, Melt, Life and Pixel Sort.
 
 <figure>
   <img src="/shots/shader.jpg" alt="A Shader node's code open in Velo's editor, a JSON header of parameters over a WGSL main_image function, the picture beside it" />
