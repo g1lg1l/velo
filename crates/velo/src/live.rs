@@ -54,6 +54,9 @@ static SIGNAL_SHADERS: LazyLock<HashMap<&'static str, Shader>> = LazyLock::new(|
                     "seconds" => ("s", None),
                     id if id.ends_with("_ms") => ("ms", Some(&*label(id.trim_end_matches("_ms")).leak())),
                     id if id.ends_with("_low") || id.ends_with("_high") => ("Hz", None),
+                    // a Band's edges
+                    "low_hz" => ("Hz", Some("From")),
+                    "high_hz" => ("Hz", Some("To")),
                     id if id.ends_with("_threshold") || id == "gate" => ("dB", None),
                     // the model's threshold is named as Simple mode's: one shows where the other hides
                     id if id.ends_with("_confidence") => ("%", Some(&*label(&id.replace("_confidence", "_threshold")).leak())),
@@ -1052,11 +1055,14 @@ struct Meter {
     hits: [AtomicBool; 3],
     /// The loudest level (dB, 200 over, so its bits order as the numbers do).
     level: AtomicU32,
+    /// The same, for the autopilot's ear on silence, which looks every frame.
+    loudest: AtomicU32,
 }
 
 impl Meter {
     fn record(&self, hop: &velo_audio::Hop) {
         self.level.fetch_max((hop.level_db + 200.0).max(0.0).to_bits(), Relaxed);
+        self.loudest.fetch_max((hop.level_db + 200.0).max(0.0).to_bits(), Relaxed);
         for c in 0..3 {
             let s = hop.signals[c];
             self.signals[c].fetch_max(if s > 0.0 { s.to_bits() } else { 0 }, Relaxed);
@@ -1146,6 +1152,12 @@ impl Audio {
             }
         }
         self.gated = f32::from_bits(self.links.meter.level.swap(0, Relaxed)) - 200.0 <= self.settings.gate_db;
+    }
+
+    /// Whether everything heard since the last ask stayed under the gate (nothing heard at all,
+    /// no input or a stalled one, is silence too): what the autopilot's silence scene waits on.
+    pub fn silent(&self) -> bool {
+        f32::from_bits(self.links.meter.loudest.swap(0, Relaxed)) - 200.0 <= self.settings.gate_db
     }
 }
 

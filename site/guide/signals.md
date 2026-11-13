@@ -123,6 +123,7 @@ A signal node's card says what happens inside it. At the top, what it does with 
 Signals and logic nodes turn numbers into other numbers. A few to start with:
 
 - **Beat Kick**: a kick on every beat, as strong as the bass, and none while the bass is under its threshold. It stays on the grid where a heard kick misses or doubles, and goes quiet in a breakdown. Wire a Sequencer into its trigger for another rhythm, or another signal into `in` for another strength.
+- **Band**: how loud the music is between two frequencies you pick, for what the fixed bands lump together: the acid line (300 to 1500 Hz), the vocals, the low end. With **Auto** on it fills 0 to 1 over the range it has moved in lately; off, it reads the spectrum as the Waveform draws it.
 - **LFO**: a shape that repeats over a number of beats.
 - **Time**: a ramp or a wave over a number of seconds.
 - **Sequencer**: a value a step on each beat.

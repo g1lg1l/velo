@@ -1,7 +1,7 @@
 //! Signal nodes (docs/graph.md §3): numbers, not images, computed on the render thread each
 //! frame and handed to mappings as sources, like Kick or Bass. An Audio In puts what the input
 //! hears on the canvas, a Beat the clock; a Beat Kick hits on the beat as hard as the bass, not
-//! at all while the bass is low; an LFO is a shape over a number of beats; a Remap
+//! at all while the bass is low; a Band is how loud the music is between two frequencies; an LFO is a shape over a number of beats; a Remap
 //! brings a signal into the range wanted; a Math puts two together; a Gain makes one stronger; an Envelope plays a shape
 //! on each hit; a Counter steps on each hit; a Random picks a value on the beat; a Smooth
 //! follows its input slowly; a Quantize snaps it to steps; a Speed goes round a cycle as fast
@@ -14,7 +14,7 @@
 use std::collections::VecDeque;
 use std::f64::consts::TAU;
 
-use velo_core::{AUDIO, BEAT_KICK, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, GAIN, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind};
+use velo_core::{AUDIO, BAND, BEAT_KICK, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, GAIN, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind};
 
 use crate::shader::{Param, ParamType};
 
@@ -55,6 +55,8 @@ pub fn params(kind: &str) -> Option<Vec<Param>> {
             .collect(),
         // no kick while the bass is under a third; a quarter second to fall
         BEAT_KICK => vec![p("threshold", float, 0.3, 0.0, 1.0), p("release_ms", float, 250.0, 20.0, 2000.0)],
+        // the acid line's range to start with, stretched to the range it moves in
+        BAND => vec![p("low_hz", float, 300.0, 20.0, 16_000.0), p("high_hz", float, 1500.0, 20.0, 16_000.0), p("auto", ParamType::Bool, 1.0, 0.0, 1.0), p("release_ms", float, 150.0, 1.0, 2000.0)],
         LFO => vec![named("shape", &SHAPES), p("beats", float, 4.0, 0.25, 64.0), p("phase", float, 0.0, 0.0, 1.0)],
         REMAP => vec![
             p("auto", ParamType::Bool, 1.0, 0.0, 1.0),
@@ -558,6 +560,8 @@ pub enum Kind {
     Time(f32, u8),
     /// Its kick's shape, and how strong its input must be for any.
     BeatKick(Envelope, f32),
+    /// Its frequencies (Hz, low then high), and how what it hears there is brought to 0..1.
+    Band([f32; 2], Remap),
     Remap(Remap),
     Math(Math),
     /// How many times its input.
@@ -597,6 +601,11 @@ impl Kind {
             CLOCK => Kind::Clock,
             // a sharp rise and a fall that drops fast, then tails off
             BEAT_KICK => Kind::BeatKick(Envelope { threshold: 0.5, attack: 0.005, release: v("release_ms", 250.0).clamp(20.0, 2000.0) / 1000.0, curve: 1 }, v("threshold", 0.3)),
+            // the spectrum's level there through a Remap: its own range (or as it is), up at once
+            BAND => Kind::Band(
+                [v("low_hz", 300.0), v("high_hz", 1500.0)],
+                Remap { auto: v("auto", 1.0) >= 0.5, input: [0.0, 1.0], output: [0.0, 1.0], curve: 0, gate: 0.0, attack: 0.005, release: v("release_ms", 150.0).clamp(1.0, 2000.0) / 1000.0, invert: false },
+            ),
             LFO => Kind::Lfo(Lfo::from_params(get)),
             TIME => Kind::Time(v("seconds", 10.0).clamp(0.5, 600.0), index("shape", TIME_SHAPES.len() - 1)),
             REMAP => Kind::Remap(Remap::from_params(get)),
@@ -714,6 +723,16 @@ fn plan_from(scene: &Scene, base: usize) -> (Vec<Signal>, Vec<String>) {
     (signals, keys)
 }
 
+/// What each Band hears this frame, from the spectrum the audio thread last published: kept
+/// where its Remap leaves room (`state[3]`), for [`run`] to read.
+pub fn hear(signals: &mut [Signal], wave: &crate::SharedWave) {
+    for s in signals {
+        if let Kind::Band([low, high], _) = s.kind {
+            s.state[3] = wave.band(low, high);
+        }
+    }
+}
+
 /// One frame: each signal node, in order, writes its outputs into `sources` (the shared ones
 /// first: audio features, beat, bar).
 pub fn run(signals: &mut [Signal], sources: &mut [f32], beats: f64, dt: f32) {
@@ -737,6 +756,7 @@ pub fn run(signals: &mut [Signal], sources: &mut [f32], beats: f64, dt: f32) {
                 let kick = envelope.step(sources[s.inputs[1].unwrap_or(7)], dt, &mut s.state);
                 sources[s.slot] = if strength < threshold { 0.0 } else { kick * strength };
             }
+            Kind::Band(_, remap) => sources[s.slot] = remap.step(s.state[3], dt, &mut s.state),
             Kind::Lfo(lfo) => sources[s.slot] = lfo.at(beats),
             // where it is in its cycle, kept between frames
             Kind::Time(seconds, shape) => {
@@ -1282,5 +1302,40 @@ mod tests {
         };
         assert_eq!(frame(0.9, 0.1), 0.0);
         assert!(frame(0.9, 1.0) > 0.8, "on the beat, the bass loud");
+    }
+
+    #[test]
+    fn a_band_hears_a_tone_inside_it_and_not_outside() {
+        use std::f32::consts::TAU;
+        // a 1 kHz tone's spectrum as the audio thread publishes it: 512 points, Hann, 48 kHz
+        let n = 512;
+        let x: Vec<f32> = (0..n).map(|i| (0.5 - 0.5 * (TAU * i as f32 / n as f32).cos()) * (TAU * 1000.0 * i as f32 / 48_000.0).sin()).collect();
+        let power: Vec<f32> = (0..=n / 2)
+            .map(|k| {
+                let turn = |i: usize| TAU * ((k * i) % n) as f32 / n as f32;
+                let (re, im) = x.iter().enumerate().fold((0.0, 0.0), |(re, im), (i, x)| (re + x * turn(i).cos(), im - x * turn(i).sin()));
+                (re * re + im * im) / n as f32
+            })
+            .collect();
+        let wave = crate::SharedWave::default();
+        for _ in 0..30 {
+            wave.push_spectrum(&power, 48_000.0);
+        }
+        // a Band node as it's added, as it is (no auto range) or stretched, a second of frames
+        let band = |low: f32, high: f32, auto: bool| {
+            let mut n = velo_core::Node { id: "n".into(), kind: BAND.into(), name: String::new(), off: false, pos: [0.0; 2], params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() };
+            n.params.extend([("low_hz".to_string(), [low, 0.0, 0.0, 0.0]), ("high_hz".to_string(), [high, 0.0, 0.0, 0.0]), ("auto".to_string(), [f32::from(u8::from(auto)), 0.0, 0.0, 0.0])]);
+            let mut s = node(Kind::of(&n).unwrap(), [false; 2]);
+            (0..60).map(|_| {
+                hear(std::slice::from_mut(&mut s), &wave);
+                outputs(&mut s, &[(0.0, 0.0, 0.0)])[0]
+            }).last().unwrap()
+        };
+        let (inside, outside, below) = (band(800.0, 1200.0, false), band(3000.0, 8000.0, false), band(100.0, 200.0, false));
+        assert!(inside > 0.8 && outside < 0.05 && below < 0.3, "inside {inside:.2}, outside {outside:.2}, below {below:.2}");
+        assert!(band(300.0, 1500.0, false) > 0.3, "a wider band around it hears it too");
+        assert_eq!(band(1200.0, 800.0, false), inside, "the edges either way round");
+        // a steady band's own range is where it sits: nothing moves, so it reads nothing
+        assert!(band(3000.0, 8000.0, true) < 0.05);
     }
 }

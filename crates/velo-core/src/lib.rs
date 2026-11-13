@@ -264,6 +264,10 @@ pub struct Scene {
     /// Left out of the autopilot's turns (a layer always is).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub manual: bool,
+    /// What the autopilot puts out while the music is silent (one scene at most), back to where
+    /// it was when the music returns; it takes no turns of its own. An older Velo skips it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub silence: bool,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -633,9 +637,9 @@ pub struct NodeKind {
 impl NodeKind {
     /// Its group in the node menu: its category's, except that the signal nodes working on
     /// other signals (remap, count, hold, compare…) sit apart, as Logic, from the ones that
-    /// make them (audio, the beat, LFOs, time, random values, a picture read).
+    /// make them (audio, a band of it, the beat, LFOs, time, random values, a picture read).
     pub fn group(&self) -> &'static str {
-        if self.category == Category::Signal && ![AUDIO, CLOCK, BEAT_KICK, LFO, TIME, RANDOM, PROBE].contains(&self.id) { "Logic" } else { self.category.label() }
+        if self.category == Category::Signal && ![AUDIO, CLOCK, BEAT_KICK, BAND, LFO, TIME, RANDOM, PROBE].contains(&self.id) { "Logic" } else { self.category.label() }
     }
 }
 
@@ -691,6 +695,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(AUDIO, "Audio In", Category::Signal, &[], &["level", "bass", "mid", "high", "kick", "snare", "hat", "melody"]),
     kind(CLOCK, "Beat", Category::Signal, &[], &["beat", "bar"]),
     kind(BEAT_KICK, "Beat Kick", Category::Signal, &["in", "trigger"], OUT),
+    kind(BAND, "Band", Category::Signal, &[], OUT),
     kind(LFO, "LFO", Category::Signal, &[], OUT),
     kind(TIME, "Time", Category::Signal, &[], OUT),
     kind(RANDOM, "Random", Category::Signal, &["trigger"], OUT),
@@ -914,6 +919,9 @@ pub const CLOCK: &str = "velo.clock";
 /// A kick on the beat clock (or its trigger), as strong as the bass (or its input), none while
 /// that's under a threshold: steady where a heard kick misses or doubles.
 pub const BEAT_KICK: &str = "velo.beatkick";
+/// How loud the music is between two frequencies of its spectrum (the acid line, the sub, the
+/// vocals), as a number.
+pub const BAND: &str = "velo.band";
 /// Time going on: 0 to 1 over a number of seconds, again and again (colors that drift).
 pub const TIME: &str = "velo.time";
 /// A signal brought into the range you want: auto range, curve, smoothing, gate, invert.

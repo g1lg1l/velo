@@ -1490,6 +1490,11 @@ impl Settings<'_> {
         let b = if self.wired(1) { "b".to_string() } else { two(v("value")) };
         match self.node.kind.as_str() {
             velo_core::BEAT_KICK => tr!("trigger × in · silent under {} · falls in {}", two(v("threshold")), time(v("release_ms"))),
+            velo_core::BAND => {
+                let hz = |f: f32| if f >= 1000.0 { format!("{:.1} kHz", f / 1000.0).replace(".0 ", " ") } else { format!("{f:.0} Hz") };
+                let (low, high) = (v("low_hz").min(v("high_hz")), v("low_hz").max(v("high_hz")));
+                if v("auto") > 0.5 { tr!("{} to {} · its own range", hz(low), hz(high)) } else { tr!("{} to {}", hz(low), hz(high)) }
+            }
             velo_core::SMOOTH => tr!("{} · up in {} · down in {}", named("mode"), time(v("rise_ms")), time(v("fall_ms"))),
             velo_core::MATH => ["a + b", "a − b", "a × b", "min(a, b)", "max(a, b)", "(a + b) / 2", "|a − b|"].get(v("operation").round().max(0.0) as usize).map(|e| e.replace('b', &b)).unwrap_or_default(),
             velo_core::GAIN => tr!("in × {}", format!("{:.1}", v("gain"))),
@@ -4170,6 +4175,7 @@ fn node_icon(id: &str) -> &'static str {
         v::AUDIO => icons::MICROPHONE,
         v::CLOCK => icons::METRONOME,
         v::BEAT_KICK => icons::LIGHTNING,
+        v::BAND => icons::CHART_BAR,
         v::LFO => icons::WAVE_SINE,
         v::TIME => icons::CLOCK,
         v::RANDOM => icons::DICE_FIVE,
@@ -4253,6 +4259,7 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::AUDIO => tr!("The music as signals: its level, bands, hits and melody."),
         velo_core::CLOCK => tr!("The tempo as signals: a hit on every beat, a ramp through the bar."),
         velo_core::BEAT_KICK => tr!("A kick on every beat, as strong as the bass, none while the bass is low."),
+        velo_core::BAND => tr!("How loud the music is between two frequencies: the acid line, the sub, the vocals."),
         velo_core::LFO => tr!("A shape that repeats over a number of beats."),
         velo_core::TIME => tr!("A ramp or a wave over a number of seconds."),
         velo_core::REMAP => tr!("Brings a signal into the range you want, smoothed."),

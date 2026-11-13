@@ -264,6 +264,13 @@ struct SetAutopilot {
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
+struct SetSilence {
+    scene: Option<String>,
+    on: bool,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
 struct SetLaunch {
     scene: Option<String>,
     transition: Option<Transition>,
@@ -535,6 +542,22 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let SetAutopilot { scene, on } = props(v)?;
             s.scene_mut(scene.as_deref())?.manual = !on;
+            Ok(())
+        },
+    },
+    Operator {
+        id: "scene.set_silence",
+        label: "Set Silence Scene",
+        description: "Whether a scene (the selected one unless scene has an id) is the one the autopilot puts out while the music is silent: on true makes it the only one, false none. Layers can't be.",
+        example: r#"{"on": true}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let SetSilence { scene, on } = props(v)?;
+            let id = s.scene_mut(scene.as_deref())?.id.clone();
+            for scene in &mut s.project.scenes {
+                scene.silence = on && scene.id == id && scene.layer == Layer::Scene;
+            }
             Ok(())
         },
     },
