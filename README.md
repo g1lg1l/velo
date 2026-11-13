@@ -103,7 +103,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 </tr>
 <tr>
 <td width="50%"><img src="docs/screenshots/mapping.png" alt="A mapping's popover: Audio In's kick moving Kaleido's zoom, with its amount, an envelope drawing the attack and release, and an invert key"><br><sub><b>A mapping.</b> The kick moves Kaleido's zoom, with its own envelope.</sub></td>
-<td width="50%"><img src="docs/screenshots/ai-panel.png" alt="The AI panel beside the canvas: an empty chat with three example prompts, Codex ready, and a picture attached as a reference"><br><sub><b>The AI panel.</b> Describe a visual, attach a picture, pick who answers.</sub></td>
+<td width="50%"><img src="docs/screenshots/ai-panel.png" alt="The AI panel beside the canvas and the inspector: an empty chat with three example prompts, Codex ready, and a picture attached as a reference"><br><sub><b>The AI panel.</b> Describe a visual, attach a picture, pick who answers.</sub></td>
 </tr>
 <tr>
 <td colspan="2"><img src="docs/screenshots/deck.png" alt="The deck: variations A to H, eight macros named Zoom, Hue, Spin, Trails and more with their controller badges, and the sources as segment meters with keycap hits for kick, snare and hat"><br><sub><b>The deck.</b> Variations, eight macros and every source, live.</sub></td>

@@ -629,10 +629,10 @@ impl App {
         false
     }
 
-    /// "Learn MIDI" and, once bound, "Forget CC 21": for a control's right-click menu.
+    /// "Learn MIDI or a key" and, once bound, "Forget CC 21": for a control's right-click menu.
     pub fn learn_items(&mut self, ui: &mut egui::Ui, target: &Target) {
         let waiting = self.learn.target.as_ref() == Some(target);
-        let label = if waiting { tr!("Waiting for a controller…") } else { tr!("Learn MIDI") };
+        let label = if waiting { tr!("Waiting for a controller or a key…") } else { tr!("Learn MIDI or a key") };
         if ui.button(format!("{}  {label}", crate::icons::CROSSHAIR)).clicked() {
             self.learn.wait(target.clone());
             self.say(Tone::Action, tr!("Move a knob or hit a pad on your controller, or press a key (Esc cancels)"));

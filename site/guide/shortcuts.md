@@ -1,6 +1,6 @@
 # Shortcuts
 
-Every command has a key. On a Mac, read <kbd>Cmd</kbd> for <kbd>Ctrl</kbd> and <kbd>Option</kbd> for <kbd>Alt</kbd>. Press <kbd>F1</kbd> in Velo for this list, and <kbd>Ctrl</kbd> <kbd>K</kbd> to find any command by name.
+Every command has a key. On a Mac, read <kbd>Cmd</kbd> for <kbd>Ctrl</kbd> and <kbd>Option</kbd> for <kbd>Alt</kbd>. Press <kbd>F1</kbd> in Velo for this list, and <kbd>Ctrl</kbd> <kbd>K</kbd> to find any command by name. A key your project binds to a pad plays that instead: the list shows those keys first, under This project.
 
 The canvas's bare keys (<kbd>Tab</kbd>, <kbd>H</kbd>, <kbd>E</kbd>, <kbd>Delete</kbd>) act where the canvas has the keyboard or the pointer, so they don't get in the way of typing. Chords work whenever the window shows.
 

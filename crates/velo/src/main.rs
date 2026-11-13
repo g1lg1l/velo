@@ -576,6 +576,10 @@ impl App {
         if std::env::var_os("VELO_DEMO_PREFS").is_some() {
             app.show_settings = true;
         }
+        // VELO_DEMO_HELP: the shortcut sheet open (screenshots)
+        if std::env::var_os("VELO_DEMO_HELP").is_some() {
+            app.show_help = true;
+        }
         // VELO_DEMO_COMPACT: the scenes as the compact list (screenshots)
         if std::env::var_os("VELO_DEMO_COMPACT").is_some() {
             app.settings.scenes_compact = true;
@@ -3031,7 +3035,7 @@ impl App {
                                     ui.close();
                                 }
                                 ui.separator();
-                                let label = if waiting.as_ref() == Some(&target) { tr!("Waiting for a controller…") } else { tr!("Learn MIDI") };
+                                let label = if waiting.as_ref() == Some(&target) { tr!("Waiting for a controller or a key…") } else { tr!("Learn MIDI or a key") };
                                 if ui.button(format!("{}  {label}", icons::CROSSHAIR)).clicked() {
                                     learn = Some(target.clone());
                                     ui.close();
@@ -3174,7 +3178,7 @@ fn param_menu(t: &Theme, r: &Response, reset: bool, learn: Option<(bool, Option<
         }
         if let Some((waiting, binding)) = learn {
             ui.separator();
-            let label = if waiting { tr!("Waiting for a controller…") } else { tr!("Learn MIDI") };
+            let label = if waiting { tr!("Waiting for a controller or a key…") } else { tr!("Learn MIDI or a key") };
             if ui.button(format!("{}  {label}", icons::CROSSHAIR)).clicked() {
                 ask = Some(Ask::Learn);
                 ui.close();

@@ -1572,11 +1572,21 @@ impl App {
         }
         const COLUMNS: usize = 2;
         let t = self.theme.clone();
-        // the keymap's commands, then the keys that never change
+        // the keys the project binds (they win over the keymap's: docs/control.md §3), the
+        // keymap's commands, then the keys that never change
+        let mut bound: Vec<(String, String)> = self.session.project.bindings.iter().filter_map(|b| match &b.control {
+            Control::Key(k) => Some((k.clone(), self.target_name(&b.target))),
+            _ => None,
+        }).collect();
+        bound.sort();
+        let project = |k: &egui::KeyboardShortcut| k.modifiers.is_none() && bound.iter().any(|(name, _)| *name == k.logical_key.name());
         let map = &self.settings.keymap;
         let mut groups: Vec<SheetGroup> = Vec::new();
+        if !bound.is_empty() {
+            groups.push(("This project", bound.iter().map(|(k, what)| (vec![k.clone()], what.as_str())).collect()));
+        }
         for c in &COMMANDS {
-            let keys: Vec<String> = map.keys(c.id).iter().map(keymap::text).collect();
+            let keys: Vec<String> = map.keys(c.id).iter().filter(|k| !project(k)).map(keymap::text).collect();
             if keys.is_empty() {
                 continue;
             }

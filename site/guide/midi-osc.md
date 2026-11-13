@@ -13,7 +13,7 @@ Velo finds MIDI controllers by itself: a controller plugged in while it runs con
 3. Move a knob, hit a pad, or press a key on the computer's keyboard. Bound: the control shows a badge such as `CC 21`, `Note C1` or `Key 4`.
 4. Click the next control, move the next knob. <kbd>L</kbd> or <kbd>Esc</kbd> leaves.
 
-For a single control, right-click it and choose **Learn MIDI**. **Forget** on the same menu removes its binding.
+For a single control, right-click it and choose **Learn MIDI or a key**, then move a knob, hit a pad or press a key. **Forget** on the same menu removes its binding.
 
 The first message that means something wins: a knob has to move two steps, a pad has to be hit. That message only binds; it doesn't also act.
 

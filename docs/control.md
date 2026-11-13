@@ -65,7 +65,9 @@ Not yet: Momentary, Scale takeover, a range or curve on a binding, pitch bend, M
 
 **Keys in learn.** While a control waits, a letter, a digit or `F1` to `F12` pressed alone binds it (Toggle on a macro, a parameter, blackout and freeze; Trigger on the rest) and runs no command, whatever the keymap has on that key. Two keys are never learned: `Esc`, which leaves, and the key of the keymap's MIDI learn command (`L`), which in learn mode always turns it off, so there is a way out even from a project that bound `L` with the operator. Chords are not learned.
 
-Right-click a control → **Learn MIDI** binds that one without learn mode; **Forget** removes its binding. `Esc` leaves. The MIDI chip's menu lists the open ports and every binding (control, channel, target), switches a CC binding between knob and the three encoder dialects, makes one answer any port, or removes it; a key's row has its name, its target and Remove.
+A key the project binds plays what it's bound to instead of the keymap's command. The shortcut sheet (`F1`) lists those keys first, under This project, each with what it drives, and leaves them out of the commands below.
+
+Right-click a control → **Learn MIDI or a key** binds that one to the next knob, pad or key without learn mode; **Forget** removes its binding. `Esc` leaves. The MIDI chip's menu lists the open ports and every binding (control, channel, target), switches a CC binding between knob and the three encoder dialects, makes one answer any port, or removes it; a key's row has its name, its target and Remove.
 
 MIDI runs on a `velo midi` thread that rescans the ports every second: a new port connects, a gone one is dropped, one another app holds is retried. Clock, sysex and active sensing are not bound.
 

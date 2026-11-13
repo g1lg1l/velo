@@ -159,6 +159,8 @@ struct Slot {
     driving: Option<Vec<MacroRoute>>,
     /// Its engine node whose picture goes out (none: nothing does).
     output: Option<usize>,
+    /// It holds a picture of what plays under it (a layer on top showing the program).
+    under: bool,
 }
 
 /// The project's shared signal graph as the engine was last told: its outputs' names (what the
@@ -366,6 +368,7 @@ impl Live {
                 Ok(b) => {
                     slot.built = true;
                     slot.output = b.plan.output;
+                    slot.under = !b.plan.under.is_empty();
                     self.errors.retain(|id, _| !b.plan.nodes.iter().any(|(n, _)| n == id));
                     self.errors.extend(b.errors);
                     slot.installed = b.plan.nodes.into_iter().map(|(id, _)| id).zip(b.shaders).collect();
@@ -475,7 +478,8 @@ impl Live {
             let mesh = if s.mesh { u64::from(velo_engine::gpu::MSAA) * 6 } else { 0 };
             4 * (1 + u64::from(s.feedback)) + if s.history { u64::from(velo_engine::gpu::HISTORY) } else { 0 } + buffers + mesh
         };
-        let bytes = |s: &Slot| s.installed.iter().map(|(_, shader)| quarters(shader)).sum::<u64>() * texture / 4;
+        // and a layer on top showing the program, one picture of what plays under it
+        let bytes = |s: &Slot| (s.installed.iter().map(|(_, shader)| quarters(shader)).sum::<u64>() + 4 * u64::from(s.under)) * texture / 4;
         let held: Vec<(u64, bool, u64)> = self.slots.iter().map(|s| (s.key, project.scene(&s.scene).is_some(), bytes(s))).collect();
         let room = match self.budget.filter(|b| *b > 0) {
             // half of what the system lets Velo hold: the rest is the computer's
@@ -555,6 +559,7 @@ impl Live {
                     macros: None,
                     driving: None,
                     output: None,
+                    under: false,
                 }
             }
         };

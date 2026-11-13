@@ -112,7 +112,7 @@ A new user, no manual, does these in five minutes.
 | 2 | Pick audio | The audio chip | **Computer audio** comes first; below it the input devices and, on macOS, single apps. Remembered per machine. |
 | 3 | Add a visual | `Tab` on the canvas | The node menu: every node with its icon and a line on what it does, a tab per group. Type a few letters, Enter. With a node selected, the new one is wired after it. |
 | 4 | Link to the music | Drag **Kick** from the deck onto a slider | A mapping with a sensible default (half the range, 5 ms attack, 150 ms release). The slider shows how far it reaches and where the value is now. |
-| 5 | Map a knob | Right-click a control → Learn MIDI, turn a knob | Bound, with a `CC 21` badge. `L` toggles learn mode for many controls in a row. |
+| 5 | Map a knob | Right-click a control → Learn MIDI or a key, turn a knob | Bound, with a `CC 21` badge. `L` toggles learn mode for many controls in a row. |
 | 6 | Go fullscreen | Output → a display | Displays are listed by name. The output shows no UI and no cursor. |
 
 ### 7.3 Modulation
@@ -126,7 +126,7 @@ After Bitwig's modulators and Serum's drag-to-modulate.
 
 ### 7.4 Live control
 
-- **MIDI learn** on everything that plays: right-click → Learn MIDI, or `L` for learn mode (control.md §3).
+- **MIDI learn** on everything that plays: right-click → Learn MIDI or a key, or `L` for learn mode (control.md §3).
 - **Macros.** Each scene has eight. Map the controller to the eight macros once; each scene decides what they do, so one controller layout works across the show. Variations store where the macros are; Shift+click morphs there over a bar.
 - **Scene launch.** Click, number keys, MIDI pads, OSC. A launch waits for the next beat, bar or four bars, with Cut, Crossfade, Wipe, Zoom, Glitch or Flash. The autopilot launches the next scene by itself.
 - **Panic controls.** Blackout (`B`), Freeze (`F`), and a test pattern (`Cmd+Shift+T`) for lining up a projector.

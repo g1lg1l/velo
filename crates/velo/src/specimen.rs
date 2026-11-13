@@ -146,7 +146,7 @@ impl Specimen {
             ui.horizontal(|ui| {
                 kit::icon_button(ui, t, icons::LINK, tr!("Link"), true);
                 kit::icon_button(ui, t, icons::SLIDERS, tr!("Mappings"), false);
-                kit::button(ui, t, Some(icons::LIGHTNING), tr!("Learn MIDI"), true);
+                kit::button(ui, t, Some(icons::LIGHTNING), tr!("Learn"), true);
                 let items = [(0, icons::STACK, tr!("Layers")), (1, icons::TREE_STRUCTURE, tr!("Patch"))];
                 if let Some(v) = kit::tabs(ui, t, Id::unique("specimen-tabs"), self.view, &items, false, |_| false) {
                     self.view = v;
