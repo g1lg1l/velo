@@ -1940,6 +1940,35 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     }
 
     #[test]
+    fn motion_shows_only_what_moves() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let motion = crate::EFFECT_PRESETS.iter().find(|p| p.0 == "motion").unwrap().1;
+        let programs = [Program::new(&device, ShaderNode::parse(PATTERN).unwrap()).unwrap(), Program::new(&device, ShaderNode::parse(motion).unwrap()).unwrap()];
+        let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![Some(0)] }];
+        let mut runner = Runner::new(&device, &programs, &nodes, &[], [64, 36], &wave_texture(&device)).unwrap();
+        runner.set_params(&queue, &programs, 0, &[]);
+        runner.set_params(&queue, &programs, 1, &programs[1].node.values(|_| None));
+        // the brightest channel anywhere in the picture after a frame at time t
+        let mut brightest = |t: f32| {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runner.render(&queue, &mut encoder, &programs, &[t, 1.0 / 60.0, 0.0, 16.0 / 9.0]);
+            queue.submit([encoder.finish()]);
+            read(&device, &queue, &runner, 1).as_chunks::<4>().0.iter().map(|p| p[..3].iter().map(|&c| half(c)).fold(0.0, f32::max)).fold(0.0, f32::max)
+        };
+        // the pattern held at one moment for two seconds: all gone
+        for _ in 0..120 {
+            brightest(1.0);
+        }
+        assert!(brightest(1.0) < 0.02, "a still picture fades to black");
+        // its disc moves on: that shows
+        assert!(brightest(1.5) > 0.3, "what moves shows");
+    }
+
+    #[test]
     fn the_crystal_ball_draws_its_glass_over_its_background() {
         let _gpu = crate::gpu_lock();
         let Some((device, queue)) = gpu() else {

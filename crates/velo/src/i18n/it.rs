@@ -1639,4 +1639,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Clamp", "Bordo"),
     ("Own channel", "Proprio canale"),
     ("All", "Tutti"),
+    ("Memory", "Memoria"),
+    ("Linger", "Persistenza"),
+    ("Length", "Lunghezza"),
+    ("Colored", "A colori"),
 ];
