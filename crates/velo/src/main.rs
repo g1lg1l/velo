@@ -2818,7 +2818,7 @@ impl App {
             for index in order {
                 let (param, infos) = &shader.controls[index];
                 // the loop's part is the file's timeline, not two sliders
-                if (still && param.id == "speed") || param.id == "loop_start" || param.id == "loop_end" {
+                if (still && matches!(param.id.as_str(), "speed" | "direction" | "cue" | "scrub")) || param.id == "loop_start" || param.id == "loop_end" {
                     continue;
                 }
                 // a Sequencer's steps past the ones it plays

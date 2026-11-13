@@ -1008,9 +1008,29 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         let filled = frame(&mut runner, 0.0);
         assert!(at(&filled, 1, 0)[3] > bright, "filled: no band");
         // 0.6 s later the second frame is due
-        playing.step(&queue, 0.6, 1.0, (0.0, 1.0));
+        playing.step(&queue, 0.6, crate::media::Transport::default());
         let next = frame(&mut runner, 1.0);
         assert!(at(&next, 0, 16)[2] > bright && at(&next, 0, 16)[0] < bright, "blue now");
+        // which frame shows after `dt` more as `t` says: red (the first) or blue (the second)
+        use crate::media::Transport;
+        let mut shows = |dt: f32, t: Transport| {
+            playing.step(&queue, dt, t);
+            if at(&frame(&mut runner, 1.0), 0, 16)[0] > bright { "red" } else { "blue" }
+        };
+        let cue = Transport { cue: 1.0, ..Transport::default() };
+        assert_eq!(shows(0.1, cue), "red", "a cue starts it over");
+        assert_eq!(shows(0.5, cue), "blue", "held, it cues once");
+        // cued at speed 0, scrub is the playhead
+        let held = Transport { speed: 0.0, ..Transport::default() };
+        assert_eq!(shows(0.1, held), "blue", "cue down");
+        assert_eq!(shows(0.1, Transport { cue: 1.0, ..held }), "red");
+        assert_eq!(shows(0.1, Transport { cue: 1.0, scrub: 0.75, ..held }), "blue", "scrubbed three quarters in");
+        assert_eq!(shows(0.1, Transport { cue: 1.0, scrub: 0.25, ..held }), "red", "and back");
+        // cued in reverse: from the loop's end, back
+        let back = Transport { direction: 1, ..Transport::default() };
+        shows(0.0, back);
+        assert_eq!(shows(0.1, Transport { cue: 1.0, ..back }), "blue", "reverse starts at the end");
+        assert_eq!(shows(0.5, back), "red", "and goes back");
     }
 
     #[test]
@@ -1136,9 +1156,9 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             assert_eq!([lit(&first, 8, 4), lit(&first, 56, 4), lit(&first, 32, 26)], [Some(0), Some(1), Some(2)], "{name}: red | green over blue");
             // read ahead on the reader's thread: the frame due at 0.2 s is blue (time for a
             // reader starting a GPU's decoder, with other tests on the GPU too)
-            playing.step(&queue, 0.1, 1.0, (0.0, 1.0));
+            playing.step(&queue, 0.1, crate::media::Transport::default());
             std::thread::sleep(std::time::Duration::from_millis(1000));
-            playing.step(&queue, 0.1, 1.0, (0.0, 1.0));
+            playing.step(&queue, 0.1, crate::media::Transport::default());
             let third = frame(&mut runner);
             assert_eq!([lit(&third, 8, 4), lit(&third, 56, 26)], [Some(2), Some(2)], "{name}: the third frame");
         }
@@ -2084,6 +2104,11 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {{ return {body}; }}")).unwrap()).u
         // UV Map: a flat map reads one place of the picture everywhere; at amount 0, where it is
         assert!(near(pixel(&[uv, "vec4f(0.25, 0.75, 0.0, 1.0)"], "uvmap", &[], &[0.0], (4, 26)), [0.25, 0.75, 0.0, 1.0]));
         assert!(near(pixel(&[uv, "vec4f(0.25, 0.75, 0.0, 1.0)"], "uvmap", &[("amount", v(0.0))], &[0.0], (4, 26)), [4.5 / 32.0, 26.5 / 32.0, 0.0, 1.0]));
+        // Transform with a map modulating it: where the map is black nothing moves, where it's white all of it
+        let moved = [16.5 / 32.0 - 0.25, 16.5 / 32.0, 0.0, 1.0];
+        assert!(near(pixel(&[uv, "vec4f(0.0, 0.0, 0.0, 1.0)"], "transform", &[("offset", v(0.25)), ("modulate", v(1.0))], &[0.0], (16, 16)), [16.5 / 32.0, 16.5 / 32.0, 0.0, 1.0]));
+        assert!(near(pixel(&[uv, "vec4f(1.0)"], "transform", &[("offset", v(0.25)), ("modulate", v(1.0))], &[0.0], (16, 16)), moved));
+        assert!(near(pixel(&[uv], "transform", &[("offset", v(0.25)), ("modulate", v(1.0))], &[0.0], (16, 16)), moved), "no map: no change");
         // Lookup: brightness a half reads the palette half way along
         assert!(near(pixel(&[gray, uv], "lookup", &[], &[0.0], (6, 6)), [0.5, 0.5, 0.0, 1.0]));
         // Crop: see-through outside its edges, the picture inside; fill stretches the inside over it all
@@ -2130,6 +2155,120 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {{ return {body}; }}")).unwrap()).u
         let (_, out) = graded(&[("fade", 1.0)]);
         assert!(out.as_chunks::<4>().0.iter().all(|p| p[..3].iter().all(|&c| half(c) == 0.0) && half(p[3]) == 1.0), "black, still opaque");
     }
+
+    #[test]
+    fn warp_and_map_knobs_change_nothing_at_their_defaults() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let wave = wave_texture(&device);
+        // Feedback, Transform and Kaleido against themselves before the warp, the centre and the
+        // map came, set alike and nothing wired into a map: the same pictures to the bit
+        type Case<'a> = (&'a str, &'a str, &'a [(&'a str, f32)]);
+        let cases: [Case; 3] = [
+            ("feedback", OLD_FEEDBACK, &[("zoom", 1.05), ("rotate", 0.01), ("decay", 0.95), ("blend", 1.0)]),
+            ("transform", OLD_TRANSFORM, &[("zoom", 1.5), ("rotate", 0.3), ("offset", 0.1), ("spin", 0.2)]),
+            ("kaleido", OLD_KALEIDO, &[("zoom", 1.3), ("angle", 0.1), ("spin", 0.5)]),
+        ];
+        for (id, old, set) in cases {
+            let pictures = [program(&device, id), Program::new(&device, ShaderNode::parse(old).unwrap()).unwrap()].map(|effect| {
+                let programs = [Program::new(&device, ShaderNode::parse(PATTERN).unwrap()).unwrap(), effect];
+                let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![Some(0)] }];
+                let mut runner = Runner::new(&device, &programs, &nodes, &[], [64, 36], &wave).unwrap();
+                runner.set_params(&queue, &programs, 0, &[]);
+                runner.set_params(&queue, &programs, 1, &programs[1].node.values(|p| set.iter().find(|s| s.0 == p).map(|s| [s.1, 0.0, 0.0, 0.0])));
+                for frame in 0..4 {
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    runner.render(&queue, &mut encoder, &programs, &[1.0 + frame as f32 / 60.0, 1.0 / 60.0, frame as f32, 16.0 / 9.0]);
+                    queue.submit([encoder.finish()]);
+                }
+                read(&device, &queue, &runner, 1)
+            });
+            assert!(pictures[0] == pictures[1], "{id} draws as it did");
+        }
+    }
+
+    const OLD_FEEDBACK: &str = r#"/*{
+  "name": "Feedback", "category": "effect", "inputs": [{ "id": "src", "type": "texture" }], "feedback": true,
+  "params": [
+    { "id": "decay", "type": "float", "default": 0.92, "min": 0.0, "max": 0.995 },
+    { "id": "zoom", "type": "float", "default": 1.0, "min": 0.9, "max": 1.1 },
+    { "id": "rotate", "type": "float", "default": 0.0, "min": -0.05, "max": 0.05 },
+    { "id": "drift", "type": "vec2", "default": [0.0, 0.0], "min": -0.02, "max": 0.02 },
+    { "id": "blend", "type": "int", "default": 0, "names": ["Lighten", "Add", "Over"] },
+    { "id": "hue", "type": "float", "default": 0.0, "min": -0.05, "max": 0.05 },
+    { "id": "music", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 }
+  ]
+}*/
+fn hue_rotate(c: vec3f, turns: f32) -> vec3f {
+    let a = turns * 6.2831853;
+    let k = vec3f(0.57735);
+    return c * cos(a) + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - cos(a));
+}
+fn main_image(uv: vec2f, px: vec2f) -> vec4f {
+    let a = rotate * 6.2831853;
+    let p = mat2x2f(cos(a), sin(a), -sin(a), cos(a)) * ((uv - 0.5) * vec2f(g.aspect, 1.0)) / (zoom * (1.0 + 0.02 * music * g.kick)) + drift;
+    var back = textureSample(prev, smp, p / vec2f(g.aspect, 1.0) + 0.5) * decay;
+    if hue != 0.0 {
+        back = vec4f(max(hue_rotate(back.rgb, hue), vec3f(0.0)), back.a);
+    }
+    let now = textureSample(src, smp, uv);
+    if blend == 1 {
+        return min(now + back, vec4f(4.0));
+    } else if blend == 2 {
+        return mix(back, now, now.a);
+    }
+    return max(now, back);
+}"#;
+
+    const OLD_TRANSFORM: &str = r#"/*{
+  "name": "Transform", "category": "effect", "inputs": [{ "id": "src", "type": "texture" }],
+  "params": [
+    { "id": "zoom", "type": "float", "default": 1.0, "min": 0.1, "max": 8.0 },
+    { "id": "rotate", "type": "float", "default": 0.0, "min": -1.0, "max": 1.0 },
+    { "id": "offset", "type": "vec2", "default": [0.0, 0.0], "min": -1.0, "max": 1.0 },
+    { "id": "mirror", "type": "bool", "default": false },
+    { "id": "tile", "type": "bool", "default": false },
+    { "id": "spin", "type": "float", "default": 0.0, "min": -1.0, "max": 1.0 },
+    { "id": "scroll", "type": "vec2", "default": [0.0, 0.0], "min": -1.0, "max": 1.0 },
+    { "id": "music", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 }
+  ]
+}*/
+fn main_image(uv: vec2f, px: vec2f) -> vec4f {
+    let a = rotate * 3.14159265 + g.time * spin * 6.2831853;
+    let p = mat2x2f(cos(a), sin(a), -sin(a), cos(a)) * ((uv - 0.5) * vec2f(g.aspect, 1.0)) / (zoom * (1.0 + 0.15 * music * g.kick)) - offset - scroll * g.time;
+    var q = p / vec2f(g.aspect, 1.0) + 0.5;
+    if mirror {
+        q = 1.0 - abs(fract(q * 0.5) * 2.0 - 1.0);
+    }
+    if tile {
+        q = fract(q);
+    }
+    return textureSample(src, smp, q);
+}"#;
+
+    const OLD_KALEIDO: &str = r#"/*{
+  "name": "Kaleido", "category": "effect", "inputs": [{ "id": "src", "type": "texture" }],
+  "params": [
+    { "id": "segments", "type": "int", "default": 6, "min": 2, "max": 24 },
+    { "id": "spin", "type": "float", "default": 0.0, "min": -1.0, "max": 1.0 },
+    { "id": "zoom", "type": "float", "default": 1.0, "min": 0.25, "max": 4.0 },
+    { "id": "angle", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
+    { "id": "center", "type": "vec2", "default": [0.0, 0.0], "min": -0.5, "max": 0.5 },
+    { "id": "music", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 }
+  ]
+}*/
+fn main_image(uv: vec2f, px: vec2f) -> vec4f {
+    let c = 0.5 + center;
+    let p = (uv - c) * vec2f(g.aspect, 1.0);
+    let sector = 6.2831853 / f32(segments);
+    var a = atan2(p.y, p.x) + g.time * spin + (angle + 0.03 * music * g.kick) * 6.2831853;
+    a = abs(fract(a / sector + 0.5) - 0.5) * sector;
+    let q = vec2f(cos(a), sin(a)) * length(p) / (zoom * (1.0 + 0.2 * music * g.bass)) / vec2f(g.aspect, 1.0) + c;
+    return textureSample(src, smp, q);
+}"#;
 
     /// What an effect is shown in the contact sheets: a dark field, a ring, bars, a moving disc.
     const PATTERN: &str = r#"/*{ "name": "Pattern" }*/

@@ -1089,13 +1089,14 @@ impl Thread {
                         self.status.watched.store(watch, Relaxed);
                     }
                 }
-                // the files' frames due, at each node's speed, in the part it loops (mappable like
-                // any parameter)
+                // the files' frames due, at each node's speed and direction, in the part it loops,
+                // cued and scrubbed (mappable like any parameter)
                 for p in &mut g.media {
                     let value = |i: usize, or: f32| g.mods.get(p.node).map_or(or, |m| m.value(i));
                     let speed = p.speed.map_or(1.0, |i| value(i, 1.0));
                     let window = p.range.map_or((0.0, 1.0), |(a, b)| (value(a, 0.0), value(b, 1.0)));
-                    p.step(&self.queue, delta, speed, window);
+                    let [direction, cue, scrub] = p.transport.map_or([0.0; 3], |i| i.map(|i| value(i, 0.0)));
+                    p.step(&self.queue, delta, crate::media::Transport { speed, window, direction: direction.round() as i32, cue, scrub });
                 }
                 let [w, h] = g.runner.size();
                 let mut globals = [0.0f32; 20];

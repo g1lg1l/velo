@@ -16,7 +16,10 @@
     { "id": "flip_x", "type": "bool", "default": false },
     { "id": "flip_y", "type": "bool", "default": false },
     { "id": "loop_start", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
-    { "id": "loop_end", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 }
+    { "id": "loop_end", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 },
+    { "id": "direction", "type": "int", "default": 0, "names": ["Forward", "Reverse", "Ping-pong"] },
+    { "id": "cue", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
+    { "id": "scrub", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 }
   ]
 }*/
 
@@ -32,8 +35,13 @@ fn ycocg(c: vec4f) -> vec4f {
     return vec4f(clamp(vec3f(c.w + co - cg, c.w + cg, c.w - co - cg), vec3f(0.0), vec3f(1.0)), 1.0);
 }
 
-// src is the file's frame (the engine binds it, it's not a port); speed is read by the engine:
-// how fast a GIF, a folder of frames or a movie plays (1 as made, 0 holds the frame)
+// src is the file's frame (the engine binds it, it's not a port). The engine reads the playback
+// parameters (media.rs, Transport): speed, how fast a GIF, a folder of frames or a movie plays
+// (1 as made, 0 holds the frame); direction, forward, reverse or ping-pong through the loop
+// (smooth on GIFs, frame folders and HAP, whose frames read in any order; an H.264 or HEVC movie
+// opens again at every frame going back and stutters); cue, each rise past a half starts playback
+// over from scrub; scrub, where in the loop playback runs from, added to the clock (at speed 0 it
+// is the playhead)
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     // the part of the picture kept, its edges cropped off
     let lo = vec2f(crop_left, crop_top);

@@ -166,9 +166,17 @@ impl Media {
         if length <= 0.0 {
             return 0;
         }
-        let (a, b) = (from.min(to).clamp(0.0, 1.0) * length, from.max(to).clamp(0.0, 1.0) * length);
-        let t = if b - a > 1e-6 { a + secs.rem_euclid(b - a) } else { a };
+        let a = from.min(to).clamp(0.0, 1.0) * length;
+        let span = self.span(from, to);
+        let t = if span > 1e-6 { a + secs.rem_euclid(span) } else { a };
         self.ends.partition_point(|&e| e <= t).min(self.count() - 1)
+    }
+
+    /// How long the part from `from` to `to` (fractions of the clip, either way round) plays at
+    /// speed 1, in seconds.
+    pub fn span(&self, from: f64, to: f64) -> f64 {
+        let length = self.length();
+        from.max(to).clamp(0.0, 1.0) * length - from.min(to).clamp(0.0, 1.0) * length
     }
 
     /// How long the loop plays at speed 1, in seconds (a still: 0).
@@ -363,6 +371,46 @@ impl Library {
     }
 }
 
+/// Where playback stands in a loop `span` seconds long, in seconds from its start: `secs` of the
+/// clock since it started from `from` seconds in, played forward (0), backward (1) or there and
+/// back (2). Backward from the loop's start is its last frame; there and back starts forward.
+pub fn playhead(secs: f64, from: f64, span: f64, direction: i32) -> f64 {
+    if span <= 1e-6 {
+        return 0.0;
+    }
+    match direction {
+        // a hair before: the loop's start, going back, is its end
+        1 => (from - secs - 1e-9).rem_euclid(span),
+        2 => {
+            let u = (from + secs).rem_euclid(2.0 * span);
+            if u < span { u } else { (2.0 * span - u).min(span - 1e-9) }
+        }
+        _ => (from + secs).rem_euclid(span),
+    }
+}
+
+/// How an Image node's file plays this frame: its parameters as they stand (mappable like any).
+#[derive(Clone, Copy, Debug)]
+pub struct Transport {
+    /// 1 as the file plays, 0 holds.
+    pub speed: f32,
+    /// The part that loops: from, to, fractions of the clip.
+    pub window: (f32, f32),
+    /// Forward (0), reverse (1), ping-pong (2).
+    pub direction: i32,
+    /// Each time it rises past a half, playback starts over from `scrub`.
+    pub cue: f32,
+    /// Where in the loop playback runs from (0..1 of it), added to the clock: at speed 0 it is the
+    /// playhead, otherwise the clock plays on from wherever it puts it.
+    pub scrub: f32,
+}
+
+impl Default for Transport {
+    fn default() -> Self {
+        Self { speed: 1.0, window: (0.0, 1.0), direction: 0, cue: 0.0, scrub: 0.0 }
+    }
+}
+
 /// An Image node's picture as a graph plays it: the texture its shader reads, the frame on it.
 pub struct Playing {
     /// The engine node, and its `speed` parameter's index.
@@ -370,11 +418,15 @@ pub struct Playing {
     pub speed: Option<usize>,
     /// Its `loop_start` and `loop_end` parameters' indices: the part of the clip that loops.
     pub range: Option<(usize, usize)>,
+    /// Its `direction`, `cue` and `scrub` parameters' indices.
+    pub transport: Option<[usize; 3]>,
     pub media: Arc<Media>,
     pub texture: wgpu::Texture,
     shown: usize,
-    /// Seconds into the clip (at its speed).
+    /// Seconds of the clock (at its speed) since playback started, or was cued last.
     at: f64,
+    /// Whether `cue` was past a half the last frame: it cues again once it has come back down.
+    cued: bool,
     /// A movie's reader, on its own thread.
     reader: Option<(Arc<Reader>, std::thread::Thread)>,
     /// A live source's frame, swapped out of its mailbox.
@@ -415,7 +467,7 @@ impl Playing {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let mut playing = Self { node, speed, range: None, media, texture, shown: 0, at: 0.0, reader: None, scratch: Vec::new() };
+        let mut playing = Self { node, speed, range: None, transport: None, media, texture, shown: 0, at: 0.0, cued: false, reader: None, scratch: Vec::new() };
         // a movie's first frame now, the rest on the reader's thread as they come due
         let mut first = Vec::new();
         match (&playing.media.movie, &playing.media.video) {
@@ -450,10 +502,10 @@ impl Playing {
         playing
     }
 
-    /// `dt` seconds later at `speed` (1: as the file plays), looping the part `window` (from,
-    /// to: fractions of the clip): the frame due, if it changed. A movie's frame is read ahead,
-    /// for the next frame; one that isn't read yet waits a frame.
-    pub fn step(&mut self, queue: &wgpu::Queue, dt: f32, speed: f32, window: (f32, f32)) {
+    /// `dt` seconds later as `t` says (its speed, direction, the part looped, a cue, a scrub): the
+    /// frame due, if it changed. A movie's frame is read ahead, for the next frame; one that isn't
+    /// read yet waits a frame.
+    pub fn step(&mut self, queue: &wgpu::Queue, dt: f32, t: Transport) {
         // a live source's newest frame, if one came since the last: never waited for
         if let Some(feed) = self.media.live.clone() {
             if feed.take(&mut self.scratch) {
@@ -461,15 +513,24 @@ impl Playing {
             }
             return;
         }
-        let (from, to) = (f64::from(window.0), f64::from(window.1));
+        let (from, to) = (f64::from(t.window.0), f64::from(t.window.1));
         if self.media.count() < 2 {
             return;
         }
-        let step = f64::from(dt) * f64::from(speed.max(0.0));
+        let cued = t.cue > 0.5;
+        if cued && !self.cued {
+            self.at = 0.0;
+        }
+        self.cued = cued;
+        let step = f64::from(dt) * f64::from(t.speed.max(0.0));
         self.at += step;
+        let span = self.media.span(from, to);
+        let start = f64::from(t.scrub.clamp(0.0, 1.0)) * span;
+        let media = &self.media;
+        let due = |at: f64| media.frame_in(playhead(at, start, span, t.direction), from, to);
         match &self.reader {
             Some((reader, thread)) => {
-                let next = self.media.frame_in(self.at + step, from, to);
+                let next = due(self.at + step);
                 if reader.want.swap(next, Relaxed) != next {
                     thread.unpark();
                 }
@@ -482,7 +543,7 @@ impl Playing {
                 }
             }
             None => {
-                let due = self.media.frame_in(self.at, from, to);
+                let due = due(self.at);
                 if due != self.shown {
                     self.shown = due;
                     self.upload(queue, &self.media.frames[due]);
@@ -802,7 +863,7 @@ impl Reel {
             if played != Some(f)
                 && let Some(playing) = &mut self.cache[f]
             {
-                playing.step(queue, dt, 1.0, (0.0, 1.0));
+                playing.step(queue, dt, Transport::default());
             }
             played = Some(f);
         }
@@ -1146,6 +1207,20 @@ mod tests {
         assert_eq!(shown, [4, 4, 5, 5, 4, 4]);
         assert_eq!(media.frame_in(0.3, 0.6, 0.4), media.frame_in(0.3, 0.4, 0.6), "either way round");
         assert_eq!((media.frame_in(5.0, 0.7, 0.7), media.frame_in(1.0, 1.0, 1.0)), (7, 9), "a part shorter than a frame holds it");
+    }
+
+    #[test]
+    fn reverse_and_ping_pong_play_the_loop_back() {
+        // ten frames a tenth of a second each, looping 0.2 to 0.6 of it: frames 2 to 5
+        let media = Media { size: [1, 1], frames: vec![Vec::new(); 10], ends: (1..=10).map(|k| f64::from(k) / 10.0).collect(), movie: None, video: None, live: None, model: None };
+        let span = media.span(0.2, 0.6);
+        let shown = |direction: i32, from: f64| -> Vec<usize> { (0..10).map(|k| media.frame_in(playhead(f64::from(k) * 0.1 + 0.05, from, span, direction), 0.2, 0.6)).collect() };
+        assert_eq!(shown(0, 0.0), [2, 3, 4, 5, 2, 3, 4, 5, 2, 3], "forward, as before");
+        assert_eq!(shown(1, 0.0), [5, 4, 3, 2, 5, 4, 3, 2, 5, 4], "reverse, from the loop's end");
+        assert_eq!(shown(2, 0.0), [2, 3, 4, 5, 5, 4, 3, 2, 2, 3], "ping-pong turns back at the loop's end");
+        assert_eq!(shown(0, span * 0.5), [4, 5, 2, 3, 4, 5, 2, 3, 4, 5], "from half way in");
+        assert_eq!(media.frame_in(playhead(0.0, 0.0, span, 1), 0.2, 0.6), 5, "reverse at the start shows the last frame");
+        assert_eq!(playhead(3.0, 0.0, 0.0, 1), 0.0, "a part with no length holds");
     }
 
     fn dir(name: &str) -> PathBuf {

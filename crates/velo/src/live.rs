@@ -1443,7 +1443,7 @@ mod tests {
         assert_eq!(SHADERS.len(), BUILTINS.len(), "every built-in parses");
         let kaleido = shader("velo.kaleido", None).unwrap();
         let names: Vec<&str> = kaleido.controls.iter().flat_map(|(_, infos)| infos.iter().map(|i| i.name)).collect();
-        assert_eq!(names, ["Segments", "Spin", "Zoom", "Angle", "Center x", "Center y", "Automagic", "Amount"], "effects show their automatic amount, last");
+        assert_eq!(names, ["Segments", "Spin", "Zoom", "Angle", "Center x", "Center y", "Modulate", "Automagic", "Amount"], "effects show their automatic amount, last");
         let feedback = shader("velo.feedback", None).unwrap();
         let drift = feedback.controls.iter().find(|(p, _)| p.id == "drift").unwrap();
         assert_eq!(drift.1.iter().map(|i| i.name).collect::<Vec<_>>(), ["Drift x", "Drift y"]);

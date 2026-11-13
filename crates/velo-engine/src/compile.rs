@@ -340,6 +340,8 @@ fn build(
             let mut p = crate::media::Playing::new(device, queue, n, speed, m.clone());
             let node = &programs[specs[n].program].node;
             p.range = crate::modulate::slot(node, "loop_start").zip(crate::modulate::slot(node, "loop_end")).map(|(a, b)| (a.0, b.0));
+            let at = |id| crate::modulate::slot(node, id).map(|s| s.0);
+            p.transport = at("direction").zip(at("cue")).zip(at("scrub")).map(|((d, c), s)| [d, c, s]);
             playing.push(p);
         }
     }
@@ -488,7 +490,7 @@ mod tests {
         let p = plan(&s);
         assert_eq!(shaders(&p), ["noise", "kaleido", "output"]);
         assert_eq!(p.nodes[2].0, s.nodes[2].id);
-        assert_eq!(p.inputs, vec![vec![], vec![Some(0)], vec![Some(1)]]);
+        assert_eq!(p.inputs, vec![vec![], vec![Some(0), None], vec![Some(1)]], "kaleido's map: nothing wired");
         assert_eq!(p.output, Some(2));
     }
 
@@ -762,7 +764,7 @@ mod tests {
         s.nodes[0].code = Some(TEMPLATE.into());
         let p = plan(&s);
         assert_eq!(shaders(&p), ["own", "kaleido"]);
-        assert_eq!(p.inputs, vec![vec![], vec![Some(0)]]);
+        assert_eq!(p.inputs, vec![vec![], vec![Some(0), None]]);
         assert_eq!(p.output, Some(1));
     }
 
