@@ -59,6 +59,10 @@ pub const WAVE_ROWS: usize = 3;
 /// The spectrum row's range, its bands spaced evenly in octaves.
 const LOWEST_HZ: f32 = 30.0;
 const HIGHEST_HZ: f32 = 16_000.0;
+/// Under this the spectrum row reads the long FFT (~12 Hz a bin over 85 ms), over it the short
+/// one (~94 Hz a bin over 11 ms): up there a short bin spans under a third of an octave, and a
+/// hat's or a snare's band answers as fast as before.
+const LONG_UNDER_HZ: f32 = 500.0;
 
 /// The live audio for shaders that read `wave`: the last hops' levels, the last samples and the
 /// spectrum. One audio writer, any number of readers. A load may overlap the next hop, but
@@ -105,19 +109,29 @@ impl SharedWave {
     /// The latest spectrum (`power` per bin of an FFT `2 × (bins − 1)` points long, at `rate`) as
     /// bands from 30 Hz to 16 kHz evenly in octaves, 0..1: each band's loudest bin (two bins'
     /// blend where a band is narrower than a bin) in dB, tilted up 4.5 dB an octave as music falls
-    /// off, rising at once and falling slowly, so bars dance rather than flicker.
-    pub fn push_spectrum(&self, power: &[f32], rate: f32) {
-        let last = power.len() - 1;
-        let bin = |hz: f32| hz * 2.0 * last as f32 / rate;
-        let at = |k: f32| {
-            let i = (k.floor() as usize).min(last);
-            power[i] + (power[(i + 1).min(last)] - power[i]) * k.fract()
+    /// off, rising at once and falling slowly, so bars dance rather than flicker. Under
+    /// 500 Hz (`LONG_UNDER_HZ`) the bands read `long`, a longer FFT's (finer bins, a slower window),
+    /// scaled so a steady tone reads the same in both.
+    pub fn push_spectrum(&self, power: &[f32], long: &[f32], rate: f32) {
+        // a band's power in one spectrum, from `lo` to `hi` Hz
+        let read = |power: &[f32], lo: f32, hi: f32| {
+            let last = power.len() - 1;
+            let (lo, hi) = (lo * 2.0 * last as f32 / rate, hi * 2.0 * last as f32 / rate);
+            if hi - lo < 1.0 {
+                let k = (lo + hi) * 0.5;
+                let i = (k.floor() as usize).min(last);
+                power[i] + (power[(i + 1).min(last)] - power[i]) * k.fract()
+            } else {
+                power[(lo.ceil() as usize).min(last)..=(hi.floor() as usize).min(last)].iter().copied().fold(0.0, f32::max)
+            }
         };
+        // a tone's peak grows with the FFT's length (the power is per point), noise's doesn't
+        let scale = (power.len() - 1) as f32 / (long.len() - 1) as f32;
         let octaves = (HIGHEST_HZ / LOWEST_HZ).log2();
         let hz = |x: f32| LOWEST_HZ * 2f32.powf(octaves * x / WAVE_COLUMNS as f32);
         for (b, slot) in self.spectrum.iter().enumerate() {
-            let (lo, hi) = (bin(hz(b as f32)), bin(hz(b as f32 + 1.0)));
-            let p = if hi - lo < 1.0 { at((lo + hi) * 0.5) } else { power[(lo.ceil() as usize).min(last)..=(hi.floor() as usize).min(last)].iter().copied().fold(0.0, f32::max) };
+            let (lo, hi) = (hz(b as f32), hz(b as f32 + 1.0));
+            let p = if hi <= LONG_UNDER_HZ { scale * read(long, lo, hi) } else { read(power, lo, hi) };
             let tilt = 4.5 * (hz(b as f32 + 0.5) / 1000.0).log2();
             let v = ((10.0 * p.max(1e-12).log10() + tilt + 48.0) / 60.0).clamp(0.0, 1.0);
             let was = f32::from_bits(slot.load(Relaxed));
@@ -1817,7 +1831,7 @@ mod tests {
         let mut power = [1e-9f32; 257];
         power[11] = 1.0;
         for _ in 0..20 {
-            wave.push_spectrum(&power, 48_000.0);
+            wave.push_spectrum(&power, &[1e-9; 2049], 48_000.0);
         }
         let mut pixels = [[0.0; 4]; WAVE_COLUMNS * WAVE_ROWS];
         wave.load(&mut pixels);
@@ -1827,7 +1841,7 @@ mod tests {
         assert!((900.0..1200.0).contains(&hz), "the loudest band is the tone's: {hz} Hz");
         assert!(row[10] < 0.1 && row[500] < 0.1, "the rest stays dark");
         // and it falls back slowly once the tone stops
-        wave.push_spectrum(&[1e-9; 257], 48_000.0);
+        wave.push_spectrum(&[1e-9; 257], &[1e-9; 2049], 48_000.0);
         wave.load(&mut pixels);
         assert!(pixels[2 * WAVE_COLUMNS + loudest][0] > 0.5 * row[loudest]);
     }
