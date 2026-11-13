@@ -51,6 +51,8 @@ On a press, continuous targets (a macro, a parameter, blackout, freeze) flip bet
 - **Never while typing.** As for the stage keys, nothing fires while a text field or the code editor has the keyboard, or a dialog, the command palette or the node menu is open.
 - **Which keys.** Not Esc, Space, Tab, Enter, the arrows or Delete: they move around the interface. The key is the one the keymap sees (the letter or digit the layout types), so a binding and a command on the same key are always about the same key.
 
+**The output window** takes Esc (it closes) and, while its projection is adjusted ([rendering.md](rendering.md) §5; the Output menu or Shift+Cmd+K, `stage.adjust`), the mouse and these keys, none of them bindings: drag a corner or a mask's point; a click away from them picks the mask under it; Tab picks the next handle; the arrows nudge the picked one a pixel, ten with Shift; Delete removes the picked one's mask; Esc ends adjusting. **Draw a mask** in the menu starts a mask: each click adds a point, Enter or a click on its first point closes it, Esc drops it. The event loop owns the window, so it edits the projection in what it shares with the UI and sends the engine the one in use when it changes; the UI keeps it with the preferences once a drag ends.
+
 **Soft takeover.** After a scene launch a physical knob at 20 % may drive a macro now at 70 %. `Pickup` moves the value only once the knob is within 1.5 steps of it or has crossed it since its last message; a knob that set the value last time is on it, so it keeps driving. `Jump` applies at once. Learn makes macro knobs Pickup and parameter knobs Jump.
 
 **Ports.** A binding stores the MIDI port's name; the bindings list can make it answer any port, so a project moves between machines.

@@ -146,6 +146,9 @@ struct Settings {
     /// How far ahead of the music the pictures are drawn, in ms: the projector's lag, so the
     /// beat lands on the beat on the wall. A property of this computer's output, not the show.
     lead_ms: f32,
+    /// Each output's corner pin and masks, by where it goes (a display's name, "" for the
+    /// window): the venue's cloth and projector, not the show's.
+    projections: std::collections::BTreeMap<String, velo_engine::Projection>,
     /// The first-run demo was shown (it opens once, then Project → Open the demo).
     demo_seen: bool,
     /// The frame-time HUD over the canvas (click the fps in the top bar).
@@ -640,6 +643,17 @@ impl App {
         if std::env::var_os("VELO_DEMO_HUD").is_some() {
             app.settings.hud = true;
         }
+        // VELO_DEMO_PIN: a window output pinned to a leaning quad with a mask on its left, its
+        // projection being adjusted (the preview shows it, handles and all)
+        if std::env::var_os("VELO_DEMO_PIN").is_some()
+            && let Some(live) = &app.live
+        {
+            let pin = velo_engine::Projection { corners: [[0.12, 0.08], [0.9, 0.16], [0.82, 0.94], [0.06, 0.86]], masks: vec![vec![[0.0, 0.55], [0.3, 0.6], [0.24, 1.0], [0.0, 1.0]]], soft: 0.01 };
+            app.settings.projections.insert(String::new(), pin);
+            let mut s = live.shared.borrow_mut();
+            s.requests.push(host::Request::Open(host::Target::Window));
+            s.adjust = Some(host::Adjust { selected: Some(1), ..Default::default() });
+        }
         // dev and screenshots: a patch to look at (1) or a stress graph of about n nodes
         if let Some(n) = std::env::var("VELO_DEMO_GRAPH").ok().and_then(|v| v.parse().ok()) {
             let mut selected = canvas::demo(&mut app.session, n);
@@ -729,6 +743,7 @@ impl App {
             live.audio.listen(live::Audio::first_input(&app.settings.audio));
             live.set_link(app.settings.link);
             live.set_lead(app.settings.lead_ms);
+            live.shared.borrow_mut().projections.clone_from(&app.settings.projections);
         }
         app
     }
@@ -860,6 +875,20 @@ impl App {
             "stage.pattern" => {
                 if let Some(live) = &mut self.live {
                     live.set_pattern(!live.pattern);
+                }
+            }
+            "stage.adjust" => {
+                let open = self.live.as_ref().map(|live| {
+                    let mut s = live.shared.borrow_mut();
+                    match (s.adjust.is_some(), s.output.is_some()) {
+                        (true, _) => s.finish(true),
+                        (false, true) => s.adjust = Some(host::Adjust::default()),
+                        (false, false) => return false,
+                    }
+                    true
+                });
+                if open == Some(false) {
+                    self.say(Tone::Error, tr!("Open an output first: its projection is adjusted on it"));
                 }
             }
             "stage.launch" => {
@@ -2153,6 +2182,8 @@ impl App {
         let h = (w * c.height as f32 / c.width.max(1) as f32).clamp(60.0, 400.0);
         let picture = self.live.as_ref().and_then(live::Live::picture);
         let (blackout, frozen, pattern) = self.live.as_ref().map_or((false, false, false), |l| (l.blackout, l.frozen, l.pattern));
+        // adjusting the projection, the preview shows it landing on the output
+        let adjusting = self.live.as_ref().is_some_and(|l| l.shared.borrow().adjust.is_some());
         let tip = self.tip(tr!("Hide the preview"), "stage.preview");
         // the program while the selected scene is the live one, else that scene alone, with
         // its Launch button (or its countdown, once launched)
@@ -2177,7 +2208,7 @@ impl App {
                     ui.label(RichText::new(what).font(Theme::mono(t.text_xs)).extra_letter_spacing(1.0).color(color));
                     ui.add(egui::Label::new(RichText::new(format!("· {name}")).small().color(t.fg_text)).truncate());
                     // what the audience sees instead, said
-                    for (on, what, color) in [(blackout, tr!("BLACKOUT"), t.warn), (frozen, tr!("FROZEN"), t.accent), (pattern, tr!("TEST PATTERN"), t.warn)] {
+                    for (on, what, color) in [(blackout, tr!("BLACKOUT"), t.warn), (frozen, tr!("FROZEN"), t.accent), (pattern, tr!("TEST PATTERN"), t.warn), (adjusting, tr!("PROJECTION"), t.accent)] {
                         if on {
                             ui.label(RichText::new(what).font(Theme::mono(t.text_xs)).color(color));
                         }
@@ -3548,6 +3579,22 @@ impl App {
 }
 
 #[cfg(test)]
+mod projection_tests {
+    use super::Settings;
+
+    #[test]
+    fn an_outputs_projection_is_kept_with_the_preferences() {
+        let pin = velo_engine::Projection { corners: [[0.1, 0.0], [0.9, 0.05], [1.0, 1.0], [0.0, 0.95]], masks: vec![vec![[0.0, 0.0], [0.2, 0.0], [0.0, 0.3]]], soft: 0.02 };
+        let mut settings = Settings::default();
+        settings.projections.insert("EPSON PJ".into(), pin.clone());
+        let back: Settings = ron::from_str(&ron::to_string(&settings).expect("saves")).expect("reads back");
+        assert_eq!(back.projections.get("EPSON PJ"), Some(&pin));
+        // preferences from before projections: none, every output drawn straight
+        assert!(ron::from_str::<Settings>("(lead_ms: 40.0)").expect("reads").projections.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod pilot_tests {
     use super::{Hush, Layer, Pilot, Scene, next_turn};
 
@@ -3768,6 +3815,13 @@ impl eframe::App for App {
         self.poll_osc(ctx, now);
         self.chat_poll();
         self.poll_updates(ctx);
+        // the projections as adjusted on the output, kept with the preferences once a drag ends
+        if let Some(live) = &self.live {
+            let shared = live.shared.borrow();
+            if shared.adjust.is_none_or(|a| !a.dragging) && shared.projections != self.settings.projections {
+                self.settings.projections.clone_from(&shared.projections);
+            }
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {

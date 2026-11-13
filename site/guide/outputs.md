@@ -12,6 +12,18 @@ To close it, use **Close output** in the same menu. <kbd>Esc</kbd> doesn't close
 
 **Window** in the same menu puts the output in an ordinary window instead, handy for checking it on one screen.
 
+## Fitting the picture to the screen
+
+A projector hung off to the side, or a cloth that isn't square, makes the picture land as a slanted shape that spills past the screen. **Adjust the projection** in the Output menu (<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>K</kbd>, <kbd>Cmd</kbd> on a Mac) puts a handle on each corner of the picture, on the output itself:
+
+- **Drag each corner** to where that corner of the screen is. The picture follows in perspective, black around it.
+- For the last pixel, click a corner and nudge it with the **arrow keys**, one pixel at a time (ten with <kbd>Shift</kbd>). <kbd>Tab</kbd> picks the next handle.
+- Turn on the **Test pattern** while you do it: it is pinned too, and its circle and square cells show when the corners are right.
+- **Draw a mask** (in the same menu) blacks out a shape over the picture, so no light falls on the DJ or past the cloth: click its points on the output, then <kbd>Enter</kbd> or click its first point again. Masks can be any shape. Drag their points to change them; click inside one and press <kbd>Delete</kbd>, or use its bin in the menu, to remove it. **Soft edge** fades the black in from the mask's edge.
+- <kbd>Esc</kbd> on the output ends it. **Reset the projection** puts the picture back square.
+
+While you adjust, the preview shows the output as it lands, handles and all. The corners and masks stay with this computer, one set for each display, not with the show: plug into the same projector next week and they are as you left them. Spout and NDI still send the picture square; the app on the other end maps it.
+
 If a projector is unplugged, the picture keeps running; Velo tells you, and recovers when it's back. A GPU driver reset is recovered from the same way.
 
 ## The picture's size

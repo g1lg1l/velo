@@ -13,6 +13,7 @@ pub mod media;
 pub mod model;
 pub mod modulate;
 pub mod presets;
+pub mod projection;
 pub mod runtime;
 pub mod shader;
 pub mod share;
@@ -38,6 +39,7 @@ pub use gpu::{NodeSpec, Program, Runner};
 pub use launch::Show;
 pub use modulate::{Clock, MacroRoute, Macros, Modulator, Route, macro_routes, routes};
 pub use presets::PRESETS;
+pub use projection::Projection;
 /// A wgpu error as one line to show: its innermost cause.
 pub fn gpu_error(e: &wgpu::Error) -> String {
     let mut text = e.to_string();

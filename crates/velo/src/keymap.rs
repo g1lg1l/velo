@@ -22,7 +22,7 @@ const fn cmd(group: &'static str, id: &'static str, label: &'static str) -> Comm
 }
 
 /// In the shortcut sheet's order: the canvas first, it's where you work.
-pub const COMMANDS: [Command; 56] = [
+pub const COMMANDS: [Command; 57] = [
     cmd("Nodes", "canvas.add", "Add a node"),
     cmd("Nodes", "canvas.find", "Find a node"),
     cmd("Nodes", "canvas.home", "Zoom to fit"),
@@ -40,6 +40,7 @@ pub const COMMANDS: [Command; 56] = [
     cmd("Stage", "stage.blackout", "Blackout"),
     cmd("Stage", "stage.freeze", "Freeze"),
     cmd("Stage", "stage.pattern", "Test pattern"),
+    cmd("Stage", "stage.adjust", "Adjust the projection"),
     cmd("Stage", "stage.tap", "Tap tempo"),
     cmd("Stage", "stage.learn", "MIDI learn"),
     cmd("Stage", "stage.launch", "Launch the selected scene"),
@@ -148,6 +149,7 @@ impl Preset {
             (Preset::Velo, "stage.blackout") => vec![k(N, Key::B)],
             (Preset::Velo, "stage.freeze") => vec![k(N, Key::F)],
             (Preset::Velo, "stage.pattern") => vec![k(CS, Key::T)],
+            (Preset::Velo, "stage.adjust") => vec![k(CS, Key::K)],
             (Preset::Velo, "stage.tap") => vec![k(N, Key::T)],
             (Preset::Velo, "stage.learn") => vec![k(N, Key::L)],
             (Preset::Velo, "stage.launch") => vec![k(N, Key::Space)],
