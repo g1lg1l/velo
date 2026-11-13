@@ -39,7 +39,7 @@ loop {
     step launches on the beat clock; read the audio features; advance the clock
     signal nodes, then macros and mappings → each node's parameter values
     one render pass per node of the live graph (and of a fading or edited one)
-    blit the program to the output (fit, blackout, freeze, test pattern), the shares and the preview
+    blit the program to the output (fit, blackout, freeze, test pattern, corner pin and masks), the shares and the preview
     submit and present; at most two frames on the GPU
     publish status: frame time, late frames, stalls, each node's GPU cost
 }
@@ -70,6 +70,7 @@ Not yet: system video on Linux (HAP only there), HEIC stills off macOS, turned m
 - The picture **keeps its shape**: bars on two sides when the display's shape differs, never stretched.
 - The **Output node** grades what goes out: exposure, contrast, saturation, hue, colorize, invert, vignette, fade to black.
 - **Blackout**, **Freeze** and the **test pattern** are styles of the output blit, free while off. Freeze copies the program once and shows it on the outputs, the shares and the preview until it's let go; the graphs keep running underneath.
+- **Corner pin and masks** (`projection.rs`), for a projector off to the side of a cloth that isn't square to it. Where the picture's four corners land on the output and any number of black polygons (8 at most, 60 points in all), as parts of the output's width and height, so they hold at any resolution. They belong to the venue, not the show: kept with the preferences, one set per output by where it goes (a display's name, the window apart), so a second output can have its own later. The output's usual blit (fit, test pattern, freeze) goes into a frame of its own first, then one pass (`Warp`) draws it to the surface: each pixel reads the frame where the inverse of the corners' homography (Heckbert's square to quad) takes it, black outside it, then goes black inside a mask (even-odd, so a concave mask works and one crossing itself leaves a hole), fading in over a soft edge inside the mask's edge so no light passes it. Untouched (the corners where they were, no mask of three points), there is no frame and no pass. Spout and NDI send the program as it is, unpinned: the other app does its own mapping. Adjusting (the Output menu, Shift+Cmd+K) the same pass draws the picture's edge, the masks' and a handle on every point over the output, and the preview shows the output's warp too, handles and all; the mouse and the keys on the output window move them ([control.md](control.md) §2).
 - An output whose **display is unplugged** closes, and the UI says which display.
 
 ### Spout and NDI
@@ -77,7 +78,7 @@ The program is blitted full size into a BGRA texture, read back like the preview
 - **Spout** (Windows): a D3D11 device of its own, a texture shared by handle, and Spout 2's shared memory (sender names, the sender's info, the active sender) written from its protocol, with no SDK linked. About one frame of latency.
 - **NDI**: the NDI runtime the user installs, loaded when sharing starts and kept loaded; each frame goes out as BGRA.
 
-Not yet: Syphon on macOS, several outputs, crop and rotation.
+Not yet: Syphon on macOS, several outputs, crop and rotation, warping past the four corners (a grid, a curved screen), edge blending.
 
 ## 6. Node rendering
 

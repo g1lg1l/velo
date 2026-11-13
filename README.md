@@ -80,7 +80,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - A stage theme for a dark club: near black, dim text, one amber accent and dimmed previews, so the laptop doesn't light up your face. `Cmd`+`Shift`+`L` flips it before a set; the output stays as it is.
 
 **Goes out**
-- Fullscreen on any display, the picture's shape kept.
+- Fullscreen on any display, the picture's shape kept; its four corners pinned where the screen hangs and black masks drawn over it, kept per display, for a projector off to the side and a cloth that isn't square.
 - **Spout** to Resolume, TouchDesigner, OBS or MadMapper; **NDI** to any computer on the network.
 - The Output grades everything that leaves: exposure, contrast, saturation, hue, colorize, invert, vignette and fade to black.
 

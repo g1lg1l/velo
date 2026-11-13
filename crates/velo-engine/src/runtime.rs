@@ -295,6 +295,12 @@ pub enum Command {
     Freeze(bool),
     /// The outputs and shares show a test pattern instead (lining up a projector), or not.
     Pattern(bool),
+    /// The output's corner pin and masks ([`crate::Projection`]), and while they're being
+    /// adjusted the handles drawn over the output and the preview, the picked one lit.
+    Projection {
+        projection: crate::Projection,
+        guides: Option<Option<usize>>,
+    },
     /// The output window is covered or off-screen: don't wait for it to take frames.
     Occluded(bool),
     /// The program shared with other apps (Spout) or over the network (NDI) too, or no longer.
@@ -737,6 +743,8 @@ struct Output {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     blit: Blit,
+    /// The corner pin and masks, made the first time they're used.
+    warp: Option<Warp>,
     period: Duration,
     occluded: bool,
     /// After a frame it didn't hand out, the next time to ask: until then the engine runs on its
@@ -825,6 +833,10 @@ impl Thread {
         let mut showing: Vec<(u64, Layer, LayerBlend, f32)> = Vec::new();
         let mut faded_at = Instant::now();
         let (mut freeze, mut held, mut pattern) = (false, None, false);
+        // the output's corner pin and masks, and the handles while they're adjusted (None:
+        // untouched, the output drawn straight); the preview shows them too while adjusting
+        let mut pin: Option<(crate::Projection, Option<Option<usize>>)> = None;
+        let mut preview_warp: Option<Warp> = None;
         let start = Instant::now();
         let tick = Duration::from_micros(16_667);
         // when the next tick is due, without an output's vsync to pace the frames
@@ -940,7 +952,7 @@ impl Thread {
                     }
                     Command::Attach { surface, config, period } => {
                         surface.configure(&self.device, &config);
-                        output = Some(Output { blit: Blit::new(&self.device, config.format), surface, config, period, occluded: false, retry_at: Instant::now() });
+                        output = Some(Output { blit: Blit::new(&self.device, config.format), warp: None, surface, config, period, occluded: false, retry_at: Instant::now() });
                     }
                     Command::Resize([w, h]) => {
                         if let Some(o) = &mut output
@@ -963,6 +975,16 @@ impl Thread {
                         held = None;
                     }
                     Command::Pattern(on) => pattern = on,
+                    Command::Projection { projection, guides } => {
+                        pin = (!projection.is_identity() || guides.is_some()).then_some((projection, guides));
+                        // back to straight: its frames let go
+                        if pin.is_none() {
+                            preview_warp = None;
+                            if let Some(o) = &mut output {
+                                o.warp = None;
+                            }
+                        }
+                    }
                     Command::Occluded(hidden) => {
                         if let Some(o) = &mut output {
                             o.occluded = hidden;
@@ -1245,18 +1267,28 @@ impl Thread {
             let mut copy_into = None;
             if let Some(t) = &target {
                 let view = t.texture.create_view(&Default::default());
+                // pinned or masked: what the output would show drawn into a frame of its own,
+                // then that through the corner pin and the masks (the test pattern too)
+                if let (Some(o), Some(_), false) = (&mut output, &pin, blackout) {
+                    o.warp.get_or_insert_with(|| Warp::new(&self.device, o.config.format)).fit(&self.device, [o.config.width, o.config.height]);
+                }
+                let warp = output.as_ref().and_then(|o| o.warp.as_ref()).filter(|_| pin.is_some() && !blackout);
+                let dst = warp.and_then(|w| w.frame.as_ref()).unwrap_or(&view);
                 match (program, &output) {
-                    (_, Some(o)) if pattern && !blackout => o.blit.draw(&self.device, &self.queue, &mut encoder, [&black, &black], (0.0, PATTERN), &view, None),
+                    (_, Some(o)) if pattern && !blackout => warp.map_or(&o.blit, |w| &w.blit).draw(&self.device, &self.queue, &mut encoder, [&black, &black], (0.0, PATTERN), dst, None),
                     (Some((a, b, p)), Some(o)) if !blackout => {
                         // its shape kept on a display of another (bars, never stretched)
                         let cell = size.and_then(|s| fit([o.config.width, o.config.height], s));
                         if cell.is_some() {
-                            clear(&mut encoder, &view);
+                            clear(&mut encoder, dst);
                         }
-                        o.blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), &view, cell);
+                        warp.map_or(&o.blit, |w| &w.blit).draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), dst, cell);
                     }
                     // blackout, or nothing to show: a cleared frame, never whatever the drawable held
-                    _ => clear(&mut encoder, &view),
+                    _ => clear(&mut encoder, dst),
+                }
+                if let (Some(w), Some((projection, guides))) = (warp, &pin) {
+                    w.draw(&self.device, &self.queue, &mut encoder, projection, *guides, &view);
                 }
             }
             // shared: the program full size, read back for the sender (black in a blackout), at the
@@ -1287,7 +1319,16 @@ impl Thread {
                 copy_into = self.preview.free();
                 if let Some(i) = copy_into {
                     last_preview = now;
-                    preview_blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), &preview_view, None);
+                    match &pin {
+                        // adjusting the projection: the preview shows it landing, handles and all
+                        Some((projection, guides @ Some(_))) => {
+                            let w = preview_warp.get_or_insert_with(|| Warp::new(&self.device, PREVIEW_FORMAT));
+                            w.fit(&self.device, PREVIEW);
+                            w.blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), w.frame.as_ref().expect("fitted above"), None);
+                            w.draw(&self.device, &self.queue, &mut encoder, projection, *guides, &preview_view);
+                        }
+                        _ => preview_blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), &preview_view, None),
+                    }
                     self.preview.copy(&mut encoder, i);
                 }
             }
@@ -1715,6 +1756,162 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     }
 }
 
+/// Draws a frame through an output's corner pin and masks ([`crate::projection`]): each pixel
+/// reads the picture where the inverse homography takes it, black outside it, and the masks go
+/// black over it. While they're adjusted, the picture's edge, the masks' and every handle on top.
+struct Warp {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    uniform: wgpu::Buffer,
+    decode: bool,
+    /// Draws what the output would show into `frame`, as large as the target, first.
+    blit: Blit,
+    frame: Option<wgpu::TextureView>,
+}
+
+impl Warp {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+        const SHADER: &str = "
+struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
+@vertex fn vs(@builtin(vertex_index) i: u32) -> V {
+    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return V(vec4<f32>(p * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0), p);
+}
+struct U {
+    // the output's point (0..1) to the picture's
+    inv: mat3x3<f32>,
+    // x: decode for an sRGB target, y: the masks' soft edge in pixels, z: how many masks,
+    // w: the picked handle (-1: none)
+    info: vec4<f32>,
+    // x, y: the target's size in pixels, z: 1 with the guides drawn, w: how many handles
+    size: vec4<f32>,
+    // x: a mask's first handle, y: how many it has
+    masks: array<vec4<f32>, 8>,
+    // the handles, two to a vec4: the four corners, then the masks' points
+    points: array<vec4<f32>, 32>,
+}
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var smp: sampler;
+@group(0) @binding(2) var<uniform> u: U;
+// handle i, in pixels
+fn handle(i: u32) -> vec2<f32> {
+    let p = u.points[i / 2u];
+    return select(p.xy, p.zw, (i & 1u) == 1u) * u.size.xy;
+}
+// how far p is from the segment a b
+fn seg(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let ab = b - a;
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    return length(p - a - ab * t);
+}
+@fragment fn fs(v: V) -> @location(0) vec4<f32> {
+    let px = v.pos.xy;
+    let s = u.inv * vec3<f32>(px / u.size.xy, 1.0);
+    let uv = s.xy / s.z;
+    var c = vec3<f32>(0.0);
+    if s.z > 0.0 && all(uv >= vec2<f32>(0.0)) && all(uv <= vec2<f32>(1.0)) {
+        c = textureSampleLevel(src, smp, uv, 0.0).rgb;
+    }
+    let guides = u.size.z > 0.5;
+    // the masks, even-odd; the black fades in over the soft edge, inside the mask's edge
+    var edge = 1e9;
+    for (var m = 0u; m < u32(u.info.z); m++) {
+        let first = u32(u.masks[m].x);
+        let n = u32(u.masks[m].y);
+        var inside = false;
+        var d = 1e9;
+        for (var k = 0u; k < n; k++) {
+            let a = handle(first + k);
+            let b = handle(first + (k + 1u) % n);
+            if ((a.y > px.y) != (b.y > px.y)) && (px.x < (b.x - a.x) * (px.y - a.y) / (b.y - a.y) + a.x) { inside = !inside; }
+            d = min(d, seg(px, a, b));
+        }
+        if inside {
+            let cover = select(1.0, clamp(d / u.info.y, 0.0, 1.0), u.info.y > 0.5);
+            // adjusting, a little shows through, so what's under a mask can still be seen
+            c *= 1.0 - cover * select(1.0, 0.75, guides);
+        }
+        edge = min(edge, d);
+    }
+    if guides {
+        let accent = vec3<f32>(0.13, 0.83, 0.93);
+        for (var k = 0u; k < 4u; k++) { edge = min(edge, seg(px, handle(k), handle((k + 1u) % 4u))); }
+        let r = max(4.0, 10.0 * u.size.y / 1080.0);
+        c = mix(c, accent, 1.0 - smoothstep(r * 0.1, r * 0.1 + 1.0, edge));
+        for (var i = 0u; i < u32(u.size.w); i++) {
+            let d = length(px - handle(i));
+            c = mix(c, vec3<f32>(0.0), 1.0 - smoothstep(r, r + 1.0, d));
+            c = mix(c, select(vec3<f32>(1.0), accent, f32(i) == u.info.w), 1.0 - smoothstep(r * 0.65, r * 0.65 + 1.0, d));
+        }
+    }
+    if u.info.x > 0.5 { return vec4<f32>(pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2)), 1.0); }
+    return vec4<f32>(c, 1.0);
+}";
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("warp"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let entry = |binding, ty| wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::FRAGMENT, ty, count: None };
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("warp"),
+            entries: &[
+                entry(0, wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }),
+                entry(1, wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)),
+                entry(2, wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None }),
+            ],
+        });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("warp"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("warp"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState { module: &module, entry_point: Some("vs"), compilation_options: Default::default(), buffers: &[] },
+            fragment: Some(wgpu::FragmentState { module: &module, entry_point: Some("fs"), compilation_options: Default::default(), targets: &[Some(wgpu::ColorTargetState { format, blend: None, write_mask: wgpu::ColorWrites::ALL })] }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let size = 4 * crate::Projection::default().uniform([1.0, 1.0], false, None).len() as u64;
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("warp"), size, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        Self { pipeline, layout, sampler, uniform, decode: format.is_srgb(), blit: Blit::new(device, crate::gpu::FORMAT), frame: None }
+    }
+
+    /// `frame` made `size` large, if it isn't.
+    fn fit(&mut self, device: &wgpu::Device, [w, h]: [u32; 2]) {
+        if self.frame.as_ref().is_none_or(|f| [f.texture().width(), f.texture().height()] != [w, h]) {
+            self.frame = Some(crate::gpu::texture(device, [w.max(1), h.max(1)]));
+        }
+    }
+
+    /// Draws `frame` through `projection` over all of `dst`, with the handles if `guides`.
+    fn draw(&self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, projection: &crate::Projection, guides: Option<Option<usize>>, dst: &wgpu::TextureView) {
+        let Some(frame) = &self.frame else { return };
+        let values = projection.uniform([dst.texture().width() as f32, dst.texture().height() as f32], self.decode, guides);
+        let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_ne_bytes()).collect();
+        queue.write_buffer(&self.uniform, 0, &bytes);
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("warp"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(frame) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.uniform.as_entire_binding() },
+            ],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("warp"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: dst, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store }, depth_slice: None })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1986,6 +2183,54 @@ mod tests {
         assert!(cyan(at(160, 90)), "the middle: {:?}", at(160, 90));
         assert_eq!(at(103, 119), [255, 255, 255], "the first bar is white");
         assert_eq!(at(119, 119), [255, 255, 0], "the second is yellow");
+    }
+
+    #[test]
+    fn a_pinned_output_lands_in_its_quad_with_its_masks_black() {
+        let _gpu = crate::gpu_lock();
+        let Ok(engine) = Engine::start(None) else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let (device, queue) = (engine.device(), engine.queue());
+        let [w, h] = [256u32, 128];
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let mut warp = Warp::new(device, wgpu::TextureFormat::Rgba8Unorm);
+        warp.fit(device, [w, h]);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        // a white picture
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: warp.frame.as_ref().unwrap(),
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::WHITE), store: wgpu::StoreOp::Store },
+                depth_slice: None,
+            })],
+            ..Default::default()
+        });
+        // its right edge pulled in to the middle, a square mask on its left
+        let projection = crate::Projection { corners: [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]], masks: vec![vec![[0.1, 0.4], [0.2, 0.4], [0.2, 0.6], [0.1, 0.6]]], soft: 0.0 };
+        warp.draw(device, queue, &mut encoder, &projection, None, &target.create_view(&Default::default()));
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: u64::from(w * h * 4), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+        let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: None };
+        encoder.copy_texture_to_buffer(target.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &buffer, layout }, target.size());
+        queue.submit([encoder.finish()]);
+        buffer.map_async(wgpu::MapMode::Read, .., |r| r.expect("map"));
+        device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+        let data = buffer.slice(..).get_mapped_range().expect("mapped").to_vec();
+        let at = |x: u32, y: u32| data[((y * w + x) * 4) as usize];
+        assert_eq!(at(90, 64), 255, "inside the quad");
+        assert_eq!(at(192, 64), 0, "past it, black");
+        assert_eq!(at(38, 64), 0, "under the mask, black");
     }
 
     /// A layer on top built from a scene: what plays under it, its red, green and blue each

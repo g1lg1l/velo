@@ -728,6 +728,10 @@ impl App {
         }
         let (mut request, mut stage, mut share) = (None, None, None);
         let (sharing, frozen, pattern) = (live.sharing, live.frozen, live.pattern);
+        let (adjusting, projection) = {
+            let s = shared.borrow();
+            (s.adjust.is_some(), output.as_ref().and_then(|o| s.projections.get(&crate::host::key(o))).cloned().unwrap_or_default())
+        };
         kit::menu(t, &r).show(|ui| {
             for d in &displays {
                 let hz = d.hz.map_or(String::new(), |hz| format!(" · {hz:.0} Hz"));
@@ -766,6 +770,59 @@ impl App {
                 let r = if id == "stage.pattern" { r.on_hover_text(tr!("A grid, a circle and color bars on the outputs, for lining up a projector")) } else { r };
                 if r.clicked() {
                     stage = Some(id);
+                }
+            }
+            // the output's corner pin and masks, kept per display with the preferences
+            if output.is_some() {
+                ui.separator();
+                kit::menu_title(ui, t, tr!("PROJECTION"));
+                let r = ui.add(egui::Button::selectable(adjusting, format!("{}  {}", icons::FRAME_CORNERS, tr!("Adjust the projection"))).shortcut_text(keys("stage.adjust")));
+                if r.on_hover_text(tr!("Drag the picture's corners on the output until it lands on the screen. Arrows nudge the picked handle a pixel (Shift: ten), Tab picks the next, Esc ends")).clicked() {
+                    stage = Some("stage.adjust");
+                }
+                let r = ui.add_enabled(projection.masks.len() < velo_engine::projection::MAX_MASKS, egui::Button::new(format!("{}  {}", icons::POLYGON, tr!("Draw a mask"))));
+                if r.on_hover_text(tr!("A black shape over the picture: click its points on the output, then Enter or its first point. Click inside one and press Delete to remove it")).clicked() {
+                    shared.borrow_mut().draw_mask();
+                }
+                let mut gone = None;
+                for (i, mask) in projection.masks.iter().enumerate().filter(|m| m.1.len() >= 3) {
+                    ui.horizontal(|ui| {
+                        ui.label(tr!("Mask {} · {} points", i + 1, mask.len()));
+                        kit::right(ui, |ui| {
+                            if kit::icon_button(ui, t, icons::TRASH, tr!("Remove this mask"), false).clicked() {
+                                gone = Some(i);
+                            }
+                        });
+                    });
+                }
+                let mut soft = projection.soft * 100.0;
+                if !projection.masks.is_empty()
+                    && ui.add(egui::Slider::new(&mut soft, 0.0..=5.0).text(tr!("Soft edge")).suffix("%")).changed()
+                    && let Some(p) = shared.borrow_mut().projection()
+                {
+                    p.soft = soft / 100.0;
+                }
+                if ui
+                    .add_enabled(projection != velo_engine::Projection::default(), egui::Button::new(format!("{}  {}", icons::ARROW_U_UP_LEFT, tr!("Reset the projection"))))
+                    .on_hover_text(tr!("The picture square on the output again, with no masks"))
+                    .clicked()
+                {
+                    let mut s = shared.borrow_mut();
+                    if let Some(o) = s.output.as_ref().map(crate::host::key) {
+                        s.projections.remove(&o);
+                    }
+                    if let Some(a) = &mut s.adjust {
+                        (a.selected, a.drawing) = (None, false);
+                    }
+                }
+                if let Some(m) = gone {
+                    let mut s = shared.borrow_mut();
+                    if let Some(p) = s.projection() {
+                        p.masks.remove(m);
+                    }
+                    if let Some(a) = &mut s.adjust {
+                        a.selected = None;
+                    }
                 }
             }
         });
