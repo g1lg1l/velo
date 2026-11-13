@@ -58,7 +58,8 @@ What mappings and shaders read. Every value is 0..1 except the clocks.
 | **Melody** | How much of the sound is tune, smoothed 30 ms up, 400 ms down. |
 | **Audio time** | `level_time`, `bass_time`, `mid_time`, `high_time` (shader globals): clocks that run at a quarter speed in silence and up to 1.75 times when their band is full. Drive a shader's time with one and its motion pulses with the music without jitter. |
 | **Audio texture** | For shaders that read `wave`: 512 columns of the last hops' levels (about 2.7 s), the last samples (a scope) and a spectrum from 30 Hz to 16 kHz in bands spaced by octave. |
-| **Silence** | Under -60 dBFS everything falls to 0 instead of auto-gain lifting the hiss. |
+| **Silence** | Under -60 dBFS everything falls to 0 instead of auto-gain lifting the hiss. Under the Audio In's gate for some seconds, the autopilot can hold a silence scene (scenes.md §3). |
+| **Any band** | A Band node reads the spectrum row between two frequencies (graph.md §3): the acid line, the vocals. The spectrum's 512 points (about 94 Hz a bin) can't part the sub from a kick's body. |
 
 Smoothing and thresholds that shape how a parameter moves belong to each mapping (attack, release, amount, invert), not to the feature: one Kick can punch the zoom and nudge the hue softly (graph.md).
 

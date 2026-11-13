@@ -126,6 +126,16 @@ impl SharedWave {
         }
     }
 
+    /// How loud the spectrum is from `low` to `high` Hz: the mean of its bands there (at least
+    /// the one band `low` falls in), each 0..1 over 60 dB as the spectrum row has them.
+    pub fn band(&self, low: f32, high: f32) -> f32 {
+        let octaves = (HIGHEST_HZ / LOWEST_HZ).log2();
+        let column = |hz: f32| (WAVE_COLUMNS as f32 * (hz.max(LOWEST_HZ) / LOWEST_HZ).log2() / octaves) as usize;
+        let first = column(low.min(high)).min(WAVE_COLUMNS - 1);
+        let last = column(low.max(high)).clamp(first + 1, WAVE_COLUMNS);
+        self.spectrum[first..last].iter().map(|v| f32::from_bits(v.load(Relaxed))).sum::<f32>() / (last - first) as f32
+    }
+
     /// Texture rows, oldest first: RGBA bands, then raw mono in R, then the spectrum in R, low
     /// to high. Unfilled history is zero. The scope row starts where the wave last rose through
     /// zero, so a steady tone stands still.
@@ -1016,6 +1026,7 @@ impl Thread {
             }
             // the shared signals, once for every graph this frame: live, fading, layered, edited
             // all read the same values (a slot no node writes any more reads 0)
+            crate::signal::hear(&mut shared, &self.wave);
             crate::signal::run(&mut shared, &mut sources, clock.beats(t), delta);
             for (slot, v) in self.status.shared.0.iter().zip(&sources[crate::signal::SHARED..]) {
                 slot.store(v.to_bits(), Relaxed);
@@ -1072,6 +1083,7 @@ impl Thread {
                 for p in &g.probes {
                     g.signals[p.signal].feed(p.color());
                 }
+                crate::signal::hear(&mut g.signals, &self.wave);
                 crate::signal::run(&mut g.signals, &mut sources, beats, delta);
                 if *key == edit {
                     for (slot, v) in self.status.signals.0.iter().zip(&sources[velo_core::SOURCES.len()..]) {

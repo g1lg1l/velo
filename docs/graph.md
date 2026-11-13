@@ -85,6 +85,7 @@ Signal wires never mix with picture wires. Signal nodes run on the render thread
 |---|---|---|
 | Audio In (`velo.audio`) | level, bass, mid, high, kick, snare, hat, melody | what the audio input hears |
 | Beat (`velo.clock`) | beat, bar | a hit on every beat, the ramp through the bar |
+| Band (`velo.band`) | out | how loud the music is from `low_hz` to `high_hz` (300 to 1500 Hz to start with): the mean of the audio texture's spectrum row there (each band 0..1 over 60 dB, as the Waveform draws it), with `auto` (on to start with) stretched to the range it has moved in lately as a Remap's, falling over `release` (150 ms). The spectrum is 512 points, about 94 Hz a bin at 48 kHz: under 150 Hz edges blur (30 to 60 Hz reads the lowest bins, a sub and a kick's body together) |
 | Beat Kick (`velo.beatkick`) | out | on each hit of `trigger` (the beat while nothing's wired) a 5 ms rise and a fall over `release` (20 ms to 2 s, dropping fast then tailing off), times `in` (the bass while nothing's wired); 0 while `in` is under `threshold` |
 | LFO (`velo.lfo`) | out | sine, triangle, saw, square or random on the beat clock, 1/4 to 64 beats, phase offset |
 | Time (`velo.time`) | out | 0 to 1 over 0.5 to 600 seconds, again and again: a ramp, back and forth or a wave |
@@ -115,7 +116,7 @@ Recipes: Noise into Threshold into a Mask is a moving stencil; an LFO through Qu
 
 ## 4. Node kinds
 
-Every picture node is a shader file in `crates/velo-engine/shaders/`; signal nodes are Rust (`velo-engine/src/signal.rs`). The node menu (`Tab`) groups them as below, with the signal nodes split into Signals (Audio In, Beat, Beat Kick, LFO, Time, Random, Probe) and Logic (the rest).
+Every picture node is a shader file in `crates/velo-engine/shaders/`; signal nodes are Rust (`velo-engine/src/signal.rs`). The node menu (`Tab`) groups them as below, with the signal nodes split into Signals (Audio In, Beat, Beat Kick, Band, LFO, Time, Random, Probe) and Logic (the rest).
 
 | Group | Nodes |
 |---|---|
@@ -124,7 +125,7 @@ Every picture node is a shader file in `crates/velo-engine/shaders/`; signal nod
 | Composite | **Blend** (up to 16 inputs, 14 modes, intensity, a key) · **Mask** (keep, cut or multiply) · **Merge** (up to four pictures as one picture's channels) |
 | Control | **Switch** (one of up to sixteen inputs as `value` picks, cut, crossfaded, dissolved, wiped or through a circle; only what it shows renders) · **Grid** (up to 4 x 4 cells of eight inputs) · **Layer Stack** (up to eight inputs with blend mode, opacity and order; a signal on a layer's order lifts it) |
 | Output | **Output**: what goes out, through its grade (exposure, contrast, saturation, hue, colorize, invert, vignette, fade to black), on the preview, the displays and the shares alike. With several, the last one something is wired into goes out; at its defaults the picture passes unchanged. |
-| Signals, Logic | the 23 signal nodes in §3 |
+| Signals, Logic | the 24 signal nodes in §3 |
 
 **Playing a file.** An Image or Video node with frames (a GIF, a folder of frames, a movie) plays them on a clock of its own at `speed` (0 to 4, 0 holds), looping the part between its loop points, which the inspector shows as the file's timeline. `direction` plays that part forward, in reverse (from its end back) or ping-pong (forward, then back). `cue` starts playback over each time it rises past a half, as a Media List's Hit does: a Kick mapped onto it cuts the clip back on every kick, a key or a pad bound to it cues by hand. `scrub` (0 to 1 of the loop) is where playback runs from, added to the clock: a cue lands there, and with `speed` at 0 since the graph was built or since the last cue it is the playhead itself, so a fader or an LFO mapped onto it moves through the loop by hand. Nothing hands over: with speed above 0 the clock plays on from wherever scrub puts it, and moving scrub moves the picture by as much. Reverse, ping-pong and scrubbing are smooth on GIFs, frame folders and HAP, whose frames read in any order; a system-decoded movie (H.264, HEVC, ProRes) opens its reader again at each frame going back, a few milliseconds for ProRes, whose frames stand alone, but long enough on a long-GOP H.264 or HEVC to stutter: transcode to HAP to play those backwards. Defaults (forward, no cue, scrub 0) play as before.
 
@@ -142,7 +143,8 @@ On the render thread (`velo_engine::runtime`), for the live scene, a scene fadin
 1. commands          new graphs, base values, mappings, macros, launches, taps, the shared signals' plan (a channel)
 2. pace and launch   the output's vsync (or a 60 Hz tick); a waiting launch lands on its boundary
 3. read sources      the latest audio features, the beat clock; then the shared signal graph, once
-4. signal pass       each graph's signal nodes in wiring order, Probes fed what they last read
+4. signal pass       each graph's signal nodes in wiring order, Probes fed what they last read,
+                     Bands the spectrum the audio thread last published
 5. resolve params    macros set driven bases, mappings add on top, written to parameter buffers
 6. texture pass      media frames due, every node's pass in topological order, Probe reads
 7. outputs           the program (or a transition), the layers on it (what is under an effect

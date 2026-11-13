@@ -68,6 +68,8 @@ The airplane at the top of the scenes panel turns on the **autopilot**, for nigh
 
 The autopilot launches a beat ahead, so each scene's own boundary lands on the turn. It's off every time Velo starts; its settings stay.
 
+**When silent** picks a scene to hold while the music stops: a DJ changeover, the minutes before the set. After that many seconds of silence (8 to start with; silence is everything under the Audio In's gate) the autopilot launches it, takes no turns while it lasts, and when the music returns launches the scene that was out before, each launch on its own boundary. The silence scene is saved with the project and takes no turns of its own; with the autopilot off it never goes out by itself.
+
 ## Never a hitch
 
 The selected scene is always built, so launching it is instant. A scene that isn't built yet is built first, in the background, and launches on the next boundary after it's ready. The last few scenes you used stay built, so going back and forth is instant too.

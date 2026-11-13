@@ -84,10 +84,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// The autopilot's next scene among those that take turns (not a layer, not left out): the one
-/// after `now`, or with `random` (0..1) any but `now`. None with fewer than two.
+/// The autopilot's next scene among those that take turns (not a layer, not left out, not the
+/// silence scene): the one after `now`, or with `random` (0..1) any but `now`. None with fewer
+/// than two.
 fn next_turn(scenes: &[Scene], now: Option<&str>, random: Option<f64>) -> Option<String> {
-    let turns: Vec<&Scene> = scenes.iter().filter(|s| s.layer == Layer::Scene && !s.manual).collect();
+    let turns: Vec<&Scene> = scenes.iter().filter(|s| s.layer == Layer::Scene && !s.manual && !s.silence).collect();
     if turns.len() < 2 {
         return None;
     }
@@ -175,11 +176,14 @@ struct Autopilot {
     random: bool,
     /// A drop (the music back at full after a quieter while) launches the next one too.
     drops: bool,
+    /// Seconds of silence (everything under the Audio In's gate) before the project's silence
+    /// scene goes out, if it has one.
+    silence_s: u32,
 }
 
 impl Default for Autopilot {
     fn default() -> Self {
-        Self { on: false, bars: 8, timed: false, seconds: 60, random: false, drops: true }
+        Self { on: false, bars: 8, timed: false, seconds: 60, random: false, drops: true, silence_s: 8 }
     }
 }
 
@@ -198,6 +202,24 @@ struct Pilot {
     /// The strongest `fast` of the last half minute: what a drop is measured against.
     strong: f32,
     last_drop: f64,
+    /// Seconds the input has stayed under the gate.
+    quiet: f32,
+    /// The silence scene is out for the silence, and the scene to go back to after it.
+    holding: bool,
+    back: Option<String>,
+}
+
+/// What the autopilot does about silence this frame.
+#[derive(Debug, PartialEq)]
+enum Hush {
+    /// Nothing: its turns as usual.
+    Turns,
+    /// Still silent: the silence scene stays, no turns.
+    Hold,
+    /// Silent long enough: this scene (the silence scene) goes out.
+    Go(String),
+    /// The music is back: the scene that was out before the silence (none: the next turn).
+    Back(Option<String>),
 }
 
 /// How far over `slow` the bass must come back for a drop, as a part of `strong`. Measured on
@@ -225,6 +247,36 @@ impl Pilot {
             self.last_drop = beats;
         }
         drop
+    }
+}
+
+impl Pilot {
+    /// Silence this frame, `dt` seconds on (`silent`: all heard since the last frame stayed under
+    /// the gate): after `wait` seconds of it the silence scene (`scene`; none unset, or with the
+    /// autopilot off) goes out, and when the music returns the one out before (`live`) comes
+    /// back. `on_it`: the silence scene is out or on its way.
+    fn hush(&mut self, silent: bool, dt: f32, wait: f32, scene: Option<&str>, live: Option<&str>, on_it: bool) -> Hush {
+        self.quiet = if silent { self.quiet + dt } else { 0.0 };
+        let Some(scene) = scene else {
+            self.holding = false;
+            return Hush::Turns;
+        };
+        match (self.holding, silent) {
+            (false, true) if self.quiet >= wait => {
+                self.holding = true;
+                // out already (launched by hand): it stays, and the music back moves on
+                self.back = if on_it { None } else { live.map(String::from) };
+                if on_it { Hush::Hold } else { Hush::Go(scene.into()) }
+            }
+            (true, true) => Hush::Hold,
+            // the music back: where it was, unless another scene was launched meanwhile
+            (true, false) => {
+                self.holding = false;
+                let back = self.back.take();
+                if on_it { Hush::Back(back) } else { Hush::Turns }
+            }
+            _ => Hush::Turns,
+        }
     }
 }
 
@@ -1265,6 +1317,10 @@ impl App {
 
     /// The autopilot's button: lit while it plays, its settings in a popover.
     fn autopilot_button(&mut self, ui: &mut egui::Ui, t: &Theme) {
+        // the scenes that can hold the silence, and the one that does
+        let scenes: Vec<(String, String)> = self.session.project.scenes.iter().filter(|s| s.layer == Layer::Scene).map(|s| (s.id.clone(), s.name.clone())).collect();
+        let silence = self.session.project.scenes.iter().position(|s| s.silence && s.layer == Layer::Scene).and_then(|i| scenes.iter().position(|(id, _)| *id == self.session.project.scenes[i].id));
+        let mut pick = None;
         let a = &mut self.settings.autopilot;
         let tip = match (a.on, a.timed) {
             (false, _) => tr!("Autopilot: off").to_string(),
@@ -1300,7 +1356,27 @@ impl App {
                 a.random = i == 1;
             }
             kit::setting(ui, t, tr!("On drops"), tr!("The music back at full after a quieter while launches the next one too"), |ui| kit::switch(ui, t, &mut a.drops, tr!("On drops")));
+            // a scene to hold while the music stops (a changeover, before the set), and how long first
+            kit::label(ui, t, tr!("When silent"));
+            let r = kit::select(ui, t, None, silence.map_or(tr!("None"), |i| scenes[i].1.as_str()));
+            kit::menu(t, &r).show(|ui| {
+                let items: Vec<(&str, &str)> = std::iter::once(("", tr!("None"))).chain(scenes.iter().map(|(_, name)| ("", name.as_str()))).collect();
+                pick = kit::choose(ui, t, &items, Some(silence.map_or(0, |i| i + 1)));
+            });
+            if silence.is_some() {
+                kit::scrub(ui, t, tr!("AFTER SECONDS"), &mut a.silence_s, 1..=120, ui.available_width());
+                kit::hint(ui, t, tr!("Under the Audio In's gate that long, this scene goes out; when the music returns, the one before comes back."));
+            }
         });
+        match pick {
+            Some(0) => {
+                if let Some(i) = silence {
+                    self.run("scene.set_silence", json!({ "scene": scenes[i].0, "on": false }));
+                }
+            }
+            Some(i) => self.run("scene.set_silence", json!({ "scene": scenes[i - 1].0, "on": true })),
+            None => {}
+        }
     }
 
     /// Parameters of whatever is selected; with nothing selected, the canvas.
@@ -1932,6 +2008,27 @@ impl App {
         // heard every frame, the autopilot on or not: switched on mid-track it must not take
         // the bass it never followed for one that just came back
         let dropped = self.pilot.dropped(live.sources()[BASS], dt, beats) && a.drops;
+        // silence too, every frame; the silence scene only goes out while the autopilot plays
+        let scene = a.on.then(|| self.session.project.scenes.iter().find(|s| s.silence && s.layer == Layer::Scene)).flatten().map(|s| s.id.clone());
+        let on_it = scene.as_deref().is_some_and(|s| live.live_scene() == Some(s) || live.armed(s).is_some());
+        let out = live.live_scene().map(String::from);
+        match self.pilot.hush(live.audio.silent(), dt, a.silence_s as f32, scene.as_deref(), out.as_deref(), on_it) {
+            Hush::Turns => {}
+            Hush::Hold => return,
+            Hush::Go(id) => {
+                self.launch(&id);
+                self.pilot.next = None;
+                return;
+            }
+            Hush::Back(back) => {
+                match back.filter(|id| self.session.project.scene(id).is_some()) {
+                    Some(id) => self.launch(&id),
+                    None => self.turn(None),
+                }
+                self.pilot.next = None;
+                return;
+            }
+        }
         // a scene launched by hand that takes no turns is the performer's: it stays
         if !a.on || self.held_by_hand() || self.session.project.scenes.len() < 2 || self.pilot.timed != a.timed {
             (self.pilot.next, self.pilot.timed) = (None, a.timed);
@@ -3452,7 +3549,7 @@ impl App {
 
 #[cfg(test)]
 mod pilot_tests {
-    use super::{Layer, Pilot, Scene, next_turn};
+    use super::{Hush, Layer, Pilot, Scene, next_turn};
 
     #[test]
     fn the_autopilot_takes_turns_among_the_scenes_left_in() {
@@ -3466,6 +3563,39 @@ mod pilot_tests {
             assert!(next != "b" && ["a", "c"].contains(&next.as_str()), "{r}: {next}");
         }
         assert_eq!(next_turn(&scenes[..2], Some("a"), None), None, "one scene and a layer: nothing to turn to");
+        let quiet = [scene("a", Layer::Scene, false), Scene { silence: true, ..scene("q", Layer::Scene, false) }, scene("b", Layer::Scene, false)];
+        assert_eq!(next_turn(&quiet, Some("a"), None).as_deref(), Some("b"), "the silence scene takes no turn");
+    }
+
+    #[test]
+    fn the_silence_scene_goes_out_after_its_seconds_and_the_one_before_comes_back() {
+        // frames of a quarter second, 8 s to wait; "a" is out, "q" the silence scene
+        let frame = |p: &mut Pilot, silent: bool, on_it: bool| p.hush(silent, 0.25, 8.0, Some("q"), Some("a"), on_it);
+        let mut p = Pilot::default();
+        assert_eq!(frame(&mut p, false, false), Hush::Turns, "music");
+        // a gap shorter than the wait (a break, a fill) counts from nothing again after it
+        for _ in 0..20 {
+            assert_eq!(frame(&mut p, true, false), Hush::Turns);
+        }
+        frame(&mut p, false, false);
+        for _ in 0..31 {
+            assert_eq!(frame(&mut p, true, false), Hush::Turns, "under 8 s");
+        }
+        assert_eq!(frame(&mut p, true, false), Hush::Go("q".into()), "8 s of silence");
+        for _ in 0..100 {
+            assert_eq!(frame(&mut p, true, true), Hush::Hold, "no turns while it's silent");
+        }
+        assert_eq!(frame(&mut p, false, true), Hush::Back(Some("a".into())), "the music back: where it was");
+        assert_eq!(frame(&mut p, false, false), Hush::Turns);
+        // another scene launched by hand meanwhile: the music back leaves it
+        let mut p = Pilot::default();
+        for _ in 0..32 {
+            frame(&mut p, true, false);
+        }
+        assert_eq!(frame(&mut p, false, false), Hush::Turns);
+        // no silence scene, or the autopilot off (the app passes none then): never
+        let mut p = Pilot::default();
+        assert!((0..1000).all(|_| p.hush(true, 0.25, 8.0, None, Some("a"), false) == Hush::Turns));
     }
 
     const BPM: f64 = 120.0;

@@ -89,6 +89,7 @@ Abridged from a real file:
 ```
 
 - `kind` is a built-in id (`velo.noise`, `velo.shader`, `velo.output`…). An unknown kind (from a newer Velo) loads and keeps its wires.
+- A scene's `silence: true` makes it the one the autopilot holds while the music is silent (scenes.md §3), on one scene at most; left out otherwise. It needs no format step: an older Velo skips the field and simply never goes to it.
 - `params` holds only the values the user changed, one vec4 each (a float uses the first number); the rest keep the shader header's defaults.
 - A mapping's `source` is a signal node's output, `"<node id>/<output index>"` (here the scene's Audio In, output 6: the hat), or an output of the shared signals, `"shared:<node id>/<output index>"`.
 - `shared` is the shared signal graph (graph.md §3): scene-shaped (its `id` is always `"shared"`, whatever a hand-edited file says; its `launch` means nothing), only its signal nodes run. Left out while it has no nodes, groups or notes.
