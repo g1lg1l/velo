@@ -22,7 +22,7 @@ const fn cmd(group: &'static str, id: &'static str, label: &'static str) -> Comm
 }
 
 /// In the shortcut sheet's order: the canvas first, it's where you work.
-pub const COMMANDS: [Command; 57] = [
+pub const COMMANDS: [Command; 58] = [
     cmd("Nodes", "canvas.add", "Add a node"),
     cmd("Nodes", "canvas.find", "Find a node"),
     cmd("Nodes", "canvas.home", "Zoom to fit"),

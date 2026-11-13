@@ -9,12 +9,12 @@ repository.workspace = true
 [dependencies]
 # no egui fallback fonts or system-font scan: we ship three small fonts
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "links", "persistence", "wgpu", "wayland", "x11"] }
-velo-core = { version = "0.9.5-beta", path = "../velo-core" }
-velo-engine = { version = "0.9.5-beta", path = "../velo-engine" }
-velo-mcp = { version = "0.9.5-beta", path = "../velo-mcp" }
+velo-core = { version = "0.9.6-beta", path = "../velo-core" }
+velo-engine = { version = "0.9.6-beta", path = "../velo-engine" }
+velo-mcp = { version = "0.9.6-beta", path = "../velo-mcp" }
 # API keys for the AI panel live in the OS keychain (Keychain, Credential Manager, Secret Service)
 keyring = "4.2.0"
-velo-audio = { version = "0.9.5-beta", path = "../velo-audio" }
+velo-audio = { version = "0.9.6-beta", path = "../velo-audio" }
 # the same winit eframe runs on: we drive its event loop and own the output window (spike S1)
 winit = "0.30.13"
 serde = { version = "1.0.229", features = ["derive"] }
