@@ -229,7 +229,7 @@ fn edits_a_scene(id: &str) -> bool {
 /// How a Shader node's code is written, for agents (docs/plugins.md §2).
 fn shader_format() -> Value {
     json!({
-        "file": "WGSL. First a /*{ JSON }*/ header: name, category (generator | effect), description, params [{ id, type: float|int|bool|color|vec2, default, min, max }], inputs [{ id: \"src\", type: \"texture\" }] (at most one). Then fn main_image(uv: vec2f, px: vec2f) -> vec4f.",
+        "file": "WGSL. First a /*{ JSON }*/ header: name, category (generator | effect), description, params [{ id, type: float|int|bool|color|vec2, default, min, max }], inputs [{ id: \"src\", type: \"texture\" }] (at most two: src, then a map). Then fn main_image(uv: vec2f, px: vec2f) -> vec4f.",
         "available": format!("uv is 0..1 across the picture, px in pixels. Each param is a variable by its id. g.<name> holds: {}. The audio fields are 0..1. An effect reads its input with textureSample(src, smp, uv); effects also get an `amount` param (0 passes the input through).", GLOBALS.join(", ")),
         "example": velo_engine::TEMPLATE,
         "how": "node.add with kind velo.shader and code, or node.set_code on an existing one. run_operator answers whether the code compiles (naga's message with the line otherwise); the scene keeps its last good code meanwhile.",

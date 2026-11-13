@@ -77,8 +77,8 @@ pub enum Code {
 /// Velo's WGSL format, or an ISF shader (GLSL, translated).
 pub fn own(code: &str) -> Result<ShaderNode, ShaderError> {
     let node = if crate::isf::is_isf(code) { crate::isf::parse(code)? } else { ShaderNode::parse(code)? };
-    if node.inputs.len() > 1 {
-        return Err(ShaderError { line: None, message: "a Shader node has one input for now: declare at most one texture (src)".into() });
+    if node.inputs.len() > 2 {
+        return Err(ShaderError { line: None, message: "a Shader node has two inputs at most: declare at most two textures (src, then a map)".into() });
     }
     if node.particles || node.mesh {
         return Err(ShaderError { line: None, message: "particles and meshes are the Particles and Mesh nodes': a Shader node draws main_image".into() });
@@ -769,10 +769,10 @@ mod tests {
     }
 
     #[test]
-    fn the_template_and_the_fallback_compile_and_two_inputs_are_refused() {
+    fn the_template_and_the_fallback_compile_and_three_inputs_are_refused() {
         own(TEMPLATE).and_then(|node| node.validate().map(|_| ())).unwrap_or_else(|e| panic!("template: {e}"));
         own(BROKEN).and_then(|node| node.validate().map(|_| ())).unwrap_or_else(|e| panic!("fallback: {e}"));
-        let two = TEMPLATE.replace("\"params\"", "\"inputs\": [{ \"id\": \"a\", \"type\": \"texture\" }, { \"id\": \"b\", \"type\": \"texture\" }],\n  \"params\"");
-        assert!(own(&two).unwrap_err().message.contains("one input"));
+        let three = TEMPLATE.replace("\"params\"", "\"inputs\": [{ \"id\": \"a\", \"type\": \"texture\" }, { \"id\": \"b\", \"type\": \"texture\" }, { \"id\": \"c\", \"type\": \"texture\" }],\n  \"params\"");
+        assert!(own(&three).unwrap_err().message.contains("two inputs at most"));
     }
 }

@@ -1,6 +1,6 @@
 //! Input effects for the Shader node.
 
-pub const EFFECT_PRESETS: [(&str, &str); 31] = [
+pub const EFFECT_PRESETS: [(&str, &str); 36] = [
     ("glitch", include_str!("../shaders/effects/glitch.wgsl")),
     ("vhs", include_str!("../shaders/effects/vhs.wgsl")),
     ("pixelate", include_str!("../shaders/effects/pixelate.wgsl")),
@@ -32,6 +32,11 @@ pub const EFFECT_PRESETS: [(&str, &str); 31] = [
     ("life", include_str!("../shaders/effects/life.wgsl")),
     ("pixel-sort", include_str!("../shaders/effects/pixel-sort.wgsl")),
     ("solarize", include_str!("../shaders/effects/solarize.wgsl")),
+    ("speckle", include_str!("../shaders/effects/speckle.wgsl")),
+    ("litebrite", include_str!("../shaders/effects/litebrite.wgsl")),
+    ("flippy", include_str!("../shaders/effects/flippy.wgsl")),
+    ("attractor", include_str!("../shaders/effects/attractor.wgsl")),
+    ("delace", include_str!("../shaders/effects/delace.wgsl")),
 ];
 
 #[cfg(test)]
@@ -56,11 +61,12 @@ mod tests {
             let node = ShaderNode::parse(source).unwrap_or_else(|e| panic!("{slug}: {e}"));
             node.validate().unwrap_or_else(|e| panic!("{slug}: {e}\n{}", node.wgsl));
             assert_eq!(node.category, "effect", "{slug}");
-            assert_eq!(node.inputs, ["src"], "{slug}");
+            // the picture, and at most an optional map after it
+            assert!(node.inputs == ["src"] || node.inputs == ["src", "map"], "{slug}");
 
             let json = source.trim_start().strip_prefix("/*").unwrap().split_once("*/").unwrap().0;
             let header: serde_json::Value = serde_json::from_str(json).unwrap();
-            assert_eq!(header["inputs"], serde_json::json!([{ "id": "src", "type": "texture" }]), "{slug}");
+            assert_eq!(header["inputs"][0], serde_json::json!({ "id": "src", "type": "texture" }), "{slug}");
             assert!((2..=7).contains(&header["params"].as_array().unwrap().len()), "{slug}");
             assert!(!node.name.is_empty(), "{slug}");
             assert!(!node.description.is_empty() && !node.description.contains('\n'), "{slug}");

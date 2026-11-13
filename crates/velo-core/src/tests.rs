@@ -305,6 +305,16 @@ fn a_blend_shows_the_inputs_it_asks_for_and_every_wired_one() {
     assert_eq!(inputs_shown(s.active().unwrap(), s.active().unwrap().node(&switch).unwrap()), 12);
     connect(&mut s, &noise, &switch, 15).unwrap();
     assert_eq!(inputs_shown(s.active().unwrap(), s.active().unwrap().node(&switch).unwrap()), 16, "the sixteenth wired");
+    // a Shader FX shows its map when its code declares one, or one is wired
+    let fx = add(&mut s, SHADER_FX, 800.0);
+    let shown = |s: &Session| inputs_shown(s.active().unwrap(), s.active().unwrap().node(&fx).unwrap());
+    assert_eq!(shown(&s), 1, "the picture alone");
+    let two = r#"/*{ "name": "Two", "category": "effect", "inputs": [{ "id": "src", "type": "texture" }, { "id": "map", "type": "texture" }] }*/"#;
+    ok(&mut s, "node.set_code", json!({ "node": fx, "code": two }));
+    assert_eq!(shown(&s), 2, "and its map");
+    connect(&mut s, &noise, &fx, 1).unwrap();
+    ok(&mut s, "node.set_code", json!({ "node": fx, "code": "/*{ \"name\": \"One\" }*/" }));
+    assert_eq!(shown(&s), 2, "a wired map stays shown");
 }
 
 #[test]

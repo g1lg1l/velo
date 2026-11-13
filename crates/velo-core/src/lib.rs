@@ -684,7 +684,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind("velo.timemachine", "Time Machine", Category::Effect, &["in", "map"], OUT),
     kind("velo.key", "Key", Category::Effect, IN, OUT),
     kind("velo.lumablur", "Luma Blur", Category::Effect, &["in", "map"], OUT),
-    kind(SHADER_FX, "Shader FX", Category::Effect, &["src"], OUT),
+    kind(SHADER_FX, "Shader FX", Category::Effect, &["src", "map"], OUT),
     kind(BLEND, "Blend", Category::Composite, &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p"], OUT),
     kind("velo.mask", "Mask", Category::Composite, &["in", "mask"], OUT),
     kind("velo.merge", "Merge", Category::Composite, &["r", "g", "b", "a"], OUT),
@@ -722,17 +722,25 @@ pub const NODE_KINDS: &[NodeKind] = &[
 pub const BLEND: &str = "velo.blend";
 
 /// How many inputs a node's card shows: a Blend as many as its `inputs` parameter asks, a
-/// Switch its `count` (2 to 16), never fewer than are wired; any other kind all it has.
+/// Switch its `count` (2 to 16), a Shader FX its map only when its code declares a second
+/// input, never fewer than are wired; any other kind all it has.
 pub fn inputs_shown(scene: &Scene, n: &Node) -> usize {
     let Some(k) = node_kind(&n.kind) else { return 0 };
+    let wired = scene.edges.iter().filter(|e| e.to.0 == n.id).map(|e| usize::from(e.to.1) + 1).max().unwrap_or(0);
     let param = match n.kind.as_str() {
         BLEND => "inputs",
         SWITCH => "count",
+        SHADER_FX => return code_inputs(n.code.as_deref()).max(wired).clamp(1, k.inputs.len()),
         _ => return k.inputs.len(),
     };
     let asked = n.params.get(param).map_or(2, |v| v[0].round().max(0.0) as usize);
-    let wired = scene.edges.iter().filter(|e| e.to.0 == n.id).map(|e| usize::from(e.to.1) + 1).max().unwrap_or(0);
     asked.max(wired).clamp(2, k.inputs.len())
+}
+
+/// How many inputs a shader's /*{ JSON }*/ header declares (0 if it has no header to read).
+fn code_inputs(code: Option<&str>) -> usize {
+    let header = code.and_then(|c| c.trim_start().strip_prefix("/*")).and_then(|c| c.split_once("*/")).map_or("", |(h, _)| h);
+    serde_json::from_str::<serde_json::Value>(header).ok().and_then(|h| h.get("inputs").and_then(|i| i.as_array()).map(Vec::len)).unwrap_or(0)
 }
 
 /// A parameter as the engine runs it: as set, but a Blend's `inputs` counts every wired one
