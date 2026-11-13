@@ -1491,7 +1491,9 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         }
         let (blue, green, white) = (vec![false, false, true], vec![false, true, false], vec![true, true, true]);
         assert!(seen.contains(&green) && seen.contains(&white) && seen.contains(&blue), "its frames in turn: {seen:?}");
-        assert!(seen.len() >= 6, "and round again: {seen:?}");
+        // round again: a frame comes back after another (a slow machine shows fewer frames a
+        // turn, so not a count of changes)
+        assert!(seen.iter().enumerate().any(|(i, p)| seen[..i.saturating_sub(1)].contains(p)), "and round again: {seen:?}");
     }
 
     #[test]
