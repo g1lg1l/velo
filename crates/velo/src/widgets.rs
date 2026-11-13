@@ -196,7 +196,7 @@ pub use crate::theme::{TE_BLUE, TE_GREEN, TE_ORANGE};
 
 /// Knob `i`'s cap: blue, green, white, orange, as on the OP-1, then again.
 pub fn cap_color(t: &Theme, i: usize) -> egui::Color32 {
-    [TE_BLUE, TE_GREEN, t.fg_text, TE_ORANGE][i % 4]
+    t.lit([TE_BLUE, TE_GREEN, t.fg_text, TE_ORANGE][i % 4])
 }
 
 /// How tall a deck knob is, its value under it.
@@ -332,7 +332,7 @@ pub fn deck_key(ui: &mut Ui, t: &Theme, size: Vec2, text: &str, label: &str, on:
     let h = kit::hover(ui, t, &resp);
     let k = ui.ctx().animate_bool_with_time(resp.id.with("on"), on, t.motion);
     let sunk = ui.ctx().animate_bool_with_time(resp.id.with("down"), resp.is_pointer_button_down_on(), t.motion * 0.5);
-    let fill = Theme::mix(Theme::mix(t.bg_control, t.fg_text, 0.08 * h), TE_ORANGE, k);
+    let fill = Theme::mix(Theme::mix(t.bg_control, t.fg_text, 0.08 * h), t.lit(TE_ORANGE), k);
     let face = keycap(ui.painter(), rect, fill, sunk);
     kit::icon_at(ui.painter(), face.center(), text, t.text_sm + 1.0, Theme::mix(Theme::mix(t.fg_muted, t.fg_text, 0.6 + 0.4 * h), TE_INK, k));
     kit::focus_ring(ui, t, &resp, 4);
@@ -1168,6 +1168,7 @@ fn meter(ui: &mut Ui, t: &Theme, name: &str, level: f32, meter: Meter, height: f
             segments(painter, t, Rect::from_center_size(c, vec2(16.0, well.height())), v, peak, h);
         }
         Meter::Hit(color) => {
+            let color = t.lit(color);
             // a hit flashes the pad, sinks it and sends a ring out from it, fading
             let key = resp.id.with("hit");
             let (was, mut flash, mut at) = ui.data(|d| d.get_temp::<(f32, f32, f64)>(key)).unwrap_or((v, 0.0, f64::NEG_INFINITY));
@@ -1205,7 +1206,7 @@ fn meter(ui: &mut Ui, t: &Theme, name: &str, level: f32, meter: Meter, height: f
                 let step = Rect::from_min_size(block.min + vec2((k % 2) as f32, (k / 2) as f32) * (side + gap), Vec2::splat(side));
                 let fill = match k.cmp(&on) {
                     std::cmp::Ordering::Less => Theme::mix(t.bg_control, t.fg_text, 0.2),
-                    std::cmp::Ordering::Equal => Theme::mix(t.bg_control, if k == 0 { TE_ORANGE } else { t.fg_text }, 1.0 - 0.3 * at.fract()),
+                    std::cmp::Ordering::Equal => Theme::mix(t.bg_control, if k == 0 { t.lit(TE_ORANGE) } else { t.fg_text }, 1.0 - 0.3 * at.fract()),
                     std::cmp::Ordering::Greater => t.bg_control,
                 };
                 painter.rect_filled(step, CornerRadius::same(3), fill);
@@ -1232,7 +1233,7 @@ fn segments(painter: &Painter, t: &Theme, bar: Rect, v: f32, peak: f32, hot: f32
     let off = Theme::mix(t.line, t.fg_muted, 0.25 * hot);
     for s in 0..N {
         let seg = Rect::from_min_size(pos2(bar.left(), bar.bottom() - (s + 1) as f32 * h - s as f32 * gap), vec2(bar.width(), h));
-        let color = if s >= N - 2 { TE_ORANGE } else { t.fg_text };
+        let color = if s >= N - 2 { t.lit(TE_ORANGE) } else { t.fg_text };
         let lit = if s == peak_at && peak > 0.02 { 1.0 } else { (v * N as f32 - s as f32).clamp(0.0, 1.0) };
         painter.rect_filled(seg, CornerRadius::same(1), Theme::mix(off, color, lit));
     }
@@ -1303,9 +1304,9 @@ pub fn hue_of(id: &str) -> f32 {
 /// The two-tone wash a placeholder thumbnail is painted with, for a hue (0..1). Hues are
 /// kept to the cool-to-magenta half of the wheel, a stage's colors: yellows and olives
 /// read as mud on dark grey.
-pub fn wash(hue: f32) -> (egui::Color32, egui::Color32) {
+pub fn wash(t: &Theme, hue: f32) -> (egui::Color32, egui::Color32) {
     let h = 0.45 + 0.55 * hue.rem_euclid(1.0);
-    (egui::ecolor::Hsva::new(h, 0.6, 0.55, 1.0).into(), egui::ecolor::Hsva::new((h + 0.07) % 1.0, 0.7, 0.18, 1.0).into())
+    (t.lit(egui::ecolor::Hsva::new(h, 0.6, 0.55, 1.0).into()), t.lit(egui::ecolor::Hsva::new((h + 0.07) % 1.0, 0.7, 0.18, 1.0).into()))
 }
 
 /// A tape reel drawn in one thin line, as a pocket synth's screen shows it: its rim, its hub with
@@ -1355,9 +1356,9 @@ pub fn scene_card(ui: &mut Ui, t: &Theme, index: usize, name: &str, icon: &str, 
     if let Some(shot) = state.shot {
         let f = ((16.0 / 9.0) / (rect.width() / rect.height())).min(1.0);
         let uv = Rect::from_center_size(pos2(0.5, 0.5), vec2(1.0, f) * (1.0 - 0.05 * h));
-        egui::Image::new((shot, rect.size())).uv(uv).corner_radius(radius).paint_at(ui, rect);
+        egui::Image::new((shot, rect.size())).uv(uv).corner_radius(radius).tint(t.picture_tint()).paint_at(ui, rect);
     } else {
-        let (a, b) = wash(hue);
+        let (a, b) = wash(t, hue);
         paint_gradient(&painter, rect, radius, |p| Theme::mix(a, b, (p.x - rect.left()) / rect.width()));
     }
     // a shade under the name, darker to the bottom
@@ -1431,9 +1432,9 @@ pub fn scene_row(ui: &mut Ui, t: &Theme, index: usize, name: &str, icon: &str, h
     // its picture, at the canvas' 16:9
     let thumb = Rect::from_min_size(pos2(rect.left() + 28.0, y - 11.0), vec2(40.0, 22.0));
     match state.shot {
-        Some(shot) => egui::Image::new((shot, thumb.size())).corner_radius(CornerRadius::same(3)).paint_at(ui, thumb),
+        Some(shot) => egui::Image::new((shot, thumb.size())).corner_radius(CornerRadius::same(3)).tint(t.picture_tint()).paint_at(ui, thumb),
         None => {
-            let (a, b) = wash(hue);
+            let (a, b) = wash(t, hue);
             paint_gradient(&painter, thumb, CornerRadius::same(3), |p| Theme::mix(a, b, (p.x - thumb.left()) / thumb.width()));
         }
     }
@@ -1514,7 +1515,7 @@ fn ghost_card(painter: &Painter, t: &Theme, rect: Rect, angle: f32, key: usize, 
     let (c, rot) = (rect.center(), egui::emath::Rot2::from_angle(angle));
     let turn = |p: Pos2| c + rot * (p - c);
     let radius = CornerRadius::same(t.radius_md);
-    let (a, b) = wash(hue);
+    let (a, b) = wash(t, hue);
     let mut card = gradient_mesh(rect, radius, |p| {
         let shade = ((p.y - c.y) / (rect.height() / 2.0)).clamp(0.0, 1.0) * 0.9;
         Theme::mix(Theme::mix(Theme::mix(a, b, (p.x - rect.left()) / rect.width()), t.bg_base, shade), t.bg_panel, dim)
@@ -1659,7 +1660,7 @@ pub fn load_chip(ui: &mut Ui, t: &Theme, right: f32, load: &Load) -> Response {
         0.0
     };
     let k = ctx.animate_value_with_time(id.with("level"), level, 0.3);
-    let color = if k <= 1.0 { Theme::mix(Theme::TONE_DONE, t.warn, k) } else { Theme::mix(t.warn, t.error, k - 1.0) };
+    let color = if k <= 1.0 { Theme::mix(t.lit(Theme::TONE_DONE), t.warn, k) } else { Theme::mix(t.warn, t.error, k - 1.0) };
     let painter = ui.painter();
     let name = painter.layout_no_wrap(load.name.into(), Theme::mono(t.text_xs), t.fg_muted);
     let font = Theme::mono(t.text_sm);

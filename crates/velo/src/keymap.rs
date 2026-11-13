@@ -22,7 +22,7 @@ const fn cmd(group: &'static str, id: &'static str, label: &'static str) -> Comm
 }
 
 /// In the shortcut sheet's order: the canvas first, it's where you work.
-pub const COMMANDS: [Command; 56] = [
+pub const COMMANDS: [Command; 57] = [
     cmd("Nodes", "canvas.add", "Add a node"),
     cmd("Nodes", "canvas.find", "Find a node"),
     cmd("Nodes", "canvas.home", "Zoom to fit"),
@@ -62,6 +62,7 @@ pub const COMMANDS: [Command; 56] = [
     cmd("View", "app.float_inspector", "Inspector in a window of its own, or docked"),
     cmd("View", "app.hud", "Show or hide the frame times"),
     cmd("View", "app.chat", "Show or hide the AI"),
+    cmd("View", "app.stage_theme", "Stage theme on or off: a dimmed UI for a dark club"),
     cmd("Project", "app.new", "New project"),
     cmd("Project", "app.open", "Open"),
     cmd("Project", "app.save", "Save"),
@@ -122,6 +123,8 @@ impl Preset {
             (Preset::Velo, "app.demo") => vec![k(CS, Key::O)],
             (Preset::Velo, "app.hud") => vec![k(CS, Key::H)],
             (Preset::Velo, "app.chat") => vec![k(C, Key::I)],
+            // L for lights
+            (Preset::Velo, "app.stage_theme") => vec![k(CS, Key::L)],
             (Preset::Velo, "edit.undo") => vec![k(C, Key::Z)],
             (Preset::Velo, "edit.redo") => vec![k(CS, Key::Z), k(C, Key::Y)],
             (Preset::Velo, "scene.add") => vec![k(CS, Key::N)],

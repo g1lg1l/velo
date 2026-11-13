@@ -77,6 +77,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - Layer scenes: always on top of, or underneath, whatever is out (words, a logo, a background), over, added, screened or multiplied; launching one switches it on or off. A layer on top can also process what is under it (a Live node on "What plays under this layer", through effects): a strobe, a glitch or a shake over everything, on one key.
 - MIDI learn on everything, with soft takeover; the computer's keys learned as pads; OSC in.
 - Blackout, Freeze, and a test pattern for lining up the projector; its lag set once, so what moves on the beat lands on the beat on the wall.
+- A stage theme for a dark club: near black, dim text, one amber accent and dimmed previews, so the laptop doesn't light up your face. `Cmd`+`Shift`+`L` flips it before a set; the output stays as it is.
 
 **Goes out**
 - Fullscreen on any display, the picture's shape kept.

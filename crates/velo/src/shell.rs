@@ -1140,7 +1140,7 @@ impl App {
                         painter.rect_filled(r, CornerRadius::same(t.radius_md), t.fg_text.gamma_multiply(0.06 * h));
                         // a wash of its own, from its name: the same every time
                         let hue = name.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(u32::from(b))) % 360;
-                        let (a, _) = widgets::wash(hue as f32 / 360.0);
+                        let (a, _) = widgets::wash(&t, hue as f32 / 360.0);
                         let swatch = egui::Rect::from_center_size(r.left_center() + vec2(26.0, 0.0), vec2(36.0, 36.0));
                         painter.rect_filled(swatch, CornerRadius::same(t.radius_sm), a.gamma_multiply(0.55));
                         kit::icon_at(painter, swatch.center(), icons::STACK, 16.0, t.fg_text.gamma_multiply(0.85));
@@ -1208,9 +1208,9 @@ impl App {
             return;
         }
         let (color, icon, title) = match toast.tone {
-            Tone::Done => (Theme::TONE_DONE, icons::CHECK, tr!("Done")),
-            Tone::Action => (Theme::TONE_ACTION, icons::LIGHTNING, tr!("Your turn")),
-            Tone::Error => (Theme::TONE_ERROR, icons::X, tr!("Error")),
+            Tone::Done => (t.lit(Theme::TONE_DONE), icons::CHECK, tr!("Done")),
+            Tone::Action => (t.lit(Theme::TONE_ACTION), icons::LIGHTNING, tr!("Your turn")),
+            Tone::Error => (t.lit(Theme::TONE_ERROR), icons::X, tr!("Error")),
         };
         // at the top of the window, in its middle, under the top bar: over whatever view is up
         // (the start screen, a panel, the canvas), where the eye already is. `a` is its body's
@@ -1522,6 +1522,13 @@ impl App {
 
     fn prefs_theme(&mut self, ui: &mut Ui, t: &Theme) {
         kit::card(ui, t, tr!("THEME"), |ui| {
+            let mut stage = self.settings.stage;
+            let detail = tr!("Near black, dim text and dimmed previews, so the screen doesn't light up your face in a dark club. The output stays as it is. {} flips it.", self.settings.keymap.label("app.stage_theme"));
+            if kit::setting(ui, t, tr!("Stage theme"), &detail, |ui| kit::switch(ui, t, &mut stage, tr!("Stage theme"))).changed() {
+                self.settings.stage = stage;
+                self.use_theme(ui.ctx(), self.settings.theme.clone());
+            }
+            ui.add_space(t.gap);
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let current = self.settings.theme.name.clone();

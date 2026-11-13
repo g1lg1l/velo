@@ -159,13 +159,12 @@ Scenes: `Cmd+Shift+N` new · `F2` rename · `Cmd+Backspace` delete. Panels: `Cmd
 A calm, shadcn-like look for a dark room.
 
 - **Themes:** Velo Dark (neutral greys, the default), Velo OLED (pure black) and Velo Light; a theme file can be imported. **One accent**, electric cyan; other colors only for state and for the node categories.
+- **Stage theme**, for a dark club: a switch over the chosen theme (Preferences → General → Theme, or `Cmd Shift L`), kept between runs. Near-black panels, dim warm greys for text and never white, one amber accent (amber spoils night vision least) with warnings yellower and errors redder so LIVE and danger stay apart, the node colors darker and greyer, and the pictures in the interface (preview, scene cards, node viewers) and the fixed colors (the macro caps, the pads, the toasts) at 65%. The output itself is never dimmed. Text keeps 4.5:1 on its panels, a test checks it for every built-in theme.
 - 1-px borders instead of shadows; corner radius 6 px on controls, 10 px on cards; a 4-px grid.
 - **Inter** for the interface, **JetBrains Mono** for every number, **Phosphor** icons, Noto Emoji for node and scene icons, all bundled.
 - Motion: short ease-out fades and slides (about 160 ms), where it carries information: the beat on the tempo dot, meters, learn mode's outline, the launch countdown. **Reduce motion** in Preferences turns it off.
 - Colors live only in the theme module (CI checks it).
 - English and Italian.
-
-Not yet: a stage theme with capped brightness, so the laptop doesn't light up the performer's face.
 
 ### 7.8 Safety rails
 

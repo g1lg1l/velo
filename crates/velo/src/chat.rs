@@ -807,7 +807,7 @@ impl App {
                 }
                 Some(result) => {
                     let (dot, said) = match result {
-                        Ok(s) => (Theme::TONE_DONE, s),
+                        Ok(s) => (t.lit(Theme::TONE_DONE), s),
                         Err(e) => (t.error, e),
                     };
                     let (rect, _) = ui.allocate_exact_size(vec2(8.0, 16.0), Sense::hover());
