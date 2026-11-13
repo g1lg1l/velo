@@ -111,3 +111,18 @@ OSC in, on a UDP port (9000 by default), off until Preferences → Control turns
 ```
 
 `/velo/op` makes OSC the plugin path for outside tools in any language (plugins.md). Not yet: `/velo/source/<name>` as a modulation source, learning custom addresses, OSC out, OSCQuery.
+
+## 7. Gesture looper
+
+A macro can loop a move of its own, hands free, for as long as a set needs it. The idea comes from veejay's control recorder; the code is `crates/velo/src/looper.rs`.
+
+1. Right-click a macro's knob → **Loop 1 bar**, **Loop 2 bars** or **Loop 4 bars**. The knob gets a blinking dot: it is armed and waits for the next bar of the beat clock (a bar is 4 beats, as Link counts them).
+2. From that bar on it records what the macro does, whatever moves it (the mouse, a MIDI knob, a key, OSC), for that many bars. A ring in the theme's error color fills through the bars.
+3. Then it plays the recording back by itself, in a loop: the knob turns and its ring, now in the accent color, fills through each pass.
+4. It stops, and the macro stays where you put it, as soon as the macro is moved by anything (the mouse, MIDI, a key, OSC, an agent, a variation, undo), or with right-click → **Stop loop**. Choosing a loop again records a new one.
+
+- **On the beat, not the clock.** The curve is sampled 48 times a beat against the beat position and played back at the beat position, so a new tempo (typed, tapped, heard, a MIDI clock's, Link's) keeps the move on the bar: it gets faster or slower with the music.
+- **Memory only.** A loop is a performance state: it isn't saved with the project, doesn't go through undo and doesn't touch the document. While it plays, the macro's saved value stays where it was when recording ended; the engine and the knob get the looped value instead. Quitting Velo or removing the scene ends it.
+- Every scene's macros can loop at once, the live scene's and the others', each on its own.
+
+Not yet: a key for "loop the last touched macro", saving loops in the project, overdub.

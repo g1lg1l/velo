@@ -20,6 +20,12 @@ While a macro drives a value, the value's slider shows where the macro has it, w
 
 Right-click a macro to rename it ("Energy", "Hue", "Zoom") or to learn a controller knob for it.
 
+## Loop a move
+
+Right-click a macro and choose **Loop 1 bar**, **Loop 2 bars** or **Loop 4 bars**. A dot blinks on the knob until the next bar; then, for that many bars, Velo records what you do with the macro, by mouse, controller or key, and a ring in the error color fills round the knob. After that the macro plays your move back by itself, in a loop, on the beat, with the ring in the accent color: change the tempo and the move follows it.
+
+Touch the macro again (or right-click → **Stop loop**) and the loop stops: you're in charge again. Loops aren't saved with the project.
+
 ## Variations
 
 A **variation** is a snapshot of where the scene's eight macros are. "Build" and "Drop" can be two variations of one scene: the same nodes, the macros somewhere else.

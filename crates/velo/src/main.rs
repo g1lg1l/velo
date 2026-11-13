@@ -23,6 +23,7 @@ mod kit;
 #[cfg(feature = "link")]
 mod link;
 mod live;
+mod looper;
 mod markdown;
 mod midi;
 mod orb;
@@ -688,6 +689,14 @@ impl App {
                 selected = Some(kaleido);
                 app.learn.on = true;
                 app.learn.wait(Target::Macro(3));
+                // VELO_DEMO_LOOP with it: Macro 1 loops a bar, Macro 2 records four (their marks)
+                if std::env::var_os("VELO_DEMO_LOOP").is_some()
+                    && let (Some(live), Some(scene)) = (&mut app.live, app.session.active())
+                {
+                    for (i, bars) in [(0, 1), (1, 4)] {
+                        live.loops.insert((scene.id.clone(), i), looper::Loop::new(bars, live.beats(), scene.macros[i].value));
+                    }
+                }
             }
             // VELO_DEMO_SHADER=1|broken: a Shader node's scene, the node selected, its code open
             if let Ok(demo) = std::env::var("VELO_DEMO_SHADER") {
@@ -1870,7 +1879,13 @@ impl App {
         // its cap's color, the OP-1's four in turn
         let cap = widgets::cap_color(t, i);
         widgets::numbered(ui, t, i + 1, &m.name, if empty && !waiting { t.fg_muted } else { cap });
-        let (r, v) = if empty { (widgets::macro_slot(ui, t, waiting, cap), None) } else { widgets::deck_knob(ui, t, &MACRO, &name, m.value, cap, learning) };
+        // its loop, if it has one: the knob shows what the loop plays
+        let looping = self.live.as_ref().and_then(|l| l.loops.get(&(scene.to_string(), i)).map(|lp| (lp.phase, lp.shown, lp.progress(l.beats()))));
+        let shown = looping.filter(|lp| lp.0 == looper::Phase::Playing).map_or(m.value, |lp| lp.1);
+        let (r, v) = if empty { (widgets::macro_slot(ui, t, waiting, cap), None) } else { widgets::deck_knob(ui, t, &MACRO, &name, shown, cap, learning) };
+        if let Some((phase, _, progress)) = looping {
+            widgets::loop_mark(ui, t, r.rect, phase, progress);
+        }
         if empty && r.clicked() {
             self.assigning = (!waiting).then(|| (scene.to_string(), i));
         }
@@ -1897,7 +1912,7 @@ impl App {
         if r.drag_stopped() || r.lost_focus() {
             self.session.close_merge();
         }
-        let tip = if drives.is_empty() { tr!("{} drives nothing yet: click it, then touch any value in the inspector", name) } else { tr!("{} drives {} · right-click to rename or learn MIDI", name, drives) };
+        let tip = if drives.is_empty() { tr!("{} drives nothing yet: click it, then touch any value in the inspector", name) } else { tr!("{} drives {} · right-click to rename, loop or learn MIDI", name, drives) };
         self.hint(&r, tip);
         kit::context_menu(t, &r).show(|ui| {
             if ui.add_enabled(m.value != MACRO.default, egui::Button::new(format!("{}  {}", icons::ARROW_U_UP_LEFT, tr!("Reset")))).clicked() {
@@ -1907,6 +1922,21 @@ impl App {
             if ui.button(format!("{}  {}", icons::PENCIL_SIMPLE, tr!("Rename…"))).clicked() {
                 self.rename = Some(shell::Renaming::macro_(scene, i, &m.name));
                 ui.close();
+            }
+            if !empty && let Some(live) = &mut self.live {
+                ui.separator();
+                let key = (scene.to_string(), i);
+                for (bars, label) in [(1, tr!("Loop 1 bar")), (2, tr!("Loop 2 bars")), (4, tr!("Loop 4 bars"))] {
+                    if ui.button(format!("{}  {label}", icons::ARROWS_CLOCKWISE)).on_hover_text(tr!("Records what this macro does from the next bar, then plays it by itself until you touch it")).clicked() {
+                        let l = looper::Loop::new(bars, live.beats(), m.value);
+                        live.loops.insert(key.clone(), l);
+                        ui.close();
+                    }
+                }
+                if ui.add_enabled(live.loops.contains_key(&key), egui::Button::new(format!("{}  {}", icons::X, tr!("Stop loop")))).clicked() {
+                    live.loops.remove(&key);
+                    ui.close();
+                }
             }
             ui.separator();
             self.learn_items(ui, &target);

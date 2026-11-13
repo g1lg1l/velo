@@ -234,6 +234,26 @@ pub fn deck_knob(ui: &mut Ui, t: &Theme, info: &ParamInfo, name: &str, value: f3
     (resp, new)
 }
 
+/// A macro's loop on its knob (the knob's `rect`): a blinking dot while it waits for the bar,
+/// then a ring filling through its bars, in `error` while it records and `accent` while it plays.
+pub fn loop_mark(ui: &Ui, t: &Theme, rect: Rect, phase: crate::looper::Phase, progress: f32) {
+    use crate::looper::Phase;
+    let painter = ui.painter();
+    let c = pos2(rect.center().x, rect.top() + 21.0);
+    let color = if phase == Phase::Playing { t.accent } else { t.error };
+    if phase == Phase::Armed {
+        let blink = if t.motion > 0.0 { 0.5 + 0.5 * (ui.input(|i| i.time) as f32 * 8.0).sin() } else { 1.0 };
+        painter.circle_filled(c + vec2(18.0, -18.0), 3.0, color.gamma_multiply(blink));
+        return;
+    }
+    let a0 = -0.5 * PI;
+    let arc: Vec<Pos2> = (0..=48).map(|k| c + Vec2::angled(a0 + TAU * progress * k as f32 / 48.0) * 24.0).collect();
+    painter.add(Shape::line(arc, Stroke::new(2.0, color)));
+    if phase == Phase::Recording {
+        painter.circle_filled(c + vec2(18.0, -18.0), 3.0, color);
+    }
+}
+
 /// An empty macro: where its knob would be, its ring unlit round a dashed socket with a +;
 /// `waiting` while it's the one a value goes to next (the socket lit in `cap` and turning,
 /// "touch…" under it).

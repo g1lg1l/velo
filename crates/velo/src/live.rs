@@ -234,6 +234,8 @@ pub struct Live {
     /// connected and may ask for a snapshot); the buffer is reused, no allocation per frame.
     pub frame: Vec<u8>,
     pub keep_frame: bool,
+    /// The macros looping their recorded moves, by scene and index (memory only, see looper.rs).
+    pub loops: HashMap<(String, usize), crate::looper::Loop>,
     /// Ableton Link, in builds with it.
     #[cfg(feature = "link")]
     link: crate::link::Link,
@@ -279,6 +281,7 @@ impl Live {
             errors: HashMap::new(),
             frame: Vec::new(),
             keep_frame: false,
+            loops: HashMap::new(),
             #[cfg(feature = "link")]
             link: crate::link::Link::new(),
         }
@@ -427,6 +430,12 @@ impl Live {
         // the hot path: values and mappings only, no rebuild (drags, undo of a drag); the
         // engine computes the modulated values itself, for every graph it renders
         let morph = self.morph.take();
+        // the looping macros, one step on the clock each; a touched one (or its scene gone) stops
+        let beats = self.beats();
+        self.loops.retain(|(id, i), l| project.scene(id).is_some_and(|s| l.step(s.macros[*i].value, beats)));
+        if !self.loops.is_empty() {
+            ctx.request_repaint();
+        }
         for slot in &mut self.slots {
             let Some(scene) = project.scene(&slot.scene) else { continue };
             // the macros: what they drive first (a node they let go of gets its values again
@@ -438,7 +447,12 @@ impl Live {
                 slot.driving = Some(driving);
                 slot.sent.iter_mut().for_each(Vec::clear);
             }
-            let values = scene.macros.each_ref().map(|m| m.value);
+            let mut values = scene.macros.each_ref().map(|m| m.value);
+            for ((id, i), l) in &self.loops {
+                if *id == scene.id {
+                    values[*i] = l.shown;
+                }
+            }
             match &morph {
                 Some((id, beats)) if *id == scene.id && slot.built => self.engine.send(Command::Morph { key: slot.key, to: values, beats: *beats }),
                 _ => {

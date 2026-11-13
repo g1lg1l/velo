@@ -73,7 +73,7 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 
 **Plays live**
 - Scenes launched on the beat, the bar or four bars, with Cut, Crossfade, Wipe, Zoom, Glitch or Flash.
-- Eight macros and eight variations per scene on the deck, and an autopilot that moves to the next scene every few bars, seconds, or on a drop, among the scenes you leave in it.
+- Eight macros and eight variations per scene on the deck; a macro can loop a move of yours over 1, 2 or 4 bars, on the beat, until you touch it again; and an autopilot that moves to the next scene every few bars, seconds, or on a drop, among the scenes you leave in it.
 - Layer scenes: always on top of, or underneath, whatever is out (words, a logo, a background), over, added, screened or multiplied; launching one switches it on or off. A layer on top can also process what is under it (a Live node on "What plays under this layer", through effects): a strobe, a glitch or a shake over everything, on one key.
 - MIDI learn on everything, with soft takeover; the computer's keys learned as pads; OSC in.
 - Blackout, Freeze, and a test pattern for lining up the projector; its lag set once, so what moves on the beat lands on the beat on the wall.
