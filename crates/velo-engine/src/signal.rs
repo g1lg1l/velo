@@ -1307,35 +1307,45 @@ mod tests {
     #[test]
     fn a_band_hears_a_tone_inside_it_and_not_outside() {
         use std::f32::consts::TAU;
-        // a 1 kHz tone's spectrum as the audio thread publishes it: 512 points, Hann, 48 kHz
-        let n = 512;
-        let x: Vec<f32> = (0..n).map(|i| (0.5 - 0.5 * (TAU * i as f32 / n as f32).cos()) * (TAU * 1000.0 * i as f32 / 48_000.0).sin()).collect();
-        let power: Vec<f32> = (0..=n / 2)
-            .map(|k| {
-                let turn = |i: usize| TAU * ((k * i) % n) as f32 / n as f32;
-                let (re, im) = x.iter().enumerate().fold((0.0, 0.0), |(re, im), (i, x)| (re + x * turn(i).cos(), im - x * turn(i).sin()));
-                (re * re + im * im) / n as f32
-            })
-            .collect();
-        let wave = crate::SharedWave::default();
-        for _ in 0..30 {
-            wave.push_spectrum(&power, 48_000.0);
-        }
+        // a tone's spectra as the audio thread publishes them: 512 and 4096 points, Hann, 48 kHz
+        let spectrum = |hz: f32, n: usize| -> Vec<f32> {
+            let x: Vec<f32> = (0..n).map(|i| (0.5 - 0.5 * (TAU * i as f32 / n as f32).cos()) * (TAU * hz * i as f32 / 48_000.0).sin()).collect();
+            (0..=n / 2)
+                .map(|k| {
+                    let turn = |i: usize| TAU * ((k * i) % n) as f32 / n as f32;
+                    let (re, im) = x.iter().enumerate().fold((0.0, 0.0), |(re, im), (i, x)| (re + x * turn(i).cos(), im - x * turn(i).sin()));
+                    (re * re + im * im) / n as f32
+                })
+                .collect()
+        };
+        let tone = |hz: f32| {
+            let (short, long) = (spectrum(hz, 512), spectrum(hz, 4096));
+            let wave = crate::SharedWave::default();
+            for _ in 0..30 {
+                wave.push_spectrum(&short, &long, 48_000.0);
+            }
+            wave
+        };
         // a Band node as it's added, as it is (no auto range) or stretched, a second of frames
-        let band = |low: f32, high: f32, auto: bool| {
+        let band = |wave: &crate::SharedWave, low: f32, high: f32, auto: bool| {
             let mut n = velo_core::Node { id: "n".into(), kind: BAND.into(), name: String::new(), off: false, pos: [0.0; 2], params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() };
             n.params.extend([("low_hz".to_string(), [low, 0.0, 0.0, 0.0]), ("high_hz".to_string(), [high, 0.0, 0.0, 0.0]), ("auto".to_string(), [f32::from(u8::from(auto)), 0.0, 0.0, 0.0])]);
             let mut s = node(Kind::of(&n).unwrap(), [false; 2]);
             (0..60).map(|_| {
-                hear(std::slice::from_mut(&mut s), &wave);
+                hear(std::slice::from_mut(&mut s), wave);
                 outputs(&mut s, &[(0.0, 0.0, 0.0)])[0]
             }).last().unwrap()
         };
-        let (inside, outside, below) = (band(800.0, 1200.0, false), band(3000.0, 8000.0, false), band(100.0, 200.0, false));
+        let wave = tone(1000.0);
+        let (inside, outside, below) = (band(&wave, 800.0, 1200.0, false), band(&wave, 3000.0, 8000.0, false), band(&wave, 100.0, 200.0, false));
         assert!(inside > 0.8 && outside < 0.05 && below < 0.3, "inside {inside:.2}, outside {outside:.2}, below {below:.2}");
-        assert!(band(300.0, 1500.0, false) > 0.3, "a wider band around it hears it too");
-        assert_eq!(band(1200.0, 800.0, false), inside, "the edges either way round");
+        assert!(band(&wave, 300.0, 1500.0, false) > 0.3, "a wider band around it hears it too");
+        assert_eq!(band(&wave, 1200.0, 800.0, false), inside, "the edges either way round");
         // a steady band's own range is where it sits: nothing moves, so it reads nothing
-        assert!(band(3000.0, 8000.0, true) < 0.05);
+        assert!(band(&wave, 3000.0, 8000.0, true) < 0.05);
+        // a 40 Hz sub is in the sub's band and not in a kick's body, a short bin's width away
+        let wave = tone(40.0);
+        let (sub, body) = (band(&wave, 30.0, 60.0, false), band(&wave, 70.0, 120.0, false));
+        assert!(sub > 0.5 && body < 0.2, "30 to 60 Hz {sub:.2}, 70 to 120 Hz {body:.2}");
     }
 }

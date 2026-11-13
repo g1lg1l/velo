@@ -1296,7 +1296,7 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
                 buffer[..silence].fill(0.0);
                 links.wave.push_samples(&buffer[..silence]);
                 analyzer.push(&buffer[..silence], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
-                links.wave.push_spectrum(analyzer.spectrum(), analyzer.rate());
+                links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
                 fed = Instant::now();
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -1316,7 +1316,7 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
         }
         links.wave.push_samples(&buffer[..take]);
         analyzer.push(&buffer[..take], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
-        links.wave.push_spectrum(analyzer.spectrum(), analyzer.rate());
+        links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
     }
 }
 
@@ -1345,7 +1345,7 @@ fn test_loop(links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>) {
             let n = (due - played).min(take.samples.len() - at);
             links.wave.push_samples(&take.samples[at..at + n]);
             analyzer.push(&take.samples[at..at + n], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
-            links.wave.push_spectrum(analyzer.spectrum(), analyzer.rate());
+            links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
             played += n;
         }
         std::thread::sleep(Duration::from_millis(5));

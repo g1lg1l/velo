@@ -290,6 +290,8 @@ pub struct Analyzer {
     armed: [bool; 3],
     refractory: [u32; 3],
     spectrum: crate::spectrum::Spectrum,
+    /// The long spectrum: the low end, in bins fine enough to part a sub from a kick.
+    long: crate::spectrum::Spectrum,
     filled: usize,
     hops: u64,
 }
@@ -322,14 +324,21 @@ impl Analyzer {
             armed: [true; 3],
             refractory: MODEL_REFRACTORY_S.map(|s| (s * hops_per_s).round() as u32),
             spectrum: crate::spectrum::Spectrum::new(rate),
+            long: crate::spectrum::Spectrum::with_points(rate, crate::spectrum::LONG),
             filled: 0,
             hops: 0,
         }
     }
 
     /// The last hop's spectrum: its power per bin ([`crate::spectrum::Spectrum::power`]).
-    pub fn spectrum(&self) -> &[f32; crate::spectrum::BINS] {
+    pub fn spectrum(&self) -> &[f32] {
         self.spectrum.power()
+    }
+
+    /// The long spectrum ([`crate::spectrum::LONG`] points), as of this hop or the one before:
+    /// the low end, finely.
+    pub fn long_spectrum(&self) -> &[f32] {
+        self.long.power()
     }
 
     pub fn rate(&self) -> f32 {
@@ -367,6 +376,7 @@ impl Analyzer {
             }
             let model = self.settings.mode == Mode::Model;
             self.spectrum.push(x);
+            self.long.push(x);
             // the model's hops line up with these: both count 256 from the first sample, and it
             // only stops or starts at a hop's start. Simple mode doesn't run it at all.
             let drums = if model { self.drums.push(x) } else { None };
@@ -385,6 +395,10 @@ impl Analyzer {
             if self.filled == HOP {
                 let db = self.sums.map(|s| 10.0 * (s / HOP as f32).max(1e-12).log10());
                 let reading = self.spectrum.hop();
+                // every other hop (~11 ms) is plenty for a window eight times as long, at half the cost
+                if self.hops.is_multiple_of(2) {
+                    self.long.transform();
+                }
                 let open = db[0] > self.settings.gate_db && self.settle == 0;
                 self.settle = self.settle.saturating_sub(1);
                 self.hops += 1;
@@ -624,6 +638,28 @@ mod tests {
         assert!(f >= 0.8, "kick F {f:.2} after switching to the model");
         // the model's signal is a probability
         assert!(signals[signals.len() - 200..].iter().all(|p| (0.0..=1.0).contains(p)));
+    }
+
+    /// Not a check: `cargo test --release -p velo-audio analysis_cost -- --ignored --nocapture`
+    /// prints the share of a core each mode takes on a minute of the test loop.
+    #[test]
+    #[ignore]
+    fn analysis_cost() {
+        let rate = 48_000.0;
+        let take = synth::techno(rate, 128.0, 60.0, 7);
+        for mode in [Mode::Simple, Mode::Model] {
+            let mut analyzer = Analyzer::with(rate, Settings { mode, ..Default::default() });
+            let start = std::time::Instant::now();
+            analyzer.push(&take.samples, |_| {});
+            println!("{mode:?}: {:.2} % of a core", 100.0 * start.elapsed().as_secs_f64() / 60.0);
+        }
+        // the long spectrum's share of that, every other hop
+        let mut long = crate::spectrum::Spectrum::with_points(rate, crate::spectrum::LONG);
+        let start = std::time::Instant::now();
+        for _ in 0..60 * 48_000 / (2 * HOP) {
+            long.transform();
+        }
+        println!("long spectrum: {:.2} % of a core", 100.0 * start.elapsed().as_secs_f64() / 60.0);
     }
 
     #[test]
