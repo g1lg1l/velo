@@ -903,6 +903,9 @@ pub const AI_IMAGE: &str = "velo.ai_image";
 /// header's default.
 pub const AI_IMAGE_POOL: usize = 8;
 
+/// A list's `clock` on Hits (its header's third choice): a turn lasts until `hit` rises again.
+pub const LIST_CLOCK_HITS: f32 = 2.0;
+
 /// The nodes that play a list of files in turn: a Media List, an AI Image.
 pub fn plays_list(kind: &str) -> bool {
     kind == MEDIA_LIST || kind == AI_IMAGE

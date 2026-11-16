@@ -349,8 +349,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Bring back the change you just undid.", "Ripristina la modifica appena annullata."),
     ("Add Node", "Aggiungi nodo"),
     (
-        "Add a node of a kind (\"velo.noise\", \"velo.blur\"…) at a canvas position, in the selected scene unless scene has an id (\"shared\": the shared signals, which take signal nodes only, no Probe).",
-        "Aggiunge un nodo di un tipo (\"velo.noise\", \"velo.blur\"…) in un punto del canvas, nella scena selezionata se scene non indica un id (\"shared\": i segnali condivisi, che accettano solo nodi segnale, niente Probe).",
+        "Add a node of a kind (\"velo.noise\", \"velo.blur\"…) at a canvas position, in the selected scene unless scene has an id (\"shared\": the shared signals, which take signal nodes only, no Probe). Optional: name, params (each a number, true/false or up to four numbers), text (a Text's words, an AI Image's prompt).",
+        "Aggiunge un nodo di un tipo (\"velo.noise\", \"velo.blur\"…) in un punto del canvas, nella scena selezionata se scene non indica un id (\"shared\": i segnali condivisi, che accettano solo nodi segnale, niente Probe). Facoltativi: name, params (ciascuno un numero, true/false o fino a quattro numeri), text (le parole di un Testo, il prompt di un'Immagine IA).",
     ),
     ("Move Node", "Sposta nodo"),
     ("Tie Cables", "Lega i cavi"),
@@ -429,6 +429,11 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Add them now", "Aggiungile ora"),
     ("The canvas' shape", "La forma del canvas"),
     ("Asking for pictures", "Chiedo le immagini"),
+    (
+        "The model ran out of room before it answered: it stopped at its token limit while thinking. Give it a larger one, or pick a model that thinks less.",
+        "Il modello ha finito lo spazio prima di rispondere: si è fermato al limite di token mentre ragionava. Dagliene di più, o scegli un modello che ragiona meno.",
+    ),
+    ("The pictures come here as they're made, the newest {} kept.", "Le immagini arrivano qui man mano che nascono, si tengono le {} più recenti."),
     ("By hand", "A mano"),
     ("Off the output", "Fuori dall'uscita"),
     (
@@ -1352,8 +1357,8 @@ pub static STRINGS: &[(&str, &str)] = &[
         "Segue il tempo nella barra in alto: un colpo a ogni battito e una rampa lungo ogni battuta. Trascina un'uscita su un nodo per scegliere cosa muove.",
     ),
     (
-        "Let a signal node's output move one of a node's parameters, at half its range with 5 ms attack and 150 ms release. The source is \"node_id/output\" (an Audio In's 0 level to 6 hat and 7 melody, a Beat's 0 beat and 1 bar, any other signal node's 0), or level, bass, mid, high, kick, snare, hat, melody, beat, bar_phase: the scene's Audio In or Beat output of that name, the node added if the scene has none; or \"shared:node_id/output\", an output of the shared signals, which every scene can read. Mapping the same source twice does nothing.",
-        "Fa muovere all'uscita di un nodo segnale un parametro di un nodo, a metà del suo intervallo con attacco di 5 ms e rilascio di 150 ms. La sorgente è \"node_id/uscita\" (di un Audio In da 0 level a 6 hat e 7 melody, di un Beat 0 beat e 1 bar, di ogni altro nodo segnale 0), oppure level, bass, mid, high, kick, snare, hat, melody, beat, bar_phase: l'uscita con quel nome dell'Audio In o del Beat della scena, aggiunto se la scena non ne ha; oppure \"shared:node_id/uscita\", un'uscita dei segnali condivisi, che ogni scena può leggere. Collegare due volte la stessa sorgente non fa nulla.",
+        "Let a signal node's output move one of a node's parameters, at half its range with 5 ms attack and 150 ms release. The source is \"node_id/output\" (an Audio In's 0 level to 6 hat and 7 melody, a Beat's 0 beat and 1 bar, any other signal node's 0), or level, bass, mid, high, kick, snare, hat, melody, beat, bar_phase: the scene's Audio In or Beat output of that name, the node added if the scene has none; or \"shared:node_id/output\", an output of the shared signals, which every scene can read. Mapping the same source twice does nothing. Onto a Media List's or an AI Image's Hit, it also sets their Clock to Hits: each hit then moves them on.",
+        "Fa muovere all'uscita di un nodo segnale un parametro di un nodo, a metà del suo intervallo con attacco di 5 ms e rilascio di 150 ms. La sorgente è \"node_id/uscita\" (di un Audio In da 0 level a 6 hat e 7 melody, di un Beat 0 beat e 1 bar, di ogni altro nodo segnale 0), oppure level, bass, mid, high, kick, snare, hat, melody, beat, bar_phase: l'uscita con quel nome dell'Audio In o del Beat della scena, aggiunto se la scena non ne ha; oppure \"shared:node_id/uscita\", un'uscita dei segnali condivisi, che ogni scena può leggere. Collegare due volte la stessa sorgente non fa nulla. Su Hit di una Lista media o di un'Immagine IA, imposta anche il loro Clock su Hits: ogni colpo le fa avanzare.",
     ),
     ("Audio In", "Ingresso audio"),
     ("Remap", "Rimappa"),

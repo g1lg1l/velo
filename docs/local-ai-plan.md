@@ -2,11 +2,10 @@
 
 Branch `feat/local-ai`, base `e900be2` (0.9.6-beta).
 
-**Stato (2026-11-16):** F1 (AI Image, txt2img manuale) implementata e **provata contro un
-modello vero**: dall'inspector (headless) a Genera, all'immagine nel nodo, con
-Z-Image-Turbo su sd-server. F0 fatta, numeri in §3.1. F2 e F3 da fare; F4 bocciata dalle misure. Documento di lavoro, in italiano:
-prima di un PR upstream va tradotto o tolto (CONTRIBUTING chiede un'issue prima di
-toccare il decision log, e questo lo tocca: vedi §6).
+**Stato (2026-11-16):** F1, F2 e il trigger di F3 fatti e provati nell'app vera: un LLM locale
+costruisce la scena e chiede le immagini, un modello locale le dipinge (§3.3). Ottimizzazioni
+misurate in §3.2. Rimandati: img2img (limite di protocollo, F3), streaming ed eval della chat (§4).
+F4 bocciata dalle misure.
 
 ## 0. Cosa c'è già (e cambia il piano)
 
@@ -170,6 +169,51 @@ di Velo (`<sd_cpp_extra_args>` con seed e step).
 - **G3** — ~0,1 immagini/s contro le ≥2 fps richieste: **F4 (sorgente live `ai:`) bocciata**
   con questo stack. Da riaprire solo con un modello a 1 step molto più piccolo e misurato.
 
+### 3.2 Ottimizzazioni misurate (688×384, 4 step salvo dove detto)
+
+| Leva | Risultato | Verdetto |
+|---|---|---|
+| Pesi Q4_K come scaricati | 8,1 s | **riferimento** |
+| `--type f16` (conversione al caricamento) | 14,7 s, 19 GB | peggio: su Metal conta la banda, non il dequant |
+| `--type q8_0` | 10,8 s, 10 GB | peggio |
+| `--type q4_0` | 10,2 s | peggio (e quantizza due volte) |
+| Batch `n=4` in una richiesta (Q4_K) | 8,9 s a immagine | peggio delle richieste in fila |
+| EasyCache a 4 / 6 step | 9,1 s / nessun guadagno chiaro | no |
+| **EasyCache a 8 step** (A/B appaiato ×3) | **13,7 s contro 18,4 s (−25%)**, immagine uguale a occhio | **sì, da 8 step in su, solo verso sd.cpp** |
+| Formato del canvas (688×384) invece di 512² | stesso tempo | **sì, default** |
+| Decoder TAE al posto del VAE | non supportato da sd.cpp per il VAE di Z-Image | scartato |
+
+Il tempo si divide in sampling (~2 s a step a 512) e decodifica VAE (1,4 s). Il conditioning
+del prompt è già in cache sul server dopo la prima richiesta (0,00 s), e le richieste calde
+non ricaricano i pesi. La prima richiesta dopo l'avvio è lenta (~24 s) perché carica i pesi.
+
+### 3.3 Prova end-to-end nell'app vera (2026-11-16)
+
+Velo vero (profilo separato `VELO_DATA`, hook `VELO_DEMO_*`) con il pannello AI su un LLM locale:
+Qwen3.6-35B-A3B 4-bit MLX su `mlx_lm.server` (il preset "llama.cpp · MLX"), e sd-server con
+Z-Image-Turbo. Richiesta in italiano: *una scena con un AI Image di meduse al neon che cambia a
+ogni kick, in un Kaleido e nell'Output, 3 immagini*. Sei prove; ognuna ha fatto emergere un
+difetto vero, corretto prima della successiva:
+
+1. `node.add` voleva i parametri come array di 4; i modelli scrivono `0.25`. → `params` accetta
+   numero, booleano o fino a 4 numeri, come `node.set_param`.
+2. Il prompt messo tra i parametri dava un errore incomprensibile. → errore che dice dove va
+   (`text`), alias `prompt` per `text`, alias `label` per `name`.
+3. `node.add` scartava il `text` di qualsiasi nodo che non fosse un Testo, quindi anche il
+   prompt di un AI Image. → corretto.
+4. `mlx_lm.server` ha `--max-tokens 512` di default: un modello che ragiona li finisce prima di
+   chiamare un tool, e la risposta arrivava vuota in silenzio. → Velo chiede 8192 token ai
+   server locali (non ai cloud: i modelli di ragionamento OpenAI rifiutano `max_tokens`), e se
+   una risposta si ferma al limite senza fare niente lo dice.
+5. I nodi senza `pos` finivano tutti in (0,0). → vanno a destra dell'ultimo.
+6. Mappare il kick su Hit non serviva se Clock restava su Beats, e il modello non lo sapeva.
+   → `mapping.add` su Hit di una lista porta Clock su Hits; la descrizione del nodo dice come.
+
+Alla sesta prova: 12 passi in 63 s, scena giusta (AI Image con prompt in inglese, Kaleido,
+Output, Kick → Hit con Clock su Hits) e 3 immagini nel nodo. Un errore del modello (`id` al
+posto di `node`) recuperato da solo. Resta la variabilità di un LLM locale: in una prova ha
+dimenticato la mappatura; le correzioni sopra riducono i modi di sbagliare, non li azzerano.
+
 **F1 — AI Image MVP (txt2img, manuale)**
 - `velo-core`: kind, `is_list`, `node.add_media`, `sets_text`; test in `velo-core/src/tests.rs`
   (aggiunta, taglio a `pool`, undo, round-trip RON, kind nel catalogo).
@@ -237,6 +281,17 @@ di Velo (`<sd_cpp_extra_args>` con seed e step).
 - ComfyUI come secondo adapter solo qui, se serve.
 
 ## 4. Chat LLM locale: cosa migliorare
+
+**Fatto:** preset "llama.cpp · MLX" (`:8080`); il modello di sd-server (`sd-cpp-local`, sulla
+stessa porta 1234 di LM Studio) non compare più tra i modelli di chat; sotto i preset locali
+Velo dice quanto contesto serve (misurato: la sua parte è ~22,7K token, quasi tutti
+nella risposta di `list_nodes`, quindi chiede 32K; i 4-8K di default di Ollama la troncano);
+`max_tokens` ai server locali e messaggio sul limite di token (§3.3). **Non fatto, di proposito:**
+lo streaming. Il pannello mostra già ogni passo mentre accade e il tempo che passa, e le
+risposte di testo sono di una o due frasi, quindi il guadagno è piccolo rispetto al rischio di
+toccare il loop. L'eval ripetibile resta da fare: §3.3 è un primo caso a mano.
+
+**Piano originale:**
 
 Tutto in `crates/velo/src/ai.rs` / `chat.rs`, niente di strutturale.
 

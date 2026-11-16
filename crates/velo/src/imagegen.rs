@@ -47,6 +47,11 @@ impl Default for Prefs {
 /// run one of them on another port (`--listen-port`).
 pub const PRESETS: [(&str, &str); 3] = [("stable-diffusion.cpp", "http://127.0.0.1:1234/v1"), ("Ollama", "http://localhost:11434/v1"), ("LocalAI", "http://localhost:8080/v1")];
 
+/// A server as people know it: its preset's name, or its address.
+pub fn server_name(endpoint: &str) -> String {
+    PRESETS.iter().find(|p| ai::host(p.1) == ai::host(endpoint)).map_or_else(|| ai::host(endpoint), |p| p.0.to_string())
+}
+
 /// The sizes offered: what the fast models are trained at.
 pub const SIZES: [u32; 3] = [512, 768, 1024];
 
@@ -426,7 +431,7 @@ impl App {
                             ask = Some(4);
                         }
                     });
-                    kit::hint(ui, t, &tr!("Made on this computer by {} (Preferences → AI and agents)", ai::host(&self.settings.imagegen.endpoint)));
+                    kit::hint(ui, t, &tr!("Made on this computer by {} (Preferences → AI and agents)", server_name(&self.settings.imagegen.endpoint)));
                 }
             }
             if held > 0 {
@@ -537,6 +542,13 @@ mod tests {
         assert_eq!(picture_in(&json!({ "data": [{ "url": format!("data:image/png;base64,{png}") }] })), Ok(Picture::Bytes(b"\x89PNG".to_vec())));
         assert_eq!(picture_in(&json!({ "data": [{ "url": "http://localhost:8080/out/1.png" }] })), Ok(Picture::Url("http://localhost:8080/out/1.png".into())));
         assert!(picture_in(&json!({ "data": [] })).is_err());
+    }
+
+    #[test]
+    fn a_server_is_named_as_people_know_it() {
+        assert_eq!(server_name("http://127.0.0.1:1234/v1"), "stable-diffusion.cpp");
+        assert_eq!(server_name("http://localhost:11434/v1/"), "Ollama");
+        assert_eq!(server_name("http://192.168.1.9:7860/v1"), "192.168.1.9:7860");
     }
 
     #[test]

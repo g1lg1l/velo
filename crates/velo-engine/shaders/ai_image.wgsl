@@ -1,7 +1,7 @@
 /*{
   "name": "AI Image",
   "category": "generator",
-  "description": "Pictures a model on this computer makes from a prompt, played in turn like a Media List: in order, at random or back and forth, a new one every so many beats or seconds or on every hit (a Kick mapped onto Hit), cut or crossfaded. It keeps the newest, as many as Pool says",
+  "description": "Pictures a model on this computer makes from a prompt, played in turn like a Media List: in order, at random or back and forth, a new one every so many beats or seconds or on every hit (a Kick mapped onto Hit, which puts Clock on Hits: mapping.add with param hit and source kick), cut or crossfaded. Its prompt is its text (node.add's text, node.set_text); generate_image makes the pictures. It keeps the newest, as many as Pool says",
   "inputs": [{ "id": "s1", "type": "texture" }, { "id": "s2", "type": "texture" }, { "id": "s3", "type": "texture" }],
   "params": [
     { "id": "pool", "type": "int", "default": 8, "min": 1, "max": 64 },

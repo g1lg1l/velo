@@ -594,6 +594,10 @@ mod tests {
         for p in &list.params {
             assert!(ai.params.iter().any(|q| q.id == p.id && q.ty == p.ty), "the AI Image lacks {}", p.id);
         }
+        for header in [&ai, &list] {
+            let clock = header.params.iter().find(|p| p.id == "clock").unwrap();
+            assert_eq!(clock.names.get(velo_core::LIST_CLOCK_HITS as usize).map(String::as_str), Some("Hits"), "the core's Hits is the header's");
+        }
         let pool = ai.params.iter().find(|p| p.id == "pool").unwrap();
         assert_eq!(pool.default[0] as usize, velo_core::AI_IMAGE_POOL, "the core's pool is the header's");
     }

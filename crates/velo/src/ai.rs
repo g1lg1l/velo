@@ -622,6 +622,13 @@ fn written_calls(text: &str) -> Vec<(String, Value)> {
     calls
 }
 
+/// How many tokens a local model may answer with: servers' own defaults can be as low as 512
+/// (mlx_lm.server), which a model that thinks first spends before it calls anything. None for
+/// the cloud services, whose reasoning models refuse `max_tokens`.
+fn answer_room(endpoint: &str) -> Option<u32> {
+    preset(endpoint).is_none_or(|i| PRESETS[i].2.is_none()).then_some(8192)
+}
+
 /// Velo's tools as OpenAI functions.
 fn functions() -> Vec<Value> {
     velo_mcp::tools().as_array().into_iter().flatten().map(|t| json!({ "type": "function", "function": { "name": t["name"], "description": t["description"], "parameters": t["inputSchema"] } })).collect()
@@ -668,7 +675,10 @@ fn local(prefs: &Prefs, prompt: &str, pictures: &[PathBuf], mut history: Vec<Val
         if stop.load(Relaxed) {
             return;
         }
-        let body = json!({ "model": prefs.model.trim(), "messages": history, "tools": tools, "stream": false });
+        let mut body = json!({ "model": prefs.model.trim(), "messages": history, "tools": tools, "stream": false });
+        if let Some(most) = answer_room(&prefs.endpoint) {
+            body["max_tokens"] = json!(most);
+        }
         let mut request = http().post(&url).header("Content-Type", "application/json");
         if let Some(auth) = &auth {
             request = request.header("Authorization", auth);
@@ -680,6 +690,10 @@ fn local(prefs: &Prefs, prompt: &str, pictures: &[PathBuf], mut history: Vec<Val
         let message = &reply["choices"][0]["message"];
         let content = message["content"].as_str().unwrap_or("");
         let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
+        // cut off before it said or did anything (its thinking took the room): say so, not nothing
+        if reply["choices"][0]["finish_reason"] == "length" && content.trim().is_empty() && calls.is_empty() {
+            return say(Event::Problem(tr!("The model ran out of room before it answered: it stopped at its token limit while thinking. Give it a larger one, or pick a model that thinks less.").into()));
+        }
         history.push(json!({ "role": "assistant", "content": content, "tool_calls": if calls.is_empty() { Value::Null } else { json!(calls) } }));
         // smaller models write their calls as JSON in the text instead of making them
         let written = if calls.is_empty() { written_calls(content) } else { Vec::new() };
@@ -825,6 +839,14 @@ mod tests {
         assert!((4_000..60_000).contains(&floor), "{floor}");
         assert!(context_wanted() >= floor + 8192 && context_wanted().is_power_of_two());
         eprintln!("Velo's part: ~{floor} tokens; asking for {}", context_wanted());
+    }
+
+    #[test]
+    fn local_models_get_room_to_think_and_cloud_ones_their_defaults() {
+        assert_eq!(answer_room("http://localhost:8080/v1"), Some(8192), "mlx_lm.server would stop at 512");
+        assert_eq!(answer_room("http://localhost:11434/v1"), Some(8192));
+        assert_eq!(answer_room("http://192.168.1.4:8000/v1"), Some(8192), "a server of the user's own");
+        assert_eq!(answer_room("https://api.openai.com/v1"), None, "reasoning models refuse max_tokens");
     }
 
     #[test]

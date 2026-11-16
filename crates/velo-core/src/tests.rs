@@ -875,6 +875,14 @@ fn an_ai_image_keeps_its_prompt_and_its_newest_pictures() {
     assert_eq!(media_list(&node(&s, &ai)), ["/gen/2.png", "/gen/3.png"]);
     ok(&mut s, "edit.undo", json!({}));
     assert_eq!(media_list(&node(&s, &ai)), ["/gen/0.png", "/gen/1.png", "/gen/2.png"], "one undo step a picture");
+    // a source onto Hit: the list moves on hits from then on
+    assert!(!node(&s, &ai).params.contains_key("clock"));
+    ok(&mut s, "mapping.add", json!({ "node": ai, "param": "hit", "source": "kick" }));
+    assert_eq!(node(&s, &ai).params["clock"], [LIST_CLOCK_HITS, 0.0, 0.0, 0.0], "Clock on Hits");
+    ok(&mut s, "edit.undo", json!({}));
+    assert!(!node(&s, &ai).params.contains_key("clock") && node(&s, &ai).mappings.is_empty(), "one undo step");
+    ok(&mut s, "mapping.add", json!({ "node": blur, "param": "hit", "source": "kick" }));
+    assert!(!node(&s, &blur).params.contains_key("clock"), "only lists have a Clock");
     // a Media List takes them too, but never drops one
     ok(&mut s, "node.add_media", json!({ "node": list, "media": "/clips/a.mov" }));
     assert_eq!(media_list(&node(&s, &list)), ["/clips/a.mov"]);
@@ -884,6 +892,36 @@ fn an_ai_image_keeps_its_prompt_and_its_newest_pictures() {
     // saved and back
     let text = ron::to_string(&s.project).unwrap();
     assert_eq!(ron::from_str::<Project>(&text).unwrap(), s.project);
+}
+
+#[test]
+fn nodes_take_params_and_words_as_agents_write_them() {
+    let mut s = session();
+    // a number, a bool, a list: as node.set_param takes them; a prompt by either name
+    ok(&mut s, "node.add", json!({ "kind": AI_IMAGE, "label": "Jellyfish", "params": { "pool": 3, "load": true, "fade": [0.25] }, "prompt": "neon jellyfish" }));
+    let n = s.active().unwrap().nodes.last().unwrap().clone();
+    assert_eq!((n.name.as_str(), n.text.as_deref()), ("Jellyfish", Some("neon jellyfish")));
+    assert_eq!((n.params["pool"], n.params["load"], n.params["fade"]), ([3.0, 0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.25, 0.0, 0.0, 0.0]));
+    ok(&mut s, "node.add", json!({ "kind": AI_IMAGE, "text": "a moth" }));
+    assert_eq!(s.active().unwrap().nodes.last().unwrap().text.as_deref(), Some("a moth"), "an AI Image keeps the words it's given");
+    ok(&mut s, "node.add", json!({ "kind": "velo.blur", "text": "nothing to show them" }));
+    assert_eq!(s.active().unwrap().nodes.last().unwrap().text, None, "a node with no words drops them");
+    // words among the numbers: refused, saying where they go, and nothing added
+    let before = s.active().unwrap().nodes.len();
+    let e = s.run("node.add", json!({ "kind": AI_IMAGE, "params": { "prompt": "neon jellyfish" } })).unwrap_err();
+    assert!(e.contains("prompt") && e.contains("go in text"), "{e}");
+    assert_eq!(s.active().unwrap().nodes.len(), before);
+    let e = s.run("node.add", json!({ "kind": AI_IMAGE, "params": { "fade": [1, 2, 3, 4, 5] } })).unwrap_err();
+    assert!(e.contains("one to four"), "{e}");
+    // and a scene by its label
+    ok(&mut s, "scene.add", json!({ "label": "Neon" }));
+    assert_eq!(s.active().unwrap().name, "Neon");
+    // nodes given no place line up instead of piling on one spot
+    ok(&mut s, "node.add", json!({ "kind": "velo.noise" }));
+    ok(&mut s, "node.add", json!({ "kind": "velo.blur" }));
+    ok(&mut s, "node.add", json!({ "kind": "velo.output", "pos": [100.0, 50.0] }));
+    let at: Vec<[f32; 2]> = s.active().unwrap().nodes.iter().map(|n| n.pos).collect();
+    assert_eq!(at, [[0.0, 0.0], [240.0, 0.0], [100.0, 50.0]]);
 }
 
 #[test]

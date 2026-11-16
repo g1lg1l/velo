@@ -1,7 +1,7 @@
 /*{
   "name": "Media List",
   "category": "generator",
-  "description": "Pictures and movies in turn, streamed from disk or held in memory: in order, at random (every file once before any comes again, another way round each time) or back and forth, a new one every so many beats or seconds (movies for as long as their own) or on every hit (a Kick mapped onto Hit), cut or crossfaded",
+  "description": "Pictures and movies in turn, streamed from disk or held in memory: in order, at random (every file once before any comes again, another way round each time) or back and forth, a new one every so many beats or seconds (movies for as long as their own) or on every hit (a Kick mapped onto Hit, which puts Clock on Hits), cut or crossfaded",
   "inputs": [{ "id": "s1", "type": "texture" }, { "id": "s2", "type": "texture" }, { "id": "s3", "type": "texture" }],
   "params": [
     { "id": "order", "type": "int", "default": 0, "names": ["In order", "At random", "Back and forth"] },

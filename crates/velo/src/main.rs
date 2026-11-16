@@ -2546,7 +2546,13 @@ impl App {
         let failed: Vec<Option<String>> = files.iter().map(|f| velo_engine::media::failed(f)).collect();
         let (mut act, mut add, mut clear) = (None, false, false);
         let max = velo_core::list_room(n);
+        let made = n.kind == velo_core::AI_IMAGE;
         kit::section(ui, t, icons::IMAGES, tr!("FILES"), false, |ui| {
+            // an AI Image's come from its prompt, not from a file dialog
+            if files.is_empty() && made {
+                kit::hint(ui, t, &tr!("The pictures come here as they're made, the newest {} kept.", max));
+                return;
+            }
             if files.is_empty() {
                 add = kit::drop_zone(ui, t, icons::IMAGES, tr!("Add pictures or movies"), &tr!("Up to {}, streamed in turn", max)).clicked();
                 return;
