@@ -27,6 +27,13 @@ const PREVIEW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const PREVIEW_EVERY: Duration = Duration::from_millis(16);
 /// Each node's picture for the canvas' cards: this small, in a grid of this many, this often.
 pub const THUMB: [u32; 2] = [128, 72];
+
+/// How large a scene's card's picture is taken ([`Command::Peek`]): [`THUMB`]. Larger while a
+/// film of the app is made (`VELO_REEL`): its output window shows the live scene by this picture
+/// while another scene is edited, and a card's size would be a blur there.
+pub fn shot_size() -> [u32; 2] {
+    if std::env::var_os("VELO_REEL").is_some() { [640, 360] } else { THUMB }
+}
 pub const THUMBS: [u32; 2] = [12, 8];
 const THUMBS_EVERY: Duration = Duration::from_millis(100);
 /// How many frames a graph renders before its card's picture is taken: its feedback and its
@@ -458,7 +465,7 @@ impl Engine {
         let wave_texture = crate::gpu::wave_texture(&device);
         let preview = Arc::new(Preview::new(&device, PREVIEW, PREVIEW_FORMAT));
         let thumbs = Arc::new(Preview::new(&device, [THUMB[0] * THUMBS[0], THUMB[1] * THUMBS[1]], PREVIEW_FORMAT));
-        let shots = Arc::new(Preview::new(&device, THUMB, PREVIEW_FORMAT));
+        let shots = Arc::new(Preview::new(&device, shot_size(), PREVIEW_FORMAT));
         let thread = Thread {
             device: device.clone(),
             queue: queue.clone(),

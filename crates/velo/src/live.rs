@@ -332,7 +332,8 @@ impl Live {
         let live = self.engine.status.live.load(Relaxed);
         if self.peek.is_none()
             && live != self.edit
-            && self.shot_at.elapsed() > SHOT_EVERY
+            // (a film's output window shows the live scene by it: as often as it comes)
+            && self.shot_at.elapsed() > if std::env::var_os("VELO_REEL").is_some() { Duration::ZERO } else { SHOT_EVERY }
             && let Some(slot) = self.slots.iter().find(|s| s.key == live)
         {
             self.shot_at = Instant::now();
@@ -397,8 +398,8 @@ impl Live {
                 // named by the scene as it is now, which is what was just rendered
                 let keep = self.shot_dir.as_deref().filter(|_| p.keep).zip(project.scene(&p.scene)).and_then(|(dir, scene)| shot_file(dir, scene, size));
                 self.engine.take_shot(|rgba| {
-                    use velo_engine::runtime::THUMB;
-                    set_shot(shots, ctx, &p.scene, egui::ColorImage::from_rgba_premultiplied([THUMB[0] as usize, THUMB[1] as usize], rgba));
+                    let [w, h] = velo_engine::runtime::shot_size();
+                    set_shot(shots, ctx, &p.scene, egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], rgba));
                     if let Some(file) = &keep {
                         keep_shot(file, rgba, SHOTS_KEPT);
                     }
@@ -463,7 +464,7 @@ impl Live {
             }
             slot.macros = Some(values);
             // the signal nodes' settings, when they changed (same order as the build's)
-            let (signals, keys) = velo_engine::signal::plan(scene);
+            let (signals, keys) = velo_engine::signal::plan(scene, &self.signals.keys);
             let kinds: Vec<velo_engine::signal::Kind> = signals.into_iter().map(|s| s.kind).collect();
             if keys == slot.signals && slot.built && slot.kinds.as_ref() != Some(&kinds) {
                 self.engine.send(Command::Signals { key: slot.key, kinds: kinds.clone() });
@@ -875,6 +876,10 @@ fn load_shot(file: &Path) -> Option<egui::ColorImage> {
 fn keep_shot(file: &Path, rgba: &[u8], most: usize) {
     use velo_engine::runtime::THUMB;
     let Some(dir) = file.parent() else { return };
+    // (a film run's pictures are larger than a card's, and aren't kept)
+    if rgba.len() != (THUMB[0] * THUMB[1] * 4) as usize {
+        return;
+    }
     if std::fs::create_dir_all(dir).is_err() || image::save_buffer(file, rgba, THUMB[0], THUMB[1], image::ColorType::Rgba8).is_err() {
         return;
     }
@@ -969,6 +974,9 @@ pub enum Input {
         id: String,
         name: String,
     },
+    /// An audio file (an MP3) by its path, played in a loop on the default output: music to
+    /// work with when nothing else is playing.
+    File(String),
 }
 
 /// How the input is doing, for the top bar.
@@ -1111,19 +1119,30 @@ pub struct Audio {
     /// Each detector's signal over the last [`GRAPH_S`]: when (UI seconds), the highest since the
     /// sample before, whether it fired.
     pub graphs: [VecDeque<(f64, f32, bool)>; 3],
-    /// Whether the input stayed under the gate since the sample before: no hit could fire.
+    /// Whether the input has stayed under the gate for [`GATE_HOLD_S`]: no hit can fire. Held
+    /// that long so what says it stays put while the music comes and goes at the gate's edge.
     pub gated: bool,
+    /// When the input was last over the gate (UI seconds).
+    loud: f64,
 }
+
+/// How long the input stays under the gate before the graphs say so.
+const GATE_HOLD_S: f64 = 1.0;
 
 impl Audio {
     fn new(features: Arc<SharedFeatures>, wave: Arc<SharedWave>) -> Self {
         let links = Links { features, wave, tuning: Arc::default(), meter: Arc::default() };
-        Self { links, stop: Arc::new(AtomicBool::new(true)), state: Arc::default(), input: None, settings: Settings::default(), graphs: Default::default(), gated: false }
+        Self { links, stop: Arc::new(AtomicBool::new(true)), state: Arc::default(), input: None, settings: Settings::default(), graphs: Default::default(), gated: false, loud: f64::NEG_INFINITY }
     }
 
-    /// The input to listen to at start: the one chosen, or the test loop (`VELO_AUDIO=synth`).
+    /// The input to listen to at start: the one chosen, or the test loop (`VELO_AUDIO=synth`),
+    /// or an audio file (`VELO_AUDIO=song.mp3`).
     pub fn first_input(chosen: &Input) -> Option<Input> {
-        (std::env::var("VELO_AUDIO").as_deref() != Ok("synth")).then(|| chosen.clone())
+        match std::env::var("VELO_AUDIO") {
+            Ok(synth) if synth == "synth" => None,
+            Ok(file) if std::path::Path::new(&file).is_file() => Some(Input::File(file)),
+            _ => Some(chosen.clone()),
+        }
     }
 
     /// Listens to `input`, or to the synthetic test loop with `None` (`VELO_AUDIO=synth`).
@@ -1165,7 +1184,10 @@ impl Audio {
                 graph.pop_front();
             }
         }
-        self.gated = f32::from_bits(self.links.meter.level.swap(0, Relaxed)) - 200.0 <= self.settings.gate_db;
+        if f32::from_bits(self.links.meter.level.swap(0, Relaxed)) - 200.0 > self.settings.gate_db {
+            self.loud = now;
+        }
+        self.gated = now - self.loud >= GATE_HOLD_S;
     }
 
     /// Whether everything heard since the last ask stayed under the gate (nothing heard at all,
@@ -1200,6 +1222,7 @@ fn listen(input: Option<Input>, links: &Links, stop: &AtomicBool, state: &Mutex<
     let devices = capture::inputs();
     set(&|s| s.devices = devices.clone());
     let source = match &input {
+        Input::File(path) => return file_loop(path, links, stop, state),
         Input::Computer => Source::Computer,
         Input::Default => Source::DefaultInput,
         Input::Named(name) => Source::Named(name.clone()),
@@ -1353,6 +1376,59 @@ fn test_loop(links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>) {
     links.features.store([0.0; 12]);
 }
 
+/// An audio file as the input ([`Input::File`]): played over and over on the default output and
+/// heard from where the output is in it. A capture run (off-screen, for pictures) plays it
+/// silently, on a clock.
+fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>) {
+    let set = |f: &dyn Fn(&mut AudioState)| {
+        if let Ok(mut s) = state.lock() {
+            f(&mut s);
+        }
+    };
+    let path = std::path::Path::new(path);
+    set(&|s| (s.name, s.hearing) = (path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(), Hearing::Waiting));
+    let track = match velo_audio::track::Track::load(path) {
+        Ok(track) => Arc::new(track),
+        Err(e) => {
+            // said in the top bar until another input is picked
+            set(&|s| s.hearing = Hearing::Failed(e.clone()));
+            while !stop.load(Relaxed) {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            return;
+        }
+    };
+    // (VELO_AUDIO_FROM=seconds: from there in the file, for a film of the app)
+    let from = std::env::var("VELO_AUDIO_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
+    let player = velo_audio::track::Player::start(track.clone(), std::env::var_os("VELO_CAPTURE_TO").is_none(), from);
+    set(&|s| s.hearing = Hearing::Live);
+    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(track.rate), Tracker::new(), Tempo::new(track.rate));
+    let dt = HOP as f32 / track.rate;
+    let (mut heard, mut looked, mut chunk) = (player.position(), None, vec![0.0f32; 1024]);
+    links.tuning.changed.store(true, Release);
+    while !stop.load(Relaxed) {
+        if let Some(s) = links.tuning.take() {
+            analyzer.set(s);
+        }
+        look_at_apps(&mut looked, state);
+        let due = player.position();
+        // a second behind (the computer slept): from where the output is now, not all it missed
+        if due > heard + track.rate as usize {
+            heard = due.saturating_sub(chunk.len());
+        }
+        while heard < due {
+            let n = (due - heard).min(chunk.len());
+            track.mono(heard, &mut chunk[..n]);
+            links.wave.push_samples(&chunk[..n]);
+            analyzer.push(&chunk[..n], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
+            links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
+            heard += n;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    links.features.store([0.0; 12]);
+}
+
 /// One hop out to the others: the features, the audio texture's column, the graphs, the tempo.
 fn hop_out(hop: &velo_audio::Hop, tracker: &mut Tracker, dt: f32, tempo: &mut Tempo, links: &Links, state: &Mutex<AudioState>) {
     tracker.hop(hop, dt);
@@ -1383,6 +1459,7 @@ mod tests {
             media: None,
             text: None,
             icon: String::new(),
+            link: None,
         };
         let scene = Scene { id: "s_a".into(), nodes: vec![node("n_a", "velo.noise"), node("n_b", "velo.output")], ..Default::default() };
         let file = |s: &Scene| shot_file(dir, s, [1920, 1080]).unwrap();
@@ -1446,6 +1523,7 @@ mod tests {
             media: None,
             text: None,
             icon: String::new(),
+            link: None,
         };
         assert_eq!(detection(Some(&node)), Settings::default());
         // its parameters at their defaults read the same as none set

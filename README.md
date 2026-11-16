@@ -16,7 +16,13 @@ Live visuals played by the music, for VJs, DJs and anyone with a projector.</p>
 <a href="#documentation">Docs</a>
 </p>
 
+<p>
+<a href="https://ko-fi.com/g1lg1l"><img alt="Support Velo on Ko-fi" src="https://img.shields.io/badge/support_Velo_on-Ko--fi-ff5e5b?style=for-the-badge&logo=kofi&logoColor=white&labelColor=212121"></a>
+</p>
+
 <img src="docs/screenshots/demo.png" alt="Velo playing its demo: the Audio In card with its cassette and level graphs, wired into the Velo shader and the Output; below, the picture itself, V-shaped beams of light in smoke; the deck of macros and sources along the bottom">
+
+<a href="https://g1lg1l.github.io/velo/velo.mp4"><b>▶ Watch Velo used, in eighty seconds</b></a>
 
 <sub>Beta · Windows and macOS · free and open source · written in Rust</sub>
 
@@ -50,11 +56,12 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 ## Features
 
 **Hears the music**
-- The computer's own sound or any input, split into level, bass, mid, high, kick, snare, hat and melody.
+- The computer's own sound, any input, one app's sound or an MP3 played in a loop, split into level, bass, mid, high, kick, snare, hat and melody.
 - Kick, snare, hat and melody come from a small neural network that runs live ([how it was trained](crates/velo-audio/models/README.md)). Each hit's threshold is a line you drag on its graph.
 - Tempo heard from the music, tapped, typed, or followed from Ableton Link or a MIDI clock.
 - Any source onto any value, with its amount, attack, release and invert. Every generator and effect also has an **Automagic** knob that plays along by itself.
 - **Shared signals**: build a composite kick, a pulse or a drop detector once, and every scene maps it. They run once a frame for the whole show, live, fading, layered or edited alike; change a threshold and every scene follows.
+- A shared signal sits on a scene's canvas as a linked card with its cable. Select signal nodes and **Share with every scene** moves them there; **Make local** gives a scene its own copy back. A linked card's settings are locked until you turn Edit here on, and it says how many scenes the change reaches.
 
 **Makes pictures**
 - 65 nodes: generators (Noise, Gradient, Shapes, Waveform, Particles, Mesh, Text, Image, Video, Live, Media List, up to 256 files streamed from disk or held in memory, movies on a clock of their own, or a new file on every kick, AI Image, pictures a model on this computer makes from a prompt), effects (Transform, Kaleido, Color, Blur, Feedback, Displace, Levels, Edges, UV Map, Lookup, Freeze, Time Machine, Key and more), compositing and switching (Blend, Mask, Merge, Switch, Grid, Layer Stack) and signals and logic (Beat Kick, Band (any frequency range), LFO, Envelope, Sequencer, Sample & Hold, Random, Probe, Speed, Delay, Spring and more).
@@ -69,7 +76,8 @@ Everything deeper (the patch, your own shaders, the AI) is there when you want i
 - One graph per scene, TouchDesigner's way: every node shows its picture and what it costs the GPU.
 - `Tab` opens the node menu, every node with its icon and a line on what it does. With a node selected, the new one is wired after it.
 - A signal plugs into a jack on the card it moves. Its cable comes out like a wire: drop it on another card to move one of its values, or on nothing to remove it.
-- `Alt`+drag across cables (or the toolbar's tie tool) ties them into a bundle. The arrange button lays the whole graph out left to right.
+- `Alt`+drag across cables (or the toolbar's tie tool) ties them into a bundle. Double-click a cable to put a bend on it; with the toolbar's Traces on, cables run as a circuit's traces, straight and at 45°, turning at their bends.
+- The arrange button lays the whole graph out left to right: a group stays together in its frame, and a cable that would run under a card gets a lane between the cards.
 
 **Plays live**
 - Scenes launched on the beat, the bar or four bars, with Cut, Crossfade, Wipe, Zoom, Glitch or Flash.
@@ -174,6 +182,10 @@ cargo dev
 `cargo dev` runs the app (`cargo dev -- show.velo` opens a project). It needs a Rust stable toolchain, cmake and a C++ compiler for Ableton Link, and on Windows LLVM (`winget install LLVM.LLVM`). `cargo run -p velo --no-default-features` builds without Link. On Linux, install the ALSA headers first (`libasound2-dev`). `cargo build -p velo-mcp` builds the MCP bridge.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the checks a change has to pass.
+
+## Support
+
+Velo is free and always will be. If it's useful to you, [a coffee on Ko-fi](https://ko-fi.com/g1lg1l) buys time for what comes next.
 
 ## License
 

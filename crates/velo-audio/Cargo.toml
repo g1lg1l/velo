@@ -9,6 +9,8 @@ repository.workspace = true
 [dependencies]
 cpal = "0.18.2"
 rtrb = "0.4.0"
+# an audio file as the input (track.rs): MP3, decoded in Rust
+nanomp3 = "0.2.0"
 
 # one app's audio (apps.rs): a Core Audio process tap; the same crates cpal uses
 [target.'cfg(target_os = "macos")'.dependencies]

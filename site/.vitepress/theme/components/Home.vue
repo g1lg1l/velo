@@ -117,6 +117,7 @@ const shots = [
   { src: '/shots/demo.jpg', title: 'The demo', alt: 'The Velo scene live: Audio In’s bands moving a V Beams shader, the preview, the inspector and the deck of macros and sources.' },
   { src: '/shots/menu.jpg', title: 'The node menu', alt: 'Tab opens every node with its icon and a line on what it does, a tab per group.' },
   { src: '/shots/shared.jpg', title: 'Shared signals', alt: 'One signal graph for the whole show: a kick and an energy built once, mapped by every scene.' },
+  { src: '/shots/linked.jpg', title: 'A shared signal in a scene', alt: 'A shared signal on a scene’s canvas as a linked card, its cable to the Kaleido it moves, its settings locked in the inspector until Edit here is on.' },
   { src: '/shots/signals.jpg', title: 'Signal cards', alt: 'Each signal card says what it does and draws what comes in and what goes out, on a grid.' },
   { src: '/shots/mapping.jpg', title: 'A mapping', alt: 'Kick moving Kaleido’s zoom: its amount, attack, release and invert on the link itself.' },
   { src: '/shots/macros.jpg', title: 'Macros and MIDI', alt: 'Eight macros with their controller badges, variations A to H, and MIDI learn waiting for a knob.' },
@@ -189,6 +190,16 @@ onBeforeUnmount(() => seen?.disconnect())
     <section class="strip" aria-label="Features">
       <Marquee :items="features" :seconds="60" />
       <Marquee :items="presets" reverse :seconds="70" />
+    </section>
+
+    <!-- the film: Velo used by its own script (scripts/reel.sh) -->
+    <section class="wrap section" data-reveal>
+      <div class="head">
+        <p class="eyebrow">Eighty seconds</p>
+        <h2>Tab, type, drag. It plays.</h2>
+        <p class="sub">A scene from nothing: an Audio In, a star with the bass wired to its size by hand, trails, a dark marble shader blended in. Then the output window, and the scene launched onto it.</p>
+      </div>
+      <video class="film" controls preload="none" playsinline :poster="withBase('/velo.jpg')" :src="withBase('/velo.mp4')" aria-label="Velo being used: a scene built from an Audio In, a star moved by the bass, a Kaleido, a Feedback and a Marble shader blended together, then launched onto the output window" />
     </section>
 
     <!-- the patch -->
@@ -476,6 +487,15 @@ onBeforeUnmount(() => seen?.disconnect())
 }
 
 /* section heads */
+.film {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: #0b0d0f;
+}
+
 .head {
   max-width: 720px;
   margin: 0 auto 48px;

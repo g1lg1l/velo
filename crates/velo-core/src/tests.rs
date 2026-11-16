@@ -1161,7 +1161,7 @@ fn a_format_5_project_opens_unchanged_and_the_shared_signals_round_trip() {
     assert_eq!((&project.scenes, &project.bindings), (&before.scenes, &before.bindings), "as it was");
     assert!(project.shared.bare() && project.shared.id == SHARED);
     let text = ron::ser::to_string(&project).unwrap();
-    assert!(text.starts_with("(format:6,") && !text.contains("shared"), "an unused shared graph isn't written: {text}");
+    assert!(text.starts_with(&format!("(format:{FORMAT},")) && !text.contains("shared"), "an unused shared graph isn't written: {text}");
     // a shared Beat Kick a scene maps: written, and read back the same
     let mut s = Session::with_project(project);
     ok(&mut s, "node.add", json!({ "scene": SHARED, "kind": BEAT_KICK, "pos": [0, 0] }));
@@ -1288,4 +1288,107 @@ fn importing_scenes_brings_the_shared_signals_they_read_once() {
     ok(&mut s, "scene.import", json!({ "scene": other.project.scenes[0] }));
     assert_eq!(s.project.shared.nodes.len(), 1);
     assert_eq!(s.project.scenes[1].nodes[0].mappings[0].source, format!("shared:{smooth}/0"));
+}
+
+#[test]
+fn a_scenes_signals_are_shared_whole_and_a_linked_node_stands_where_they_were() {
+    // Audio In → Gain → Smooth, framed as "Bass": the Smooth moves a Kaleido and feeds a Remap
+    let mut s = session();
+    let [audio, gain, smooth, remap] = [AUDIO, GAIN, SMOOTH, REMAP].map(|kind| add(&mut s, kind, 0.0));
+    let kaleido = add(&mut s, "velo.kaleido", 600.0);
+    for (from, to) in [((&audio, 1), &gain), ((&gain, 0), &smooth), ((&smooth, 0), &remap)] {
+        ok(&mut s, "edge.connect", json!({ "from": [from.0, from.1], "to": [to, 0] }));
+    }
+    ok(&mut s, "mapping.add", json!({ "node": kaleido, "param": "zoom", "source": format!("{smooth}/0") }));
+    ok(&mut s, "group.add", json!({ "nodes": [audio, gain, smooth], "name": "Bass" }));
+    ok(&mut s, "tie.add", json!({ "pos": [300, 0], "cables": [Tie::line(&kaleido, &format!("{smooth}/0"))] }));
+    let before = s.project.clone();
+    // not a picture node, not a node fed by one that stays
+    assert!(s.run("node.share", json!({ "nodes": [kaleido] })).is_err());
+    assert!(s.run("node.share", json!({ "nodes": [gain, smooth] })).unwrap_err().contains("Audio In"));
+    assert_eq!(s.project, before, "refused whole");
+    ok(&mut s, "node.share", json!({ "nodes": [audio, gain, smooth] }));
+    let (shared, scene) = (&s.project.shared, &s.project.scenes[0]);
+    assert_eq!(shared.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), [&audio, &gain, &smooth], "moved with their ids");
+    assert_eq!((shared.edges.len(), shared.groups[0].name.as_str()), (2, "Bass"), "wired and framed as they were");
+    // one Shared node, where the Smooth stood, named after the group it's the output of
+    let link = scene.nodes.last().unwrap();
+    assert_eq!((link.kind.as_str(), link.name.as_str(), link.link.clone()), (SHARED_IN, "Bass", Some(shared_key(&smooth, 0))));
+    assert_eq!(scene.nodes.len(), 3, "the Remap, the Kaleido, the link");
+    assert_eq!(scene.node(&kaleido).unwrap().mappings[0].source, format!("{}/0", link.id), "the mapping reads the link");
+    assert_eq!(scene.edges, [Edge { from: (link.id.clone(), 0), to: (remap.clone(), 0) }], "and so does the wire");
+    assert_eq!(scene.ties[0].cables, [Tie::line(&kaleido, &format!("{}/0", link.id))], "the tie holds the cable still");
+    assert!(scene.groups.is_empty());
+    // saved and read back the same, at this format
+    let text = ron::ser::to_string_pretty(&s.project, Default::default()).unwrap();
+    assert!(text.contains(&format!("link: Some(\"shared:{smooth}/0\")")), "{text}");
+    assert_eq!(ron::from_str::<Project>(&text).unwrap(), s.project);
+    // one undo step
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.project, before);
+    // nothing reads it: a link to the last node of the chain all the same
+    let lfo = add(&mut s, LFO, 900.0);
+    ok(&mut s, "node.share", json!({ "nodes": [lfo] }));
+    assert_eq!(s.project.scenes[0].nodes.last().unwrap().link, Some(shared_key(&lfo, 0)));
+    // a Shared node is added with its link, in a scene only, and nothing turns into one
+    ok(&mut s, "node.add", json!({ "kind": SHARED_IN, "link": format!("shared:{lfo}") }));
+    assert_eq!(s.project.scenes[0].nodes.last().unwrap().name, "LFO 2", "named after what it reads");
+    for bad in
+        [json!({ "kind": SHARED_IN }), json!({ "kind": SHARED_IN, "link": "shared:n_nope/0" }), json!({ "kind": SHARED_IN, "link": format!("shared:{lfo}/3") }), json!({ "kind": SHARED_IN, "link": format!("shared:{lfo}"), "scene": SHARED })]
+    {
+        assert!(s.run("node.add", bad.clone()).is_err(), "{bad}");
+    }
+    assert!(s.run("node.replace", json!({ "node": remap, "kind": SHARED_IN })).is_err());
+}
+
+#[test]
+fn a_shared_node_is_made_local_and_mappings_of_shared_signals_are_shown_as_nodes() {
+    // shared: Audio In → Gain; the scene: a Shared on the Gain, moving a Kaleido and feeding a Smooth
+    let mut s = session();
+    let shared = |s: &mut Session, kind: &str, x: f32| {
+        ok(s, "node.add", json!({ "scene": SHARED, "kind": kind, "pos": [x, 50] }));
+        s.project.shared.nodes.last().unwrap().id.clone()
+    };
+    let (audio, gain) = (shared(&mut s, AUDIO, 0.0), shared(&mut s, GAIN, 300.0));
+    ok(&mut s, "edge.connect", json!({ "scene": SHARED, "from": [audio, 1], "to": [gain, 0] }));
+    ok(&mut s, "node.set_param", json!({ "node": gain, "param": "gain", "value": 4.0 }));
+    assert_eq!(s.project.shared.node(&gain).unwrap().params["gain"][0], 4.0, "a shared node's setting, set from the scene");
+    let (kaleido, smooth) = (add(&mut s, "velo.kaleido", 900.0), add(&mut s, SMOOTH, 900.0));
+    ok(&mut s, "node.add", json!({ "kind": SHARED_IN, "link": format!("shared:{gain}"), "pos": [600, 400] }));
+    let link = s.project.scenes[0].nodes.last().unwrap().id.clone();
+    ok(&mut s, "mapping.add", json!({ "node": kaleido, "param": "zoom", "source": format!("{link}/0") }));
+    ok(&mut s, "edge.connect", json!({ "from": [link, 0], "to": [smooth, 0] }));
+    let before = s.project.clone();
+    assert!(s.run("node.make_local", json!({ "node": smooth })).is_err(), "only a Shared node");
+    ok(&mut s, "node.make_local", json!({ "node": link }));
+    let scene = &s.project.scenes[0];
+    assert!(scene.node(&link).is_none() && s.project.shared == before.shared, "the link is gone, the shared signals are as they were");
+    // its own Audio In and Gain, wired and set as the shared ones, the Gain where the link stood
+    let copy = |kind: &str| scene.nodes.iter().find(|n| n.kind == kind && n.id != smooth).unwrap();
+    let (a, g) = (copy(AUDIO), copy(GAIN));
+    assert!(a.id != audio && g.id != gain, "new ids");
+    assert_eq!((g.params["gain"][0], g.pos, a.pos), (4.0, [600.0, 400.0], [300.0, 400.0]));
+    assert!(scene.edges.contains(&Edge { from: (a.id.clone(), 1), to: (g.id.clone(), 0) }) && scene.edges.contains(&Edge { from: (g.id.clone(), 0), to: (smooth.clone(), 0) }));
+    assert_eq!(scene.node(&kaleido).unwrap().mappings[0].source, format!("{}/0", g.id));
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.project, before, "one undo step");
+    // mappings reading the shared signals with no cable: a Shared node each, once an output
+    ok(&mut s, "mapping.add", json!({ "node": kaleido, "param": "spin", "source": format!("shared:{audio}/4") }));
+    ok(&mut s, "mapping.add", json!({ "node": kaleido, "param": "angle", "source": format!("shared:{audio}/4") }));
+    let k = s.project.scenes[0].nodes.iter().position(|n| n.id == kaleido).unwrap();
+    let gone = Mapping { source: "shared:n_gone/0".into(), param: "segments".into(), ..s.project.scenes[0].nodes[k].mappings[0].clone() };
+    s.project.scenes[0].nodes[k].mappings.push(gone);
+    let count = s.project.scenes[0].nodes.len();
+    ok(&mut s, "scene.link_shared", json!({}));
+    let scene = &s.project.scenes[0];
+    let shown = scene.nodes.last().unwrap();
+    assert_eq!(scene.nodes.len(), count + 1, "one node for the two mappings of the same output");
+    assert_eq!((shown.name.as_str(), shown.link.clone()), ("Audio In kick", Some(shared_key(&audio, 4))));
+    assert!(shown.pos[0] < scene.nodes.iter().filter(|n| n.id != shown.id).map(|n| n.pos[0]).fold(f32::INFINITY, f32::min), "left of the graph");
+    let sources: Vec<&str> = scene.node(&kaleido).unwrap().mappings.iter().map(|m| m.source.as_str()).collect();
+    assert_eq!(sources[1..], [format!("{}/0", shown.id).as_str(), format!("{}/0", shown.id).as_str(), "shared:n_gone/0"], "one that's gone is left as it is");
+    // nothing left to show: nothing changes
+    let after = s.project.clone();
+    ok(&mut s, "scene.link_shared", json!({}));
+    assert_eq!(s.project, after);
 }

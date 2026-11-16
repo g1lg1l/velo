@@ -29,6 +29,7 @@ mod markdown;
 mod midi;
 mod orb;
 mod osc;
+mod reel;
 mod shell;
 mod specimen;
 mod templates;
@@ -131,6 +132,9 @@ struct Settings {
     /// the canvas (0: the default).
     split: Split,
     split_share: f32,
+    /// Cables drawn as a circuit's traces: level and upright runs and 45° turns, turning at
+    /// their bends. Off (as it starts), soft curves.
+    circuit_cables: bool,
     /// The inspector in a window of its own over everything, instead of docked.
     inspector_floating: bool,
     /// The audio input, remembered per machine.
@@ -408,6 +412,8 @@ struct App {
     space: Option<(f64, bool)>,
     /// `VELO_DEMO_SCENES`: a scene to select once the first one is live, and whether to launch it.
     demo_drop: Option<(String, bool)>,
+    /// `VELO_REEL`: the film being made of this run, its script playing the pointer and the keys.
+    reel: Option<reel::Reel>,
     /// The start screen is up: the recent projects, a new one, one from a file, the demo.
     start: bool,
     /// When the last UI frame started: the next one never comes sooner than the display needs.
@@ -477,6 +483,7 @@ impl App {
             assigning: None,
             space: None,
             demo_drop: None,
+            reel: None,
             start: false,
             painted: Instant::now(),
             waited: 0.0,
@@ -517,6 +524,9 @@ impl App {
                 }
             }
         }
+        app.reel = reel::Reel::from_env();
+        // VELO_DEMO_ARRANGE: the first scene shown arranged, as the toolbar's button does (screenshots)
+        app.canvas.arrange = std::env::var_os("VELO_DEMO_ARRANGE").is_some();
         // VELO_DEMO_FIND=words: the canvas' search open with them typed (screenshots)
         if let Ok(words) = std::env::var("VELO_DEMO_FIND") {
             app.canvas.find = Some(canvas::Find::with(&words));
@@ -716,7 +726,15 @@ impl App {
                 if std::env::var_os("VELO_DEMO_PROPS").is_some() {
                     app.canvas.props = Some(math.clone());
                 }
-                selected = Some(math);
+                selected = Some(math.clone());
+                // VELO_DEMO_SIGNAL=shared: the chain framed as "Pump" and shared with every
+                // scene, the Shared node left in its place selected
+                if std::env::var("VELO_DEMO_SIGNAL").as_deref() == Ok("shared") {
+                    let chain = [&audio, &remap, &beat, &envelope, &math];
+                    let _ = app.session.run("group.add", json!({ "nodes": chain, "name": "Pump" }));
+                    let _ = app.session.run("node.share", json!({ "nodes": chain }));
+                    selected = app.session.active().and_then(|s| s.nodes.last()).map(|n| n.id.clone());
+                }
             }
             // VELO_DEMO_MACROS: named macros driving the patch, variations, bindings; Kaleido
             // selected (its sliders show their macro), MIDI learn on and waiting for Macro 4
@@ -1374,6 +1392,10 @@ impl App {
             if kit::icon_button(ui, &t, icons::GIT_MERGE, tr!("Tie cables: drag a line across them (or Alt+drag any time)"), tie).clicked() {
                 self.canvas.tie_tool = !tie;
             }
+            let circuit = self.settings.circuit_cables;
+            if kit::icon_button(ui, &t, icons::PATH, if circuit { tr!("Cables as soft curves") } else { tr!("Cables as traces: straight runs and 45° turns, to lay out by their bends") }, circuit).clicked() {
+                self.settings.circuit_cables = !circuit;
+            }
             let hidden = self.canvas.hidden;
             if kit::icon_button(ui, &t, icons::EYE, if hidden { tr!("Show the nodes") } else { tr!("Hide the nodes: the picture alone") }, hidden).clicked() {
                 self.canvas.hidden = !hidden;
@@ -1491,6 +1513,15 @@ impl App {
                     // framed together under a name, to keep a big graph in order
                     if kit::button(ui, &t, Some(icons::SQUARES_FOUR), &self.tip(tr!("Group"), "canvas.group"), false).clicked() {
                         self.command("canvas.group");
+                    }
+                    // signal nodes of a scene: one copy for every scene, a linked node left here
+                    let shareable = self.session.active().is_some_and(|s| s.id != velo_core::SHARED && selected.iter().all(|id| s.node(id).is_some_and(|n| velo_core::shareable(&n.kind))));
+                    if shareable
+                        && kit::button(ui, &t, Some(icons::BROADCAST), tr!("Share with every scene"), false)
+                            .on_hover_text(tr!("Moves them into the shared signals, which run once for every scene, and leaves a linked node here in their place"))
+                            .clicked()
+                    {
+                        self.run("node.share", json!({ "nodes": selected }));
                     }
                 });
                 return;
@@ -1714,8 +1745,79 @@ impl App {
         }
         if kind_id == "velo.grid" {
             self.grid_section(ui, t, &node_id, false);
+        } else if kind_id == velo_core::SHARED_IN {
+            self.shared_link(ui, t, &node_id);
         } else {
             self.node_params(ui, t, &node_id, false);
+        }
+    }
+
+    /// A Shared node: the shared signal it's linked to and what feeds that one, each with its
+    /// settings. They're the shared signals' own, so they're locked until Edit here is on: a
+    /// change is a change in every scene that reads them.
+    fn shared_link(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str) {
+        let project = &self.session.project;
+        let link = self.session.active().and_then(|s| s.node(node)).and_then(|n| n.link.as_deref()).and_then(velo_core::shared_output);
+        let Some((to, port)) = link.filter(|(id, _)| project.shared.node(id).is_some()).map(|(id, port)| (id.to_string(), port)) else {
+            kit::section(ui, t, icons::BROADCAST, tr!("SHARED SIGNAL"), false, |ui| {
+                kit::hint(ui, t, tr!("The shared signal it was linked to is gone, so it reads 0. Undo brings it back."));
+            });
+            return;
+        };
+        // the chain behind the output: the node, then what's wired into it, upstream
+        let mut chain = vec![to.clone()];
+        let mut i = 0;
+        while i < chain.len() {
+            let feeds: Vec<String> = project.shared.edges.iter().filter(|e| e.to.0 == chain[i]).map(|e| e.from.0.clone()).collect();
+            for from in feeds {
+                if !chain.contains(&from) {
+                    chain.push(from);
+                }
+            }
+            i += 1;
+        }
+        // the scenes that read any of it, through a Shared node or a mapping
+        let reads = |s: &&Scene| s.nodes.iter().flat_map(|n| n.link.iter().chain(n.mappings.iter().map(|m| &m.source))).filter_map(|source| velo_core::shared_output(source)).any(|(id, _)| chain.iter().any(|c| c == id));
+        let scenes = project.scenes.iter().filter(reads).count();
+        // by its group's name where it's the group's output, as the node menu and the deck call it
+        let name = shared_sources(project).into_iter().find(|(key, _)| *key == velo_core::shared_key(&to, port)).map_or_else(|| output_name(&project.shared, &to, port), |(_, name)| name);
+        let names: Vec<String> = chain.iter().map(|id| project.shared.node(id).map_or_else(String::new, |n| n.name.clone())).collect();
+        let (mut open, mut go, mut local) = (self.canvas.unlocked.contains(&to), false, false);
+        kit::section(ui, t, icons::BROADCAST, tr!("SHARED SIGNAL"), false, |ui| {
+            let line = if scenes == 1 { tr!("{} · read by this scene only", name) } else { tr!("{} · read by {} scenes", name, scenes) };
+            ui.label(RichText::new(line).font(t.body()).color(t.fg_text));
+            ui.add_space(t.gap);
+            let hint = match (open, scenes) {
+                (false, _) => tr!("Locked: its settings are the shared signals' own, the same in every scene.").to_string(),
+                (true, 1) => tr!("What you change here changes in the shared signals. Only this scene reads them for now.").to_string(),
+                (true, n) => format!("{}  {}", icons::WARNING, tr!("What you change here changes in all {} scenes that read it.", n)),
+            };
+            kit::setting(ui, t, tr!("Edit here"), &hint, |ui| kit::switch(ui, t, &mut open, tr!("Edit here")));
+            ui.add_space(t.gap);
+            ui.horizontal_wrapped(|ui| {
+                go = kit::button(ui, t, Some(icons::ARROW_SQUARE_OUT), tr!("Open in Shared signals"), false).clicked();
+                local = kit::button(ui, t, Some(icons::LINK_BREAK), tr!("Make local"), false).on_hover_text(tr!("This scene's own copy of it and of what feeds it, to change here alone: the other scenes keep the shared one")).clicked();
+            });
+        });
+        if open {
+            self.canvas.unlocked.insert(to.clone());
+        } else {
+            self.canvas.unlocked.remove(&to);
+        }
+        for (id, name) in chain.iter().zip(&names) {
+            egui::Frame::new().inner_margin(egui::Margin { left: t.pad as i8, right: t.pad as i8, top: (t.gap * 2.0) as i8, bottom: 0 }).show(ui, |ui| kit::caps(ui, t, &name.to_uppercase()));
+            ui.add_enabled_ui(open, |ui| self.node_params(ui, t, id, false));
+        }
+        if go {
+            self.run("scene.select", json!({ "scene": velo_core::SHARED }));
+            self.canvas.selected = vec![to];
+        } else if local {
+            // its copy selected in its place: the node that was behind it, last of the scene's
+            // nodes that came with it
+            let before: Vec<String> = self.session.active().map(|s| s.nodes.iter().map(|n| n.id.clone()).collect()).unwrap_or_default();
+            self.run("node.make_local", json!({ "node": node }));
+            let new = self.session.active().and_then(|s| s.nodes.iter().find(|n| !before.contains(&n.id) && n.name.starts_with(names[0].as_str()))).map(|n| n.id.clone());
+            self.canvas.selected = new.into_iter().collect();
         }
     }
 
@@ -2169,12 +2271,14 @@ impl App {
             error.get_or_insert(e);
         }
         // the Audio In being tuned sets the detectors: the selected one, else the edited scene's
-        // first, else the live scene's (one input, one analyzer)
+        // first, else the live scene's, else the shared signals' (one input, one analyzer): an
+        // Audio In shared from a scene goes on tuning them
         fn audio_in<'a>(s: Option<&'a velo_core::Scene>, selected: &[String]) -> Option<&'a velo_core::Node> {
             let mut ins = s?.nodes.iter().filter(|n| n.kind == velo_core::AUDIO && !n.off);
             ins.clone().find(|n| selected.contains(&n.id)).or_else(|| ins.next())
         }
-        let detection = live::detection(audio_in(scene, &self.canvas.selected).or_else(|| audio_in(live.live_scene().and_then(|id| self.session.project.scene(id)), &[])));
+        let tuner = audio_in(scene, &self.canvas.selected).or_else(|| audio_in(live.live_scene().and_then(|id| self.session.project.scene(id)), &[])).or_else(|| audio_in(Some(&self.session.project.shared), &[]));
+        let detection = live::detection(tuner);
         live.audio.tune(detection);
         if live.live_scene().is_some()
             && let Some((drop, launch)) = self.demo_drop.take()
@@ -3515,9 +3619,13 @@ fn mapping_source(project: &Project, scene: &velo_core::Scene, source: &str) -> 
 /// The shared signals' outputs a scene can map ("shared:n_ab12/0") with their names: each node
 /// that's on (each has one output). Not an Audio In or a Beat: those read what the deck's own
 /// sources already show, and are there to feed the other shared nodes.
+/// A group's one output, the node of it that feeds no other of its nodes, goes by the group's name.
 fn shared_sources(project: &Project) -> Vec<(String, String)> {
+    let g = &project.shared;
     let listed = |n: &&velo_core::Node| !n.off && velo_core::shareable(&n.kind) && n.kind != velo_core::AUDIO && n.kind != velo_core::CLOCK;
-    project.shared.nodes.iter().filter(listed).map(|n| (velo_core::shared_key(&n.id, 0), n.name.clone())).collect()
+    let ends = |group: &velo_core::Group| group.nodes.iter().filter(|id| !g.edges.iter().any(|e| e.from.0 == **id && group.nodes.contains(&e.to.0))).cloned().collect::<Vec<_>>();
+    let name = |n: &velo_core::Node| g.groups.iter().find(|group| ends(group) == [n.id.clone()]).map_or_else(|| n.name.clone(), |group| group.name.clone());
+    g.nodes.iter().filter(listed).map(|n| (velo_core::shared_key(&n.id, 0), name(n))).collect()
 }
 
 /// A signal node's output as a mapping shows it: its node's name, and the output's when it has several.
@@ -3860,6 +3968,7 @@ impl App {
             assigning: None,
             space: None,
             demo_drop: None,
+            reel: None,
             start: false,
             painted: Instant::now(),
             waited: 0.0,
@@ -3968,6 +4077,18 @@ impl eframe::App for App {
         }
         files::capture_to_file(&ctx);
         self.draw(ui);
+        // (a film's output window shows what goes out: the live scene, by its card's picture
+        // while another one is being edited)
+        let on_air = self.live.as_ref().and_then(|l| l.live_scene().map(String::from));
+        let picture = match (&self.live, &on_air) {
+            (Some(live), Some(scene)) if self.session.active_scene.as_ref() != Some(scene) => live.shot(scene),
+            (Some(live), _) => live.picture(),
+            _ => None,
+        };
+        let output = self.live_output().is_some();
+        if let Some(reel) = &mut self.reel {
+            reel.frame(&ctx, picture, output);
+        }
         // live: at the preview's rate (it comes at most every 16 ms); else a frame a second at
         // rest, for the autosave check
         ctx.request_repaint_after(if self.live.is_some() { Duration::from_millis(16) } else { Duration::from_secs(1) });
@@ -3977,6 +4098,10 @@ impl eframe::App for App {
     /// Screenshot runs take no input: macOS still focuses the off-screen capture window, and
     /// keys, scrolls and pinches meant for other apps would edit or move what's captured.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // VELO_REEL: the film's script is the mouse and the keys
+        if let Some(reel) = &mut self.reel {
+            return reel.input(raw_input);
+        }
         if std::env::var_os("VELO_CAPTURE_TO").is_some() {
             raw_input.events.clear();
             let at = |var: &str| std::env::var(var).ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))));
@@ -4018,6 +4143,9 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        if let Some(reel) = &mut self.reel {
+            reel.finish();
+        }
         self.exit_cleanup();
         self.finish_update();
     }

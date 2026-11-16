@@ -1,0 +1,176 @@
+# The film on the site's home, played by scripts/reel.sh (crates/velo/src/reel.rs reads it):
+# a step a line, `seconds what`. Points are the window's (1440 x 810).
+# move x y | click | rclick | down | up | key Name (key Cmd+J) | type words | scroll points
+# say a caption (say _words: low) | zoom x y times (the camera; zoom 720 405 1: all of it)
+# {output} and {window} are where the top bar's Output chip and its menu's Window row are:
+# reel.sh fills them in, since they move with how wide the audio input's name is.
+0.3 key Cmd+J
+0.8 say This is Velo. It listens to the music and plays light.
+2.8 move 800 373
+3.1 click
+3.3 say This picture is one node: a shader. Your own code.
+3.9 zoom 1290 300 1.5
+6.4 zoom 720 405 1
+6.6 move 109 54
+6.9 click
+7.3 move 168 87
+7.6 click
+7.8 say A new scene. First, the sound: an Audio In.
+8.3 move 470 300
+8.6 click
+8.9 key Tab
+9.1 type audio in
+9.8 key Enter
+10.8 say Tab adds a node. Type its name.
+11.1 move 650 330
+11.4 click
+11.7 key Tab
+11.9 type shapes
+12.5 key Enter
+13.2 say Its settings: a star, small, turning.
+13.5 zoom 1250 400 1.4
+13.6 move 1380 325
+13.9 click
+14.5 move 1207 478
+14.8 click
+15.4 move 1256 420
+15.6 down
+16.2 move 1198 420
+16.4 up
+16.9 move 1305 499
+17.1 down
+17.6 move 1320 499
+17.8 up
+18.4 zoom 640 400 1.5
+18.5 say Wire the bass to its size, by hand.
+19.0 move 550 464
+19.3 down
+20.2 move 650 392
+20.4 up
+21.0 move 676 524
+21.3 click
+21.9 say Click the link to change how much.
+22.3 zoom 1250 470 1.45
+22.5 move 1260 447
+22.8 click
+23.4 move 1360 517
+23.6 down
+24.3 move 1306 517
+24.5 up
+25.1 zoom 720 405 1
+25.3 say Effects follow: Tab again, and Velo wires them.
+25.6 move 650 330
+25.9 click
+26.2 key Tab
+26.4 type kaleido
+27.0 key Enter
+27.5 key Tab
+27.7 type feedback
+28.4 key Enter
+29.0 say Feedback leaves trails. A little zoom, a little turn.
+29.2 zoom 1200 420 1.4
+29.5 move 1306 446
+29.7 down
+30.2 move 1318 446
+30.4 up
+30.9 move 1306 486
+31.1 down
+31.6 move 1313 486
+31.8 up
+32.4 zoom 720 405 1
+32.6 say A shader under it: Marble, in darker colors.
+32.9 move 660 690
+33.2 click
+33.5 move 660 590
+33.8 key Tab
+34.0 type shader
+34.6 key Enter
+35.1 zoom 1180 420 1.35
+35.2 move 1300 248
+35.5 click
+35.8 type marble
+36.4 key Enter
+37.0 move 1360 627
+37.3 click
+37.8 move 1340 528
+38.0 down
+38.4 move 1343 528
+38.5 up
+38.9 move 1375 480
+39.1 down
+39.5 move 1378 482
+39.6 up
+39.9 key Escape
+40.3 move 1360 667
+40.6 click
+41.0 move 1297 568
+41.2 down
+41.6 move 1299 568
+41.7 up
+42.0 move 1390 432
+42.2 down
+42.6 move 1392 433
+42.7 up
+43.0 key Escape
+43.4 say Automagic: it plays along by itself.
+43.6 move 1186 467
+43.8 down
+44.5 move 1330 467
+44.7 up
+45.3 zoom 720 405 1
+45.5 say Blend the two: a cable each, by hand.
+45.8 move 860 540
+46.1 click
+46.4 move 1010 600
+46.7 key Tab
+46.9 type blend
+47.5 key Enter
+48.0 zoom 950 520 1.4
+48.2 move 1162 388
+48.5 down
+49.4 move 930 643
+49.6 up
+50.1 move 740 648
+50.4 down
+51.2 move 930 673
+51.4 up
+51.9 zoom 720 405 1
+52.0 say Pick how they mix.
+52.4 move 1383 336
+52.7 click
+53.0 type screen
+53.5 key Enter
+54.1 move 1010 600
+54.4 click
+54.5 say Then the Output.
+54.8 key Tab
+55.0 type output
+55.5 key Enter
+56.2 move 300 300
+56.5 click
+56.7 say A drum model tells kick, snare and hat apart, live.
+57.2 zoom 1290 520 1.55
+60.4 zoom 720 405 1
+60.6 say Arrange puts it all in order.
+60.9 move 735 759
+61.2 click
+63.0 say _The preview goes behind the nodes.
+63.3 move 1145 62
+63.6 click
+64.2 move 1212 18
+64.5 click
+65.0 move 1315 78
+65.3 click
+66.6 say _Output: a projector, a window or NDI.
+66.9 move {output} 17
+67.2 click
+67.8 move {window} 79
+68.1 click
+68.4 say The output window opens. It shows what is live.
+70.8 say Right-click the scene, Launch: it takes the stage, in time.
+71.2 move 113 270
+71.5 rclick
+72.1 move 168 288
+72.4 click
+76.2 say Build, wire, play. That is Velo.
+76.8 zoom 640 470 1.18

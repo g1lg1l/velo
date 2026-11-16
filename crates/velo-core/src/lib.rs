@@ -109,7 +109,7 @@ pub const CANVAS: [ParamInfo; 3] = [canvas_param("Width", (16.0, 8192.0, 1920.0)
 // ---------------------------------------------------------------------------
 
 /// The project file format: bumped, with a migration, whenever saved files change shape.
-pub const FORMAT: u32 = 6;
+pub const FORMAT: u32 = 7;
 
 /// The shared signal graph's id (docs/graph.md §3): what operators name in `scene` to edit it, and
 /// what a mapping's source starts with when it reads one of its outputs ("shared:n_ab12/0").
@@ -152,6 +152,8 @@ impl Project {
     /// has no name for: it refuses the file (by its number, or at the key) and never misreads it.
     /// 5 → 6: nothing to change either. A project may now hold a shared signal graph and mappings
     /// reading it ("shared:n_ab12/0"): a format-5 Velo refuses the file by its number.
+    /// 6 → 7: nothing to change. A scene may now hold Shared nodes, each linked to an output of
+    /// the shared signal graph ([`Node::link`]): a format-6 Velo refuses the file by its number.
     pub fn migrate(&mut self) {
         // whatever a hand-edited file calls it, the shared graph is the shared graph
         (self.shared.id, self.shared.name) = (SHARED.into(), shared_graph().name);
@@ -639,6 +641,9 @@ impl NodeKind {
     /// other signals (remap, count, hold, compare…) sit apart, as Logic, from the ones that
     /// make them (audio, a band of it, the beat, LFOs, time, random values, a picture read).
     pub fn group(&self) -> &'static str {
+        if self.id == SHARED_IN {
+            return "Shared";
+        }
         if self.category == Category::Signal && ![AUDIO, CLOCK, BEAT_KICK, BAND, LFO, TIME, RANDOM, PROBE].contains(&self.id) { "Logic" } else { self.category.label() }
     }
 }
@@ -693,6 +698,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(GRID, "Grid", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8"], OUT),
     kind("velo.layers", "Layer Stack", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8"], OUT),
     kind("velo.output", "Output", Category::Output, IN, &[]),
+    kind(SHARED_IN, "Shared", Category::Signal, &[], OUT),
     kind(AUDIO, "Audio In", Category::Signal, &[], &["level", "bass", "mid", "high", "kick", "snare", "hat", "melody"]),
     kind(CLOCK, "Beat", Category::Signal, &[], &["beat", "bar"]),
     kind(BEAT_KICK, "Beat Kick", Category::Signal, &["in", "trigger"], OUT),
@@ -993,6 +999,11 @@ pub const GAIN: &str = "velo.gain";
 /// one signal node a picture goes into.
 pub const PROBE: &str = "velo.probe";
 
+/// An output of the shared signal graph on a scene's canvas ([`Node::link`] says which): a card
+/// with a wire, where a mapping of "shared:n_ab12/0" has a jack alone. It runs nothing of its
+/// own: the shared node does, once for every scene.
+pub const SHARED_IN: &str = "velo.shared";
+
 /// A mapping's source when it's a signal node's output: "n_ab12/4" (or "n_ab12", its first),
 /// as the node's id and the output's index.
 pub fn signal_output(source: &str) -> Option<(&str, u8)> {
@@ -1016,9 +1027,9 @@ pub fn shared_key(id: &str, port: u8) -> String {
 }
 
 /// Whether a node of this kind may sit in the shared signal graph: a signal node, but not a
-/// Probe (there is no picture there to read).
+/// Probe (there is no picture there to read) nor a Shared (it reads that graph from a scene).
 pub fn shareable(kind: &str) -> bool {
-    node_kind(kind).is_some_and(|k| k.category == Category::Signal) && kind != PROBE
+    node_kind(kind).is_some_and(|k| k.category == Category::Signal) && kind != PROBE && kind != SHARED_IN
 }
 
 /// A shared source ("kick", "bar_phase") as a signal node's output: an Audio In's, a Beat's.
@@ -1077,6 +1088,10 @@ pub struct Node {
     /// An emoji shown before its name (none: its category's dot).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub icon: String,
+    /// A Shared node's output of the shared signal graph, as a mapping names it
+    /// ("shared:n_ab12/0"); one that's gone reads 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 /// A file name for a new Shader node called `name`, not used by any node in `project`:

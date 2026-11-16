@@ -103,7 +103,8 @@ fn expand(scene: &Scene) -> Cow<'_, Scene> {
     for n in scene.nodes.iter().filter(lists) {
         for k in 0..SLOTS {
             let id = format!("{}#{k}", n.id);
-            let file = Node { id: id.clone(), kind: IMAGE.into(), name: String::new(), off: n.off, pos: n.pos, params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() };
+            let file =
+                Node { id: id.clone(), kind: IMAGE.into(), name: String::new(), off: n.off, pos: n.pos, params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new(), link: None };
             s.nodes.push(file);
             s.edges.push(Edge { from: (id, 0), to: (n.id.clone(), k as u8) });
         }
@@ -272,7 +273,9 @@ fn build(
     let scene = &*expand(scene);
     let plan = plan_of(scene);
     // the scene's signal nodes: their outputs come after the audio and clock sources
-    let (run, signals) = crate::signal::plan(scene);
+    // its Shared nodes are linked once the interface sends its signals' settings: it knows
+    // where the shared outputs are, and sends them again whenever those move
+    let (run, signals) = crate::signal::plan(scene, &[]);
     // Image nodes' files, Text nodes' words: loading, or in
     let files: Vec<Option<crate::media::Loading>> = plan
         .nodes
