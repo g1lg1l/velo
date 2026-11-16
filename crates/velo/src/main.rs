@@ -565,6 +565,14 @@ impl App {
             app.settings.ai.provider = provider;
             *provider.model(&mut app.settings.ai) = model.to_string();
         }
+        // VELO_DEMO_ENDPOINT=<url>: the local model's endpoint; VELO_DEMO_IMAGES=<url>, the AI
+        // Image nodes' (end-to-end tests)
+        if let Ok(url) = std::env::var("VELO_DEMO_ENDPOINT") {
+            app.settings.ai.endpoint = url;
+        }
+        if let Ok(url) = std::env::var("VELO_DEMO_IMAGES") {
+            app.settings.imagegen.endpoint = url;
+        }
         // VELO_DEMO_ATTACH=<picture>[;<picture>…]: attached to the AI panel's next message
         if let Ok(files) = std::env::var("VELO_DEMO_ATTACH") {
             app.settings.panels.chat = true;
@@ -3873,7 +3881,7 @@ impl eframe::App for App {
         self.poll_agent(ctx, now);
         self.poll_osc(ctx, now);
         self.chat_poll();
-        self.poll_generations();
+        self.poll_generations(ctx);
         self.poll_updates(ctx);
         // the projections as adjusted on the output, kept with the preferences once a drag ends
         if let Some(live) = &self.live {

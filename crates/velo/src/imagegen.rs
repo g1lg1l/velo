@@ -27,15 +27,18 @@ pub struct Prefs {
     pub endpoint: String,
     /// The model the endpoint runs, empty for its own default.
     pub model: String,
-    /// A side of the square picture, in pixels.
+    /// A side of the square picture, in pixels: with `canvas_shape`, the picture has as many
+    /// pixels (what the time to make one goes by) in the canvas' shape.
     pub size: u32,
     /// Denoising steps (servers that don't take them ignore them).
     pub steps: u32,
+    /// The pictures take the canvas' shape (16:9 for 1920×1080), so they fill it uncut.
+    pub canvas_shape: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { endpoint: PRESETS[0].1.into(), model: String::new(), size: 512, steps: 4 }
+        Self { endpoint: PRESETS[0].1.into(), model: String::new(), size: 512, steps: 4, canvas_shape: true }
     }
 }
 
@@ -47,15 +50,42 @@ pub const PRESETS: [(&str, &str); 3] = [("stable-diffusion.cpp", "http://127.0.0
 /// The sizes offered: what the fast models are trained at.
 pub const SIZES: [u32; 3] = [512, 768, 1024];
 
+/// From how many steps stable-diffusion.cpp's EasyCache pays.
+const EASYCACHE_FROM: u32 = 8;
+
 /// The most pictures one click asks for.
 pub const MOST: usize = 8;
 
+/// A picture's width and height: `size` squared, or as many pixels in the canvas' shape, both
+/// multiples of 16 (what the models' latents and patches divide by), at least 64.
+pub fn dims(prefs: &Prefs, canvas: [u32; 2]) -> [u32; 2] {
+    let round = |x: f64| ((x / 16.0).round() as u32 * 16).max(64);
+    if !prefs.canvas_shape || canvas[0] == 0 || canvas[1] == 0 {
+        return [round(f64::from(prefs.size)); 2];
+    }
+    let area = f64::from(prefs.size).powi(2);
+    let aspect = f64::from(canvas[0]) / f64::from(canvas[1]);
+    let w = round((area * aspect).sqrt());
+    [w, round(area / f64::from(w))]
+}
+
 /// The request for one picture. stable-diffusion.cpp reads what OpenAI's schema has no room
 /// for (seed, steps) from a tag in the prompt; other servers take them as fields, or ignore them.
-pub fn request(prefs: &Prefs, prompt: &str, seed: i64) -> Value {
-    let size = format!("{0}x{0}", prefs.size);
+pub fn request(prefs: &Prefs, prompt: &str, seed: i64, [w, h]: [u32; 2]) -> Value {
+    let size = format!("{w}x{h}");
     let sd_cpp = ai::host(&prefs.endpoint) == ai::host(PRESETS[0].1);
-    let prompt = if sd_cpp { format!("{prompt}<sd_cpp_extra_args>{}</sd_cpp_extra_args>", json!({ "seed": seed, "sample_params": { "sample_steps": prefs.steps } })) } else { prompt.to_string() };
+    let prompt = if sd_cpp {
+        let mut extra = json!({ "seed": seed, "sample_params": { "sample_steps": prefs.steps } });
+        // reusing a step's output where the next changes little: a quarter off at 8 steps and
+        // more, the same picture to the eye; at 4 or 6 it costs more than it saves (measured,
+        // docs/local-ai-plan.md §3.1)
+        if prefs.steps >= EASYCACHE_FROM {
+            extra["cache_mode"] = json!("easycache");
+        }
+        format!("{prompt}<sd_cpp_extra_args>{extra}</sd_cpp_extra_args>")
+    } else {
+        prompt.to_string()
+    };
     let mut body = json!({ "prompt": prompt, "n": 1, "size": size, "response_format": "b64_json", "seed": seed, "steps": prefs.steps });
     if !prefs.model.trim().is_empty() {
         body["model"] = json!(prefs.model.trim());
@@ -110,7 +140,7 @@ pub fn generated_dir() -> PathBuf {
 
 /// Keeps a picture: checked to be one, named by what's in it (the same picture twice is one
 /// file), with what made it beside it in a .json.
-fn keep_in(dir: &std::path::Path, bytes: &[u8], prompt: &str, seed: i64, prefs: &Prefs) -> Result<PathBuf, String> {
+fn keep_in(dir: &std::path::Path, bytes: &[u8], prompt: &str, seed: i64, prefs: &Prefs, [w, h]: [u32; 2]) -> Result<PathBuf, String> {
     let format = image::guess_format(bytes).map_err(|_| tr!("The answer isn't a picture."))?;
     image::load_from_memory_with_format(bytes, format).map_err(|e| e.to_string())?;
     let ext = format.extensions_str().first().copied().unwrap_or("png");
@@ -119,23 +149,23 @@ fn keep_in(dir: &std::path::Path, bytes: &[u8], prompt: &str, seed: i64, prefs: 
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let path = dir.join(format!("{:016x}.{ext}", hash.finish()));
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    let made = json!({ "prompt": prompt, "seed": seed, "model": prefs.model, "size": prefs.size, "steps": prefs.steps });
+    let made = json!({ "prompt": prompt, "seed": seed, "model": prefs.model, "width": w, "height": h, "steps": prefs.steps });
     let _ = std::fs::write(path.with_extension("json"), serde_json::to_string_pretty(&made).unwrap_or_default());
     Ok(path)
 }
 
 /// Asks the endpoint for one picture and keeps it.
-fn make(prefs: &Prefs, prompt: &str, seed: i64) -> Result<PathBuf, String> {
-    make_in(&generated_dir(), prefs, prompt, seed)
+fn make(prefs: &Prefs, prompt: &str, seed: i64, dims: [u32; 2]) -> Result<PathBuf, String> {
+    make_in(&generated_dir(), prefs, prompt, seed, dims)
 }
 
-fn make_in(dir: &std::path::Path, prefs: &Prefs, prompt: &str, seed: i64) -> Result<PathBuf, String> {
+fn make_in(dir: &std::path::Path, prefs: &Prefs, prompt: &str, seed: i64, dims: [u32; 2]) -> Result<PathBuf, String> {
     let url = format!("{}/images/generations", prefs.endpoint.trim().trim_end_matches('/'));
     let mut asking = ai::http().post(&url).header("Content-Type", "application/json");
     if let Some(key) = ai::key(&prefs.endpoint) {
         asking = asking.header("Authorization", format!("Bearer {key}"));
     }
-    let reply = asking.send(request(prefs, prompt, seed).to_string()).map_err(|e| ai::unreached(&prefs.endpoint, e)).and_then(ai::read)?;
+    let reply = asking.send(request(prefs, prompt, seed, dims).to_string()).map_err(|e| ai::unreached(&prefs.endpoint, e)).and_then(ai::read)?;
     let bytes = match picture_in(&reply)? {
         Picture::Bytes(bytes) => bytes,
         Picture::Url(url) => {
@@ -143,7 +173,7 @@ fn make_in(dir: &std::path::Path, prefs: &Prefs, prompt: &str, seed: i64) -> Res
             fetched.body_mut().with_config().limit(64 << 20).read_to_vec().map_err(|e| e.to_string())?
         }
     };
-    keep_in(dir, &bytes, prompt, seed, prefs)
+    keep_in(dir, &bytes, prompt, seed, prefs, dims)
 }
 
 /// A seed for each picture: the ones asked for in a row differ.
@@ -162,7 +192,7 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn start(prefs: Prefs, prompt: String, count: usize, ctx: egui::Context) -> Job {
+    pub fn start(prefs: Prefs, prompt: String, count: usize, dims: [u32; 2], ctx: Option<egui::Context>) -> Job {
         let (tx, pictures) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
@@ -171,10 +201,12 @@ impl Job {
                 if stopped.load(Relaxed) {
                     break;
                 }
-                let made = make(&prefs, &prompt, seed());
+                let made = make(&prefs, &prompt, seed(), dims);
                 let failed = made.is_err();
                 let _ = tx.send(made);
-                ctx.request_repaint();
+                if let Some(ctx) = &ctx {
+                    ctx.request_repaint();
+                }
                 // one that failed says why once, not count times
                 if failed {
                     break;
@@ -198,9 +230,15 @@ pub struct Gens {
     jobs: HashMap<String, Job>,
     failed: HashMap<String, String>,
     /// Pictures made for a node of a scene on the output, held until it leaves: a file added to
-    /// a list rebuilds its scene, and a rebuilt list starts its slots empty (a black frame or
-    /// two, the hits counted from naught), which the audience mustn't see.
+    /// a list rebuilds its scene. The list itself carries its files over (`Reel::adopt`), but
+    /// the rest starts over (movies from their start, Feedback's trails from black), which the
+    /// audience shouldn't see unasked.
     waiting: HashMap<String, Vec<PathBuf>>,
+    /// The scenes on the output last time it was looked at: one that leaves has its AI Images
+    /// with Refresh set to "Off the output" make new pictures.
+    on_output: Option<std::collections::HashSet<String>>,
+    /// The window's context, for workers to wake it when a picture comes.
+    ctx: Option<egui::Context>,
     /// The endpoint's test, while it runs and once it answered.
     checking: Option<Receiver<Result<String, String>>>,
     checked: Option<Result<String, String>>,
@@ -217,10 +255,58 @@ impl Gens {
 impl App {
     /// The scene a node is in, and whether it's on the output: the live one, or a layer (on
     /// or off: a layer can come on at any time).
-    fn node_scene(&self, node: &str) -> Option<(String, bool)> {
+    pub(crate) fn node_scene(&self, node: &str) -> Option<(String, bool)> {
         let scene = self.session.project.graphs().find(|s| s.node(node).is_some())?;
-        let live = self.live.as_ref().and_then(|l| l.live_scene()) == Some(scene.id.as_str());
-        Some((scene.id.clone(), live || scene.layer != velo_core::Layer::Scene))
+        Some((scene.id.clone(), self.on_output(&scene.id)))
+    }
+
+    /// Whether a scene is on the output: the live one, or a layer (on or off: a layer can come
+    /// on at any time).
+    fn on_output(&self, scene: &str) -> bool {
+        let live = self.live.as_ref().and_then(|l| l.live_scene()) == Some(scene);
+        live || self.session.project.scenes.iter().any(|s| s.id == scene && s.layer != velo_core::Layer::Scene)
+    }
+
+    /// Starts making `count` pictures (1 to [`MOST`]) for an AI Image from its prompt, in the
+    /// canvas' shape if asked: the inspector's Generate, an agent's generate_image. How many it
+    /// asked for, or why it can't.
+    pub fn generate(&mut self, node: &str, count: usize) -> Result<usize, String> {
+        let n = self.session.project.graphs().flat_map(|s| &s.nodes).find(|n| n.id == node).ok_or_else(|| format!("no node {node}"))?;
+        if n.kind != velo_core::AI_IMAGE {
+            return Err(format!("{node} isn't an AI Image node"));
+        }
+        let prompt = n.text.as_deref().unwrap_or_default().trim().to_string();
+        if prompt.is_empty() {
+            return Err(format!("{node} has no prompt yet: node.set_text gives it one"));
+        }
+        if self.gens.jobs.contains_key(node) {
+            return Err(format!("{node} is making pictures already: generation_status says how far"));
+        }
+        let count = count.clamp(1, MOST);
+        let canvas = &self.session.project.canvas;
+        let dims = dims(&self.settings.imagegen, [canvas.width, canvas.height]);
+        self.gens.failed.remove(node);
+        let job = Job::start(self.settings.imagegen.clone(), prompt, count, dims, self.gens.ctx.clone());
+        self.gens.jobs.insert(node.to_string(), job);
+        Ok(count)
+    }
+
+    /// How a node's pictures are coming (every AI Image's, without `node`): being made, held
+    /// for a scene on the output, in the node, or why the last ones failed.
+    pub fn generation_status(&self, node: Option<&str>) -> serde_json::Value {
+        let nodes: Vec<&velo_core::Node> = self.session.project.graphs().flat_map(|s| &s.nodes).filter(|n| n.kind == velo_core::AI_IMAGE && node.is_none_or(|id| n.id == id)).collect();
+        let each = nodes.iter().map(|n| {
+            let making = self.gens.jobs.get(&n.id).map(|j| json!({ "done": j.done, "asked": j.asked }));
+            json!({
+                "node": n.id,
+                "prompt": n.text,
+                "making": making,
+                "held_for_the_output": self.gens.waiting.get(&n.id).map_or(0, Vec::len),
+                "pictures": velo_core::media_list(n).len(),
+                "error": self.gens.failed.get(&n.id),
+            })
+        });
+        json!({ "ai_images": each.collect::<Vec<_>>(), "server": self.settings.imagegen.endpoint })
     }
 
     /// Adds pictures to a node, one undo step each.
@@ -233,7 +319,10 @@ impl App {
 
     /// Pictures that came: each added to its node, in whichever scene it is, one undo step each;
     /// held while that scene is on the output, and added once it's off.
-    pub fn poll_generations(&mut self) {
+    pub fn poll_generations(&mut self, ctx: &egui::Context) {
+        if self.gens.ctx.is_none() {
+            self.gens.ctx = Some(ctx.clone());
+        }
         let mut came = Vec::new();
         let mut finished = Vec::new();
         for (node, job) in &mut self.gens.jobs {
@@ -268,6 +357,27 @@ impl App {
                 }
                 Err(e) => {
                     self.gens.failed.insert(node, e);
+                }
+            }
+        }
+        // scenes that left the output: new pictures for the AI Images that refresh then
+        let now: std::collections::HashSet<String> = self.session.project.scenes.iter().filter(|s| self.on_output(&s.id)).map(|s| s.id.clone()).collect();
+        if let Some(before) = self.gens.on_output.replace(now.clone()) {
+            let left: Vec<String> = before.difference(&now).cloned().collect();
+            for scene in left {
+                let refreshing: Vec<(String, usize)> = self
+                    .session
+                    .project
+                    .scenes
+                    .iter()
+                    .filter(|s| s.id == scene)
+                    .flat_map(|s| &s.nodes)
+                    .filter(|n| n.kind == velo_core::AI_IMAGE && !n.off && n.params.get("refresh").is_some_and(|v| v[0].round() == 1.0))
+                    .map(|n| (n.id.clone(), velo_core::list_room(n)))
+                    .collect();
+                for (node, pool) in refreshing {
+                    // a node without a prompt, or busy already, just keeps what it has
+                    let _ = self.generate(&node, pool.min(MOST));
                 }
             }
         }
@@ -321,7 +431,7 @@ impl App {
             }
             if held > 0 {
                 ui.add_space(t.gap);
-                kit::hint(ui, t, &tr!("{} new, held while this scene is on the output: adding them rebuilds it, a black frame or two.", held));
+                kit::hint(ui, t, &tr!("{} new, held while this scene is on the output: adding them rebuilds it, and its movies and trails start over.", held));
                 now = kit::actions(ui, t, &[(Variant::Outline, Some(icons::PLUS), tr!("Add them now"))])[0].clicked();
             }
             if let Some(e) = &failed {
@@ -341,10 +451,10 @@ impl App {
         if stop {
             self.gens.jobs.remove(node);
         }
-        if let Some(count) = ask {
-            self.gens.failed.remove(node);
-            let job = Job::start(self.settings.imagegen.clone(), prompt.trim().to_string(), count.min(MOST), ui.ctx().clone());
-            self.gens.jobs.insert(node.to_string(), job);
+        if let Some(count) = ask
+            && let Err(e) = self.generate(node, count)
+        {
+            self.gens.failed.insert(node.to_string(), e);
         }
     }
 
@@ -374,6 +484,8 @@ impl App {
                     p.size = SIZES[k];
                 }
             });
+            kit::divider(ui, t);
+            kit::setting(ui, t, tr!("The canvas' shape"), tr!("As many pixels in the canvas' shape: they fill it uncut, in the same time."), |ui| kit::switch(ui, t, &mut p.canvas_shape, tr!("The canvas' shape")));
             kit::divider(ui, t);
             kit::setting(ui, t, tr!("Steps"), tr!("Turbo models: 1 to 8. Others: 20 or more."), |ui| ui.add(egui::DragValue::new(&mut p.steps).range(1..=80)));
             ui.add_space(t.gap);
@@ -428,18 +540,42 @@ mod tests {
     }
 
     #[test]
+    fn pictures_take_the_canvas_shape_at_the_same_cost() {
+        let mut prefs = Prefs::default();
+        assert_eq!(dims(&prefs, [1920, 1080]), [688, 384], "16:9, about 512 squared");
+        assert_eq!(dims(&prefs, [1080, 1920]), [384, 688], "upright");
+        assert_eq!(dims(&prefs, [1024, 1024]), [512, 512]);
+        for canvas in [[1920, 1080], [1280, 720], [3840, 1080], [1080, 1350], [800, 600]] {
+            let [w, h] = dims(&prefs, canvas);
+            assert!(w % 16 == 0 && h % 16 == 0, "{canvas:?}: {w}x{h} by 16");
+            let pixels = f64::from(w * h) / 512f64.powi(2);
+            assert!((0.9..1.1).contains(&pixels), "{canvas:?}: {w}x{h} is {pixels:.2} of 512 squared");
+            let off = (f64::from(w) / f64::from(h)) / (f64::from(canvas[0]) / f64::from(canvas[1]));
+            assert!((0.95..1.05).contains(&off), "{canvas:?}: {w}x{h} keeps its shape ({off:.3})");
+        }
+        prefs.canvas_shape = false;
+        assert_eq!(dims(&prefs, [1920, 1080]), [512, 512], "square when asked");
+        assert_eq!(dims(&Prefs { size: 10, ..prefs }, [0, 0]), [64, 64], "never under 64");
+    }
+
+    #[test]
     fn the_request_follows_openais_shape() {
-        let mut prefs = Prefs { endpoint: "http://localhost:8080/v1".into(), model: " z-image ".into(), size: 768, steps: 4 };
-        let body = request(&prefs, "neon jellyfish", 42);
+        let mut prefs = Prefs { endpoint: "http://localhost:8080/v1".into(), model: " z-image ".into(), size: 768, steps: 4, canvas_shape: false };
+        let body = request(&prefs, "neon jellyfish", 42, [768, 768]);
         assert_eq!((body["prompt"].as_str(), body["size"].as_str(), body["model"].as_str()), (Some("neon jellyfish"), Some("768x768"), Some("z-image")));
         assert_eq!((body["response_format"].as_str(), body["n"].as_i64(), body["seed"].as_i64()), (Some("b64_json"), Some(1), Some(42)));
         // stable-diffusion.cpp's seed and steps ride in the prompt; no model, none sent
         prefs.endpoint = PRESETS[0].1.into();
         prefs.model.clear();
-        let body = request(&prefs, "neon jellyfish", 42);
+        let body = request(&prefs, "neon jellyfish", 42, [688, 384]);
+        assert_eq!(body["size"].as_str(), Some("688x384"));
         let prompt = body["prompt"].as_str().unwrap();
         assert!(prompt.starts_with("neon jellyfish<sd_cpp_extra_args>") && prompt.contains(r#""seed":42"#) && prompt.contains(r#""sample_params":{"sample_steps":4}"#), "{prompt}");
         assert!(body.get("model").is_none());
+        assert!(!prompt.contains("cache_mode"), "4 steps: no cache");
+        prefs.steps = 8;
+        let body = request(&prefs, "neon jellyfish", 42, [688, 384]);
+        assert!(body["prompt"].as_str().unwrap().contains(r#""cache_mode":"easycache""#), "8 steps: EasyCache");
     }
 
     #[test]
@@ -473,8 +609,8 @@ mod tests {
             (first, String::from_utf8(body).unwrap())
         });
         let dir = std::env::temp_dir().join(format!("velo-gen-http-{}", std::process::id()));
-        let prefs = Prefs { endpoint: format!("http://127.0.0.1:{port}/v1"), model: "z-image".into(), size: 512, steps: 8 };
-        let path = make_in(&dir, &prefs, "green", 3).unwrap();
+        let prefs = Prefs { endpoint: format!("http://127.0.0.1:{port}/v1"), model: "z-image".into(), size: 512, steps: 8, canvas_shape: false };
+        let path = make_in(&dir, &prefs, "green", 3, [512, 512]).unwrap();
         let (first, body) = server.join().unwrap();
         assert!(first.starts_with("POST /v1/images/generations "), "{first}");
         assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["prompt"], "green");
@@ -496,7 +632,7 @@ mod tests {
             // the job's thread is done: its channel closes
             drop(tx);
             app.gens.jobs.insert(node.clone(), Job { pictures, stop: Arc::new(AtomicBool::new(false)), asked: 1, done: 0 });
-            app.poll_generations();
+            app.poll_generations(&egui::Context::default());
         };
         came(&mut app, "/gen/a.png");
         assert_eq!(files(&app), ["/gen/a.png"], "off the output: added as it comes");
@@ -508,9 +644,82 @@ mod tests {
         assert!(app.gens.jobs.is_empty(), "its job done");
         // a scene again: what waited goes in
         app.run("scene.set_layer", json!({ "layer": "Scene" }));
-        app.poll_generations();
+        app.poll_generations(&egui::Context::default());
         assert_eq!(files(&app), ["/gen/a.png", "/gen/b.png"]);
         assert!(app.gens.waiting.is_empty());
+    }
+
+    #[test]
+    fn an_agent_asks_for_pictures_without_waiting_for_them() {
+        let mut app = App::for_tests();
+        // nothing listens on the discard port: the job fails at once
+        app.settings.imagegen.endpoint = "http://127.0.0.1:9/v1".into();
+        app.run("scene.add", json!({}));
+        app.run("node.add", json!({ "kind": velo_core::AI_IMAGE }));
+        app.run("node.add", json!({ "kind": "velo.noise" }));
+        let (ai, noise) = {
+            let nodes = &app.session.active().unwrap().nodes;
+            (nodes[0].id.clone(), nodes[1].id.clone())
+        };
+        app.settings.agent.edit = false;
+        assert!(app.agent_call("generate_image", &json!({ "node": ai, "prompt": "a lantern" }), false).is_err(), "a read-only agent can't");
+        app.settings.agent.edit = true;
+        let refused = |app: &mut App, p: Value| app.agent_call("generate_image", &p, false).unwrap_err();
+        assert!(refused(&mut app, json!({ "node": ai })).contains("no prompt"), "no prompt, nothing to make");
+        assert!(refused(&mut app, json!({ "node": noise, "prompt": "x" })).contains("isn't an AI Image"));
+        assert!(refused(&mut app, json!({ "node": "n_nope" })).contains("no node"));
+        let answer = app.agent_call("generate_image", &json!({ "node": ai, "prompt": "a red lantern in fog", "count": 20 }), false).unwrap();
+        assert_eq!(answer["making"], 8, "at most eight at a time");
+        assert_eq!(app.session.active().unwrap().nodes[0].text.as_deref(), Some("a red lantern in fog"), "the prompt set");
+        assert!(refused(&mut app, json!({ "node": ai })).contains("already"), "one job a node");
+        let status = app.agent_call("generation_status", &json!({ "node": ai }), false).unwrap();
+        assert_eq!(status["ai_images"][0]["making"]["asked"], 8);
+        // the job fails on its thread; the status says why
+        for _ in 0..500 {
+            app.poll_generations(&egui::Context::default());
+            if app.gens.jobs.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let status = app.agent_call("generation_status", &json!({}), false).unwrap();
+        let each = &status["ai_images"][0];
+        assert!(each["making"].is_null() && each["pictures"] == 0, "{each}");
+        assert!(each["error"].as_str().is_some_and(|e| e.contains("Nothing answers")), "{each}");
+        // the tools are offered to every agent
+        let tools = velo_mcp::tools();
+        for name in ["generate_image", "generation_status"] {
+            assert!(tools.as_array().unwrap().iter().any(|t| t["name"] == name), "{name}");
+        }
+    }
+
+    #[test]
+    fn an_ai_image_set_to_refresh_makes_new_pictures_when_its_scene_leaves_the_output() {
+        let mut app = App::for_tests();
+        app.settings.imagegen.endpoint = "http://127.0.0.1:9/v1".into();
+        let ctx = egui::Context::default();
+        app.run("scene.add", json!({}));
+        for (prompt, refresh) in [("a lantern", 1.0), ("a moth", 0.0)] {
+            app.run("node.add", json!({ "kind": velo_core::AI_IMAGE }));
+            let node = app.session.active().unwrap().nodes.last().unwrap().id.clone();
+            app.run("node.set_text", json!({ "node": node, "text": prompt }));
+            app.run("node.set_param", json!({ "node": node, "param": "refresh", "value": refresh }));
+            app.run("node.set_param", json!({ "node": node, "param": "pool", "value": 3.0 }));
+        }
+        let (lantern, moth) = {
+            let n = &app.session.active().unwrap().nodes;
+            (n[0].id.clone(), n[1].id.clone())
+        };
+        app.poll_generations(&ctx);
+        assert!(app.gens.jobs.is_empty(), "nothing left the output yet");
+        // on the output (a layer), then off it
+        app.run("scene.set_layer", json!({ "layer": "Top" }));
+        app.poll_generations(&ctx);
+        assert!(app.gens.jobs.is_empty(), "coming on makes nothing");
+        app.run("scene.set_layer", json!({ "layer": "Scene" }));
+        app.poll_generations(&ctx);
+        assert_eq!(app.gens.jobs.get(&lantern).map(|j| j.asked), Some(3), "the one set to refresh: its pool anew");
+        assert!(!app.gens.jobs.contains_key(&moth), "the other one waits to be asked");
     }
 
     /// Against a real server: `VELO_IMAGEGEN_ENDPOINT=http://127.0.0.1:1234/v1 cargo test -p velo
@@ -520,13 +729,14 @@ mod tests {
     fn a_real_server_makes_a_picture() {
         let endpoint = std::env::var("VELO_IMAGEGEN_ENDPOINT").expect("VELO_IMAGEGEN_ENDPOINT");
         let number = |name: &str, or: u32| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(or);
-        let prefs = Prefs { endpoint, model: String::new(), size: number("VELO_IMAGEGEN_SIZE", 512), steps: number("VELO_IMAGEGEN_STEPS", 8) };
+        let prefs = Prefs { endpoint, model: String::new(), size: number("VELO_IMAGEGEN_SIZE", 512), steps: number("VELO_IMAGEGEN_STEPS", 4), canvas_shape: true };
+        let wanted = dims(&prefs, [1920, 1080]);
         let dir = std::env::temp_dir().join(format!("velo-gen-real-{}", std::process::id()));
         let started = std::time::Instant::now();
-        let path = make_in(&dir, &prefs, "neon jellyfish drifting in dark smoke, glowing cyan and magenta", 42).unwrap_or_else(|e| panic!("{e}"));
+        let path = make_in(&dir, &prefs, "neon jellyfish drifting in dark smoke, glowing cyan and magenta", 42, wanted).unwrap_or_else(|e| panic!("{e}"));
         let picture = image::open(&path).unwrap();
         println!("{}x{} in {:.2} s: {}", picture.width(), picture.height(), started.elapsed().as_secs_f64(), path.display());
-        assert_eq!((picture.width(), picture.height()), (prefs.size, prefs.size));
+        assert_eq!([picture.width(), picture.height()], wanted, "the canvas' shape");
     }
 
     #[test]
@@ -535,13 +745,13 @@ mod tests {
         let mut png = Vec::new();
         image::RgbImage::from_pixel(4, 4, image::Rgb([200, 40, 90])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
         let prefs = Prefs::default();
-        let a = keep_in(&dir, &png, "a pink square", 7, &prefs).unwrap();
-        let b = keep_in(&dir, &png, "a pink square", 7, &prefs).unwrap();
+        let a = keep_in(&dir, &png, "a pink square", 7, &prefs, [4, 4]).unwrap();
+        let b = keep_in(&dir, &png, "a pink square", 7, &prefs, [4, 4]).unwrap();
         assert_eq!(a, b, "the same picture is one file");
         assert_eq!(a.extension().and_then(|e| e.to_str()), Some("png"));
         let made: Value = serde_json::from_str(&std::fs::read_to_string(a.with_extension("json")).unwrap()).unwrap();
         assert_eq!((made["prompt"].as_str(), made["seed"].as_i64()), (Some("a pink square"), Some(7)));
-        assert!(keep_in(&dir, b"not a picture", "x", 1, &prefs).is_err());
+        assert!(keep_in(&dir, b"not a picture", "x", 1, &prefs, [4, 4]).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

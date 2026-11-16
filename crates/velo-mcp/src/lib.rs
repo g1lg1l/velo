@@ -15,7 +15,9 @@ your own WGSL) wired into an Output, moved by the music through mappings (a sour
 Every edit is an operator: find them with search_operators, run them with run_operator. Start with list_nodes (every node kind, its \
 parameters, the audio sources, how to write a shader) and query_project. To make something new: scene.add (it becomes the selected \
 scene, which the preview shows), node.add, edge.connect into an Output, node.set_param, mapping.add. Use the existing nodes \
-whenever they can do the job; write a Shader node's WGSL only when none does. Look at the result with snapshot. \
+whenever they can do the job; write a Shader node's WGSL only when none does. For a picture of something (a creature, an object, a \
+place, a texture from life) use an AI Image node: set its prompt and call generate_image; it plays the pictures a model on the user's \
+computer makes, and feeds effects like any picture. Look at the result with snapshot. \
 The project's shared signals are signal nodes every scene reads (a composite kick, an energy follower): node and edge operators \
 edit them with scene \"shared\", and any scene's mapping.add takes \"shared:<node id>/<output>\" as its source. \
 The live scene is the audience's: work on another one unless the user allowed otherwise. Everything you change until checkpoint is \
@@ -53,6 +55,10 @@ pub fn tools() -> Value {
           "inputSchema": object(json!({ "path": { "type": "string", "description": "the file, as the user gave it" }, "count": { "type": "integer", "description": "frames spread evenly over it, 1..12 (default 6)" }, "times": { "type": "array", "items": { "type": "number" }, "description": "or: the seconds to look at (at most 12)" } }), &["path"]) },
         { "name": "shader_errors", "description": "Shader nodes whose code doesn't compile in the latest build, with the line and naga's message.", "inputSchema": none() },
         { "name": "listen", "description": "What the music is doing right now: each audio source (level, bass, mid, high, kick, snare, hat, beat, bar_phase) 0..1, and the input's name.", "inputSchema": none() },
+        { "name": "generate_image", "description": "Have a model on the user's computer paint pictures for an AI Image node (velo.ai_image), from its prompt: they go into the node one by one as they're made (seconds each), and it plays them in turn like a Media List, on the beat or on every kick. Answers at once; don't wait for the pictures. Fails if the user has no image server running (Preferences → AI and agents).",
+          "inputSchema": object(json!({ "node": { "type": "string", "description": "the AI Image node's id" }, "prompt": { "type": "string", "description": "what the pictures show (sets the node's prompt; the one it has if left out): a subject, a style, colors, light" }, "count": { "type": "integer", "description": "how many pictures, 1..8 (default 1)" } }), &["node"]) },
+        { "name": "generation_status", "description": "How an AI Image node's pictures are coming (every AI Image's, without node): being made (done of asked), held until its scene leaves the output, how many it plays, or why the last ones failed.",
+          "inputSchema": object(json!({ "node": { "type": "string" } }), &[]) },
         { "name": "checkpoint", "description": "Close the current undo step: later edits undo separately.", "inputSchema": none() },
         { "name": "undo", "description": "Take back the last undo step (everything since the last checkpoint, if you edited).", "inputSchema": none() },
         { "name": "save_project", "description": "Save the project to its file (only if the user allowed it in Preferences → AI and agents).", "inputSchema": none() },

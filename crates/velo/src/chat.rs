@@ -949,6 +949,7 @@ impl App {
             let doing = match c.running_step() {
                 Some(s) if s.label.starts_with("snapshot") => tr!("Looking at the preview").to_string(),
                 Some(s) if s.label == "listen" => tr!("Listening").to_string(),
+                Some(s) if s.label.starts_with("generate image") || s.label.starts_with("generation status") => tr!("Asking for pictures").to_string(),
                 Some(s) if !s.label.contains('.') => tr!("Reading the project").to_string(),
                 Some(s) => tr!("Building · {}", s.label.split_whitespace().next().unwrap_or("")),
                 None => tr!("Thinking").to_string(),
@@ -1555,6 +1556,10 @@ impl App {
         let preset = ai::preset(&self.settings.ai.endpoint);
         if preset.is_some_and(|i| ai::PRESETS[i].2.is_none()) {
             ui.label(RichText::new(tr!("No key needed: it runs on this computer.")).small().color(t.fg_muted));
+            // a context too small is cut without a word: the model forgets the tools
+            let wanted = ai::context_wanted() / 1024;
+            let how = if preset == Some(0) { tr!("Give the model {}K of context or more (OLLAMA_CONTEXT_LENGTH={}): Velo's instructions and tools alone take about {}K, and a smaller one is cut without a word.", wanted, wanted * 1024, ai::context_floor().div_ceil(1024)) } else { tr!("Load the model with {}K of context or more: Velo's instructions and tools alone take about {}K, and a smaller one is cut without a word.", wanted, ai::context_floor().div_ceil(1024)) };
+            ui.label(RichText::new(how).small().color(t.fg_muted));
             return;
         }
         ui.horizontal(|ui| {

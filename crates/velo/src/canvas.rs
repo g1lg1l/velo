@@ -4906,7 +4906,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
             // what `logic` does every frame in the app (the harness draws only)
-            h.app.poll_generations();
+            h.app.poll_generations(&h.ctx.clone());
             h.frame(Vec::new());
         }
         h.frame(Vec::new());
@@ -4935,7 +4935,7 @@ mod tests {
         let started = std::time::Instant::now();
         while h.widget("Generate").is_none() && started.elapsed().as_secs() < 300 {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            h.app.poll_generations();
+            h.app.poll_generations(&h.ctx.clone());
             h.frame(Vec::new());
         }
         assert_eq!(h.app.gens.failed(&ai), None);

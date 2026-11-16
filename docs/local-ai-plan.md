@@ -180,7 +180,28 @@ di Velo (`<sd_cpp_extra_args>` con seed e step).
 - Icona, voce nel node menu, README ("64 nodes" → 65), `docs/graph.md`.
 - *Done:* Tab → AI Image → prompt → Generate → l'immagine gira sull'Output e cambia sul kick.
 
-**F2 — La chat usa il nodo**
+**F1.5 — Rifiniture dopo la prova vera (fatto)**
+- **Formato del canvas:** le immagini nascono nella forma del canvas (688×384 per 16:9) con
+  gli stessi pixel di `size`², quindi nello stesso tempo; lo switch "La forma del canvas" torna
+  al quadrato. Prima un quadrato su un canvas 16:9 veniva tagliato.
+- **`Reel::adopt` per percorso** (engine): prima un rebuild conservava i file caricati solo
+  se la lista era *identica*; con un file aggiunto o tolto ripartiva da vuota (slot neri,
+  Hits azzerati). Ora i file presenti in entrambe le liste passano al grafo nuovo. Serve
+  anche a chi aggiunge file a mano a una Media List live. Test GPU che fallisce senza la fix.
+- **Scena in uscita:** le immagini aspettano comunque che esca, ma il motivo vero è che un
+  rebuild fa ripartire i video da capo e le scie del Feedback dal nero (`Playing::new` con
+  `at: 0.0`, `Runner` nuovo); "Aggiungile ora" resta per chi lo vuole.
+
+**F2 — La chat usa il nodo (fatto)**
+- `generate_image {node, prompt?, count?}` e `generation_status {node?}` in
+  `velo-mcp::tools()`, gestiti in `agent.rs`. `generate_image` avvia il job e risponde subito
+  (`agent_call` gira sul thread UI); un prompt nuovo è un edit come gli altri, quindi
+  rispetta la regola della scena live. Inspector e agente passano per `App::generate`.
+- `INSTRUCTIONS`: per l'immagine di qualcosa (una creatura, un oggetto, un luogo) usare un
+  AI Image invece di forzarlo in uno shader.
+- Il pannello mostra "Chiedo le immagini" mentre l'agente le chiede.
+
+**F2 — Piano originale**
 - Tool MCP `generate_image {node?, prompt, n}` in `velo-mcp::tools()` + `agent.rs`.
   **Non deve bloccare:** `agent_call` gira sul thread UI (`poll_agent`), quindi il tool
   accoda il job e risponde subito con un id; `generation_status {id}` per sapere quando è
@@ -190,7 +211,17 @@ di Velo (`<sd_cpp_extra_args>` con seed e step).
 - Funziona uguale con Claude Code / Codex via `velo-mcp`: stesso tool.
 - *Done:* "fammi una scena con meduse al neon che pulsano sul kick" dal pannello, tutto locale.
 
-**F3 — img2img e trigger musicali**
+**F3 — Trigger: rinnova fuori dall'uscita (fatto); img2img (rimandato)**
+- Parametro **Rinnova** dell'AI Image: "A mano" o "Fuori dall'uscita". Quando la sua scena
+  lascia l'uscita, il nodo genera di nuovo la sua scorta, così al lancio successivo ha
+  immagini nuove fatte mentre il pubblico guardava altro.
+- **img2img rimandato per un limite di protocollo:** `/v1/images/edits` di sd-server passa le
+  immagini come *riferimenti* per i modelli di editing (Kontext, Qwen-Edit), non come
+  immagine di partenza; con Z-Image-Turbo un img2img vero richiede l'endpoint stile A1111
+  di sd.cpp (`/sdapi/v1/img2img`, `init_images` + `denoising_strength`): un secondo
+  protocollo da aggiungere solo se serve.
+
+**F3 — Piano originale**
 - Input `ref`: serve leggere dalla GPU l'uscita di un nodo. Oggi c'è `Command::Peek` per
   la scena (snapshot); va esteso a un nodo, consegnato in RGBA come lo snapshot.
   MVP alternativo: `ref` da file o dallo snapshot della scena intera.

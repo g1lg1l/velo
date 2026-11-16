@@ -358,6 +358,33 @@ impl App {
                 }
                 Ok(answer)
             }
+            "generate_image" => {
+                if !prefs.edit {
+                    return Err(read_only());
+                }
+                let node = p["node"].as_str().ok_or("generate_image needs an AI Image node's id (node.add with kind velo.ai_image makes one)")?;
+                let (scene, _) = self.node_scene(node).ok_or_else(|| format!("no node {node}"))?;
+                // what it is before its prompt is touched: the error says what's wrong
+                if self.session.project.graphs().flat_map(|s| &s.nodes).any(|n| n.id == node && n.kind != velo_core::AI_IMAGE) {
+                    return Err(format!("{node} isn't an AI Image node"));
+                }
+                // a new prompt is an edit like any: the live scene is the audience's
+                if let Some(prompt) = p["prompt"].as_str() {
+                    let live = self.live.as_ref().and_then(|l| l.live_scene().map(String::from));
+                    if !prefs.live && !panel && live.as_deref() == Some(scene.as_str()) {
+                        return Err(tr!("That scene is live: work on another one (scene.add makes a new one and selects it; the preview shows it), or the user allows editing live in Preferences → AI and agents").into());
+                    }
+                    self.session.run_merge("node.set_text", json!({ "node": node, "text": prompt, "scene": scene }), MERGE)?;
+                }
+                let count = p["count"].as_u64().map_or(1, |c| c as usize);
+                let asked = self.generate(node, count)?;
+                Ok(json!({
+                    "ok": true,
+                    "making": asked,
+                    "note": "the pictures are made on this computer, one after another (seconds each), and go into the node as they come, played in turn: don't wait for them; generation_status says how far it is",
+                }))
+            }
+            "generation_status" => Ok(self.generation_status(p["node"].as_str())),
             "checkpoint" => {
                 self.session.close_merge();
                 Ok(json!({ "ok": true }))
@@ -536,7 +563,7 @@ impl App {
 
 /// Every node kind with its inputs and parameters (id, type, range, default), the audio
 /// sources a mapping can use, and how a Shader node's code is written.
-fn list_nodes() -> Value {
+pub(crate) fn list_nodes() -> Value {
     let kinds: Vec<Value> = NODE_KINDS
         .iter()
         .map(|k| {

@@ -5,6 +5,7 @@
   "inputs": [{ "id": "s1", "type": "texture" }, { "id": "s2", "type": "texture" }, { "id": "s3", "type": "texture" }],
   "params": [
     { "id": "pool", "type": "int", "default": 8, "min": 1, "max": 64 },
+    { "id": "refresh", "type": "int", "default": 0, "names": ["By hand", "Off the output"] },
     { "id": "order", "type": "int", "default": 0, "names": ["In order", "At random", "Back and forth"] },
     { "id": "clock", "type": "int", "default": 0, "names": ["Beats", "Seconds", "Hits"] },
     { "id": "hit", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
@@ -19,4 +20,5 @@
 }*/
 
 // The app writes each picture to a file and adds it (node.add_media); from there it plays as a
-// Media List does, through the same body (medialist-draw.wgsl).
+// Media List does, through the same body (medialist-draw.wgsl). Pool and Refresh are the app's:
+// how many it keeps, and whether it makes new ones each time its scene leaves the output.

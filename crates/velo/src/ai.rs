@@ -122,9 +122,11 @@ const CODEX_MODELS: [&str; 3] = ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna"];
 
 /// Services to connect in a click: name, OpenAI-compatible endpoint, where to get a key (none:
 /// it runs on this computer).
-pub const PRESETS: [(&str, &str, Option<&str>); 7] = [
+pub const PRESETS: [(&str, &str, Option<&str>); 8] = [
     ("Ollama", "http://localhost:11434/v1", None),
     ("LM Studio", "http://localhost:1234/v1", None),
+    // llama.cpp's llama-server and MLX's mlx_lm.server both listen on 8080 unless told otherwise
+    ("llama.cpp · MLX", "http://localhost:8080/v1", None),
     ("OpenAI", "https://api.openai.com/v1", Some("https://platform.openai.com/api-keys")),
     ("Anthropic", "https://api.anthropic.com/v1", Some("https://console.anthropic.com/settings/keys")),
     ("Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", Some("https://aistudio.google.com/apikey")),
@@ -572,7 +574,26 @@ fn models_via(agent: &ureq::Agent, endpoint: &str) -> Result<Vec<String>, String
         }
     }
     let v = read(request.call().map_err(|e| unreached(endpoint, e))?)?;
-    Ok(v["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(String::from)).collect())
+    Ok(v["data"].as_array().into_iter().flatten().filter_map(|m| m["id"].as_str().map(String::from)).filter(|id| !IMAGE_ONLY.contains(&id.as_str())).collect())
+}
+
+/// Models image servers list that can't chat: stable-diffusion.cpp's sd-server listens on 1234
+/// by default, as LM Studio does, and would show up as one of its models.
+const IMAGE_ONLY: [&str; 1] = ["sd-cpp-local"];
+
+/// About how many tokens Velo's own part of a local model's conversation takes before the user
+/// says a word: the brief, the instructions, the tools, and list_nodes' answer (the first thing
+/// it's told to read). Counted at three characters a token, on the safe side of most tokenizers.
+pub fn context_floor() -> usize {
+    let tools = serde_json::to_string(&functions()).unwrap_or_default();
+    let nodes = crate::agent::list_nodes().to_string();
+    (BRIEF.len() + velo_mcp::INSTRUCTIONS.len() + tools.len() + nodes.len()).div_ceil(3)
+}
+
+/// The context to give a local model: Velo's part and 8K more (room for the project it reads
+/// and the replies), as a power of two.
+pub fn context_wanted() -> usize {
+    (context_floor() + 8192).next_power_of_two()
 }
 
 /// Calls a model wrote as JSON in its text instead of making them (small local models do):
@@ -783,7 +804,7 @@ mod tests {
     #[test]
     fn services_and_eyes_are_told_by_name() {
         assert_eq!(preset("http://localhost:11434/v1/"), Some(0), "Ollama");
-        assert_eq!(preset("https://openrouter.ai/api/v1"), Some(5));
+        assert_eq!(preset("https://openrouter.ai/api/v1"), Some(6));
         assert_eq!(preset("http://192.168.1.4:8080/v1"), None, "a server of the user's own");
         assert!(["llava:13b", "qwen2.5vl:7b", "gpt-4o-mini", "claude-sonnet-5-5", "gemini-2.5-flash", "llama3.2-vision"].iter().all(|m| sees(m)));
         assert!(!["qwen2.5:14b", "llama3.1:8b", "deepseek-r1"].iter().any(|m| sees(m)));
@@ -798,9 +819,24 @@ mod tests {
     }
 
     #[test]
+    fn a_local_model_is_told_how_much_context_velo_needs() {
+        let floor = context_floor();
+        // Velo's part: thousands of tokens, more than the 2K or 4K some servers start a model with
+        assert!((4_000..60_000).contains(&floor), "{floor}");
+        assert!(context_wanted() >= floor + 8192 && context_wanted().is_power_of_two());
+        eprintln!("Velo's part: ~{floor} tokens; asking for {}", context_wanted());
+    }
+
+    #[test]
+    fn image_servers_models_are_no_chat_models() {
+        assert!(IMAGE_ONLY.contains(&"sd-cpp-local"));
+        assert_eq!(preset("http://localhost:8080/v1"), Some(2), "llama.cpp and MLX");
+    }
+
+    #[test]
     fn velos_tools_are_offered_as_functions() {
         let f = functions();
-        assert_eq!(f.len(), 11);
+        assert_eq!(f.len(), 13);
         assert!(f.iter().all(|t| t["type"] == "function" && t["function"]["parameters"]["type"] == "object"));
     }
 }

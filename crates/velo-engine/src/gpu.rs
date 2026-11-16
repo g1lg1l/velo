@@ -1449,6 +1449,71 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn a_list_given_another_file_keeps_showing_without_a_black_frame() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("velo-adopt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |k: usize, rgb: [u8; 3]| {
+            let path = dir.join(format!("{k}.png"));
+            image::RgbaImage::from_pixel(4, 4, image::Rgba([rgb[0], rgb[1], rgb[2], 255])).save(&path).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let files = vec![file(0, [255, 0, 0]), file(1, [0, 255, 0]), file(2, [0, 0, 255])];
+        let programs = [program(&device, "image"), program(&device, "medialist")];
+        let nodes = [0, 1, 2, 3].map(|n| if n == 3 { NodeSpec { program: 1, inputs: vec![Some(0), Some(1), Some(2)] } } else { NodeSpec { program: 0, inputs: vec![] } });
+        let mut runner = Runner::new(&device, &programs, &nodes, &[], [32, 8], &wave_texture(&device)).unwrap();
+        for n in 0..3 {
+            runner.set_params(&queue, &programs, n, &programs[0].node.values(|_| None));
+        }
+        // in memory, on hits: one hit in, the second file shows
+        let v = |x: f32| [x, 0.0, 0.0, 0.0];
+        let values = programs[1].node.values(|p| match p {
+            "clock" => Some(v(2.0)),
+            "load" => Some(v(1.0)),
+            _ => None,
+        });
+        runner.set_params(&queue, &programs, 3, &values);
+        let hit_at = crate::modulate::slot(&programs[1].node, "hit").unwrap().0;
+        let frame = |reel: &mut crate::media::Reel, runner: &mut Runner, hit: f32, beats: f32| {
+            reel.step(&device, &queue, runner, &programs, |p| if p == hit_at { hit } else { values[p][0] }, beats, beats, 1.0 / 60.0);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runner.render(&queue, &mut encoder, &programs, &[beats, 1.0 / 60.0, 0.0, 2.0]);
+            queue.submit([encoder.finish()]);
+            read(&device, &queue, runner, 3)[..3].iter().map(|&c| c >= 0x3800).collect::<Vec<bool>>()
+        };
+        let mut old = crate::media::Reel::new(&device, &queue, "list".into(), 3, &programs[1].node, [0, 1, 2], files.clone(), false).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        // stepping is what asks for the files: until all three are in and the first shows
+        while (frame(&mut old, &mut runner, 0.0, 0.0) != [true, false, false] || old.in_memory() < 3) && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        assert_eq!(old.in_memory(), 3, "all in memory");
+        let mut shown = frame(&mut old, &mut runner, 1.0, 1.0);
+        while shown != [false, true, false] && std::time::Instant::now() < deadline {
+            shown = frame(&mut old, &mut runner, 1.0, 1.0);
+        }
+        assert_eq!(shown, [false, true, false], "a hit: the second file");
+        // a picture added: the rebuilt list, its first frame
+        let mut more = files.clone();
+        more.push(file(3, [255, 255, 255]));
+        let mut new = crate::media::Reel::new(&device, &queue, "list".into(), 3, &programs[1].node, [0, 1, 2], more, false).unwrap();
+        new.adopt(&mut old);
+        assert_eq!(new.in_memory(), 3, "the three files that were in, carried over");
+        assert_eq!(frame(&mut new, &mut runner, 1.0, 1.0), [false, true, false], "the same file, on its first frame: no black, the hit counted");
+        // a file taken out (the oldest, as an AI Image drops it): what stays is still in
+        let fewer: Vec<String> = files[1..].to_vec();
+        let mut newer = crate::media::Reel::new(&device, &queue, "list".into(), 3, &programs[1].node, [0, 1, 2], fewer, false).unwrap();
+        newer.adopt(&mut new);
+        assert_eq!(newer.in_memory(), 2);
+        assert!(frame(&mut newer, &mut runner, 1.0, 1.0).contains(&true), "a file shows on its first frame");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The H.264 fixture (video.rs): its bottom middle blue, green, blue, white, at 10 fps.
     #[cfg(any(target_os = "macos", windows))]
     #[test]
