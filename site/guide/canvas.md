@@ -76,17 +76,20 @@ The bar at the bottom of the canvas, from the left:
 | Zoom to fit | Every node in view (<kbd>H</kbd>); a scene opens this way, and stays fitted as the window changes until you pan or zoom |
 | **Arrange** | Lays the graph out for you |
 | **Tie** | Turns a plain drag into a line that ties cables ([Cable ties](./cable-ties)) |
+| **Curves** | Cables as curves; off, as a circuit's traces: straight runs and 45° turns |
 | **Eye** | Hides the nodes: the picture alone behind them |
 
 ### Arrange
 
-Arrange lays the graph out left to right: signals first, the Output last, each node level with what it's linked to, so linked nodes stay close. A node nothing feeds goes just before the first one it feeds. It also ties the cables that leave one output or meet at one node. The nodes slide into their places, and the whole move is one undo step.
+Arrange lays the graph out left to right: signals first, the Output last, each node level with what it's linked to, so linked nodes stay close. A node nothing feeds goes just before the first one it feeds. A group stays together: its nodes are laid out inside its frame, and nothing else lands in it. The nodes slide into their places, and the whole move is one undo step.
+
+Arrange lays the cables out too. A cable that would run under a column of cards gets a lane between them instead, held there by a tie where it comes in and one where it goes out; a cable into a card narrower than its column gets a bend, so it climbs in the gap between the columns and comes in level. The ties and bends that were there are made again: after the nodes moved they held nothing in place. With curved cables, it also ties the cables that leave one output or meet at one node.
 
 ## Keeping a big graph in order
 
 - **Groups.** Select a few nodes and press <kbd>Ctrl</kbd> <kbd>G</kbd> (or right-click one, **Group**): a frame goes round them, with a name. The frame follows its nodes. Drag its title to move them all, click it to select them, double-click it to rename, right-click it to ungroup. A group changes nothing in the picture.
 - **Notes.** Right-click the empty canvas, **Write a note here**: words straight on the canvas, a title over a part of the graph or a note to self. Drag a note to move it, double-click it to edit, right-click it for its size (Large, Heading, Label) or to delete it.
-- **Bends.** Double-click a cable: it gets a point there, to drag it round whatever is in its way. Double-click the point to take it off. A bend is a [cable tie](./cable-ties) holding one cable.
+- **Bends.** Double-click a cable (or right-click it, **Add a bend here**): it gets a point there, to drag it round whatever is in its way. Double-click the point to take it off. A bend is a [cable tie](./cable-ties) holding one cable. As traces, a cable turns at its bends and runs level, upright or at 45° between them: put two bends level or one above the other for a straight run, anywhere else for a 45° slope. A bend you drag lines up with the ports its cable joins and with its other bends when it comes near; hold <kbd>Alt</kbd> to put it anywhere.
 
 ### Hide the nodes
 

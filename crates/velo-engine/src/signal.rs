@@ -14,7 +14,9 @@
 use std::collections::VecDeque;
 use std::f64::consts::TAU;
 
-use velo_core::{AUDIO, BAND, BEAT_KICK, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, GAIN, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind};
+use velo_core::{
+    AUDIO, BAND, BEAT_KICK, CLOCK, COMPARE, COUNTER, Category, DELAY, ENVELOPE, GAIN, HOLD, LFO, MATH, PROBE, QUANTIZE, RANDOM, REMAP, SEQUENCER, SHARED_IN, SLOPE, SMOOTH, SOURCES, SPEED, SPRING, Scene, TIME, TIMER, TOGGLE, node_kind,
+};
 
 use crate::shader::{Param, ParamType};
 
@@ -588,6 +590,9 @@ pub enum Kind {
     Spring(Spring),
     Slope(Slope),
     Probe(Probe),
+    /// A Shared node: the shared signal graph's output it's linked to, by its slot among the
+    /// sources (none while that output is gone: it reads 0).
+    Link(Option<usize>),
 }
 
 impl Kind {
@@ -632,6 +637,8 @@ impl Kind {
             PROBE => {
                 Kind::Probe(Probe { measure: index("measure", PROBE_MEASURES.len() - 1), position: node.params.get("position").map_or([0.0; 2], |v| [v[0].clamp(-1.0, 1.0), v[1].clamp(-1.0, 1.0)]), size: v("size", 1.0).clamp(0.0, 1.0) })
             }
+            // linked by its plan, which knows where the shared outputs are
+            SHARED_IN => Kind::Link(None),
             _ => return None,
         })
     }
@@ -664,14 +671,15 @@ impl Signal {
 }
 
 /// A scene's signal nodes in the order they run (a node after what feeds it), and the name of
-/// each output's slot ("n_ab12/0"), the slots counting on from the shared sources'.
-pub fn plan(scene: &Scene) -> (Vec<Signal>, Vec<String>) {
-    plan_from(scene, SOURCES.len())
+/// each output's slot ("n_ab12/0"), the slots counting on from the shared sources'. Its Shared
+/// nodes read the shared signal graph's outputs, named as `shared` ([`plan_shared`]'s names).
+pub fn plan(scene: &Scene, shared: &[String]) -> (Vec<Signal>, Vec<String>) {
+    plan_from(scene, SOURCES.len(), shared)
 }
 
 /// The shared signal graph's plan: as a scene's, its slots from [`SHARED`] on.
 pub fn plan_shared(graph: &Scene) -> (Vec<Signal>, Vec<String>) {
-    plan_from(graph, SHARED)
+    plan_from(graph, SHARED, &[])
 }
 
 /// What the signals a graph ran keep between frames handed to its new plan, node by node (by
@@ -690,7 +698,7 @@ pub fn carry(new: &mut [Signal], new_keys: &[String], old: &mut [Signal], old_ke
     }
 }
 
-fn plan_from(scene: &Scene, base: usize) -> (Vec<Signal>, Vec<String>) {
+fn plan_from(scene: &Scene, base: usize, shared: &[String]) -> (Vec<Signal>, Vec<String>) {
     let nodes: Vec<&velo_core::Node> = scene.nodes.iter().filter(|n| !n.off && node_kind(&n.kind).is_some_and(|k| k.category == Category::Signal)).collect();
     let feeds = |n: &velo_core::Node, port: u8| scene.wire_into(&n.id, port).map(|e| e.from.clone());
     let (mut order, mut placed): (Vec<&velo_core::Node>, Vec<bool>) = (Vec::new(), vec![false; nodes.len()]);
@@ -702,7 +710,11 @@ fn plan_from(scene: &Scene, base: usize) -> (Vec<Signal>, Vec<String>) {
     }
     let (mut signals, mut keys) = (Vec::new(), Vec::<String>::new());
     for n in order {
-        let Some(kind) = Kind::of(n) else { continue };
+        let Some(mut kind) = Kind::of(n) else { continue };
+        if let Kind::Link(slot) = &mut kind {
+            let key = n.link.as_deref().and_then(velo_core::shared_output).map(|(id, port)| format!("{id}/{port}"));
+            *slot = key.and_then(|key| shared.iter().position(|s| *s == key)).map(|i| SHARED + i);
+        }
         if keys.len() + kind.outputs() > MAX_SIGNALS {
             break;
         }
@@ -793,6 +805,8 @@ pub fn run(signals: &mut [Signal], sources: &mut [f32], beats: f64, dt: f32) {
             Kind::Random(random) => sources[s.slot] = random.step(s.inputs[0].map(|i| sources[i]), beats, dt, s.slot, &mut s.state),
             Kind::Smooth(smooth) => sources[s.slot] = smooth.step(input(0), dt, &mut s.state),
             Kind::Probe(probe) => sources[s.slot] = probe.measure(s.state),
+            // the shared signals ran first this frame
+            Kind::Link(slot) => sources[s.slot] = slot.map_or(0.0, |i| sources[i]),
             Kind::Quantize(steps) => {
                 let last = f32::from(steps.max(2) - 1);
                 sources[s.slot] = (input(0).clamp(0.0, 1.0) * last).round() / last;
@@ -843,8 +857,21 @@ mod tests {
         s.kind = Kind::Sequencer(Sequencer { steps: 4, beats: 0.25, values });
         assert_eq!(outputs(&mut s, &[at(0.3), at(1.1)]), [0.5, 1.0], "a step a quarter beat");
         // the node's defaults: a hit on every fourth of eight steps, a beat each
-        let defaults =
-            velo_core::Node { id: "n".into(), kind: SEQUENCER.into(), name: String::new(), off: false, pos: [0.0; 2], params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() };
+        let defaults = velo_core::Node {
+            id: "n".into(),
+            kind: SEQUENCER.into(),
+            name: String::new(),
+            off: false,
+            pos: [0.0; 2],
+            params: Default::default(),
+            mappings: Vec::new(),
+            code: None,
+            file: None,
+            media: None,
+            text: None,
+            icon: String::new(),
+            link: None,
+        };
         let Some(Kind::Sequencer(seq)) = Kind::of(&defaults) else { panic!("a sequencer") };
         assert_eq!((0..8).map(|b| seq.at(f64::from(b))).collect::<Vec<_>>(), [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]);
     }
@@ -898,7 +925,7 @@ mod tests {
         }
         let ids: Vec<String> = session.active().unwrap().nodes.iter().map(|n| n.id.clone()).collect();
         session.run("edge.connect", json!({ "from": [ids[1], 4], "to": [ids[0], 0] })).unwrap();
-        let (mut signals, keys) = plan(session.active().unwrap());
+        let (mut signals, keys) = plan(session.active().unwrap(), &[]);
         assert_eq!(keys.len(), 9, "eight audio outputs, then the remap's");
         assert_eq!(keys[4], format!("{}/4", ids[1]));
         assert_eq!(keys[8], format!("{}/0", ids[0]));
@@ -922,7 +949,7 @@ mod tests {
         session.run("mapping.add", json!({ "node": ids[3], "param": "scale", "source": ids[2], "amount": 0.5 })).unwrap();
         session.run("node.toggle", json!({ "nodes": [ids[0], ids[2]], "on": false })).unwrap();
         let scene = session.active().unwrap();
-        let (signals, keys) = plan(scene);
+        let (signals, keys) = plan(scene, &[]);
         assert_eq!(keys, [format!("{}/0", ids[1])]);
         assert_eq!(signals.len(), 1);
         assert_eq!(signals[0].inputs, [None, None]);
@@ -962,7 +989,7 @@ mod tests {
             .scenes
             .iter()
             .map(|scene| {
-                let (signals, keys) = plan(scene);
+                let (signals, keys) = plan(scene, &[]);
                 let routes = crate::routes(&shader, &scene.nodes[0].mappings, &keys, &shared_keys);
                 assert_eq!(routes.len(), 1);
                 (signals, crate::Modulator::new(&shader, &shader.values(|_| None), routes))
@@ -1007,6 +1034,39 @@ mod tests {
         let base = shader.values(|_| None)[zoom][0];
         assert!(graphs.iter().all(|(_, m)| (m.values()[zoom][0] - base).abs() < 1e-3), "back to the base");
         assert!(crate::routes(&shader, &s.project.scenes[0].nodes[0].mappings, &[], &gone_keys).is_empty());
+    }
+
+    #[test]
+    fn a_shared_node_in_a_scene_reads_the_shared_output_it_is_linked_to() {
+        use serde_json::json;
+        let mut s = velo_core::Session::default();
+        s.run("scene.add", json!({})).unwrap();
+        // shared: an LFO in front, a Time after it; the scene: a Shared on the Time, into a Gain of 1
+        for kind in [LFO, TIME] {
+            s.run("node.add", json!({ "scene": velo_core::SHARED, "kind": kind })).unwrap();
+        }
+        let time = s.project.shared.nodes[1].id.clone();
+        s.run("node.add", json!({ "kind": SHARED_IN, "link": format!("shared:{time}") })).unwrap();
+        s.run("node.add", json!({ "kind": GAIN, "params": { "gain": [1.0, 0.0, 0.0, 0.0] } })).unwrap();
+        let [link, gain] = [0, 1].map(|i| s.active().unwrap().nodes[i].id.clone());
+        s.run("edge.connect", json!({ "from": [link, 0], "to": [gain, 0] })).unwrap();
+        let (mut shared, shared_keys) = plan_shared(&s.project.shared);
+        let (mut own, keys) = plan(s.active().unwrap(), &shared_keys);
+        assert_eq!((own[0].kind, keys[0].clone()), (Kind::Link(Some(SHARED + 1)), format!("{link}/0")), "the Time's slot, after the LFO's");
+        let mut sources = [0.0f32; SLOTS];
+        for _ in 0..30 {
+            run(&mut shared, &mut sources, 0.0, 1.0 / 60.0);
+            run(&mut own, &mut sources, 0.0, 1.0 / 60.0);
+        }
+        let read = sources[SOURCES.len()];
+        assert!(read > 0.0 && read == sources[SHARED + 1] && sources[SOURCES.len() + 1] == read, "the link and what it feeds follow the shared Time: {read}");
+        // planned without the shared outputs (the engine's own build, till its settings come), or
+        // linked to a node that's gone: it reads 0
+        assert_eq!(plan(s.active().unwrap(), &[]).0[0].kind, Kind::Link(None));
+        s.run("node.remove", json!({ "scene": velo_core::SHARED, "node": time })).unwrap();
+        let (mut own, _) = plan(s.active().unwrap(), &plan_shared(&s.project.shared).1);
+        run(&mut own, &mut sources, 0.0, 1.0 / 60.0);
+        assert_eq!((own[0].kind, sources[SOURCES.len()]), (Kind::Link(None), 0.0));
     }
 
     #[test]
@@ -1100,7 +1160,7 @@ mod tests {
         session.run("edge.connect", json!({ "from": [ids[1], 4], "to": [ids[0], 0] })).unwrap();
         session.run("edge.connect", json!({ "from": [ids[2], 0], "to": [ids[0], 1] })).unwrap();
         session.run("node.set_param", json!({ "node": ids[0], "param": "operation", "value": 4.0 })).unwrap();
-        let (mut signals, keys) = plan(session.active().unwrap());
+        let (mut signals, keys) = plan(session.active().unwrap(), &[]);
         assert_eq!(keys.last(), Some(&format!("{}/0", ids[0])), "after the Audio In and the Beat");
         let mut sources = [0.0f32; SOURCES.len() + MAX_SIGNALS];
         (sources[4], sources[7]) = (0.3, 0.8);
@@ -1154,7 +1214,7 @@ mod tests {
         let mut session = velo_core::Session::default();
         session.run("scene.add", json!({})).unwrap();
         session.run("node.add", json!({ "kind": PROBE })).unwrap();
-        let (mut signals, keys) = plan(session.active().unwrap());
+        let (mut signals, keys) = plan(session.active().unwrap(), &[]);
         assert_eq!((keys.len(), signals[0].kind), (1, Kind::Probe(Probe { measure: 0, position: [0.0; 2], size: 1.0 })), "the whole picture's brightness");
         let mut sources = [0.0f32; SOURCES.len() + MAX_SIGNALS];
         run(&mut signals, &mut sources, 0.0, 1.0 / 60.0);
@@ -1198,6 +1258,7 @@ mod tests {
             media: None,
             text: None,
             icon: String::new(),
+            link: None,
         };
         // twice by default; a gain from a file past its range is brought back into it
         assert_eq!(Kind::of(&scene_node(None)), Some(Kind::Gain(2.0)));
@@ -1282,8 +1343,21 @@ mod tests {
     #[test]
     fn a_beat_kick_hits_on_the_beat_as_hard_as_the_bass_and_not_while_it_is_low() {
         let kick = |n: &velo_core::Node| Kind::of(n).unwrap();
-        let defaults =
-            velo_core::Node { id: "n".into(), kind: BEAT_KICK.into(), name: String::new(), off: false, pos: [0.0; 2], params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() };
+        let defaults = velo_core::Node {
+            id: "n".into(),
+            kind: BEAT_KICK.into(),
+            name: String::new(),
+            off: false,
+            pos: [0.0; 2],
+            params: Default::default(),
+            mappings: Vec::new(),
+            code: None,
+            file: None,
+            media: None,
+            text: None,
+            icon: String::new(),
+            link: None,
+        };
         // in (the bass), trigger (the beat): a beat with a loud bass, then a quiet one
         let mut s = node(kick(&defaults), [true, true]);
         let v = outputs(&mut s, &[(0.8, 0.0, 0.0), (0.8, 1.0, 0.0), (0.8, 0.9, 0.0), (0.8, 0.8, 0.0)]);
@@ -1328,13 +1402,30 @@ mod tests {
         };
         // a Band node as it's added, as it is (no auto range) or stretched, a second of frames
         let band = |wave: &crate::SharedWave, low: f32, high: f32, auto: bool| {
-            let mut n = velo_core::Node { id: "n".into(), kind: BAND.into(), name: String::new(), off: false, pos: [0.0; 2], params: Default::default(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() };
+            let mut n = velo_core::Node {
+                id: "n".into(),
+                kind: BAND.into(),
+                name: String::new(),
+                off: false,
+                pos: [0.0; 2],
+                params: Default::default(),
+                mappings: Vec::new(),
+                code: None,
+                file: None,
+                media: None,
+                text: None,
+                icon: String::new(),
+                link: None,
+            };
             n.params.extend([("low_hz".to_string(), [low, 0.0, 0.0, 0.0]), ("high_hz".to_string(), [high, 0.0, 0.0, 0.0]), ("auto".to_string(), [f32::from(u8::from(auto)), 0.0, 0.0, 0.0])]);
             let mut s = node(Kind::of(&n).unwrap(), [false; 2]);
-            (0..60).map(|_| {
-                hear(std::slice::from_mut(&mut s), wave);
-                outputs(&mut s, &[(0.0, 0.0, 0.0)])[0]
-            }).last().unwrap()
+            (0..60)
+                .map(|_| {
+                    hear(std::slice::from_mut(&mut s), wave);
+                    outputs(&mut s, &[(0.0, 0.0, 0.0)])[0]
+                })
+                .last()
+                .unwrap()
         };
         let wave = tone(1000.0);
         let (inside, outside, below) = (band(&wave, 800.0, 1200.0, false), band(&wave, 3000.0, 8000.0, false), band(&wave, 100.0, 200.0, false));

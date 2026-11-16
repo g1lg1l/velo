@@ -180,6 +180,48 @@ pub static STRINGS: &[(&str, &str)] = &[
         "Nodi segnale che girano una volta per tutto lo show: ogni scena può mapparne le uscite (le sorgenti del deck). Clicca per modificarli",
     ),
     ("{}, a shared signal: drag it onto any slider of any scene", "{}, un segnale condiviso: trascinalo su qualsiasi slider di qualsiasi scena"),
+    // a shared signal on a scene's canvas: the Shared node, linked to it
+    ("Shared", "Condiviso"),
+    ("Shared: the same in every scene", "Condiviso: lo stesso in ogni scena"),
+    ("Share with every scene", "Condividi con ogni scena"),
+    (
+        "A shared signal on this scene's canvas, wired to what it moves: the same in every scene, changed in one place.",
+        "Un segnale condiviso sul canvas di questa scena, collegato a ciò che muove: lo stesso in ogni scena, modificato in un posto solo.",
+    ),
+    ("Moves them into the shared signals, which run once for every scene, and leaves a linked node here in their place", "Li sposta nei segnali condivisi, che girano una volta per ogni scena, e lascia qui al loro posto un nodo collegato"),
+    ("SHARED SIGNAL", "SEGNALE CONDIVISO"),
+    ("The shared signal it was linked to is gone, so it reads 0. Undo brings it back.", "Il segnale condiviso a cui era collegato non c'è più, quindi legge 0. Annulla lo riporta."),
+    ("{} · read by this scene only", "{} · letto solo da questa scena"),
+    ("{} · read by {} scenes", "{} · letto da {} scene"),
+    ("Edit here", "Modifica qui"),
+    ("Locked: its settings are the shared signals' own, the same in every scene.", "Bloccato: le sue impostazioni sono quelle dei segnali condivisi, le stesse in ogni scena."),
+    ("What you change here changes in the shared signals. Only this scene reads them for now.", "Ciò che cambi qui cambia nei segnali condivisi. Per ora li legge solo questa scena."),
+    ("What you change here changes in all {} scenes that read it.", "Ciò che cambi qui cambia in tutte le {} scene che lo leggono."),
+    ("Open in Shared signals", "Apri nei segnali condivisi"),
+    ("Make local", "Rendi locale"),
+    // cables as a circuit's traces
+    ("Add a bend here", "Aggiungi una piega qui"),
+    ("Cables as traces: straight runs and 45° turns", "Cavi come tracce: tratti dritti e pieghe a 45°"),
+    ("Cables as curves", "Cavi come curve"),
+    (
+        "This scene's own copy of it and of what feeds it, to change here alone: the other scenes keep the shared one",
+        "Una copia sua e di ciò che lo alimenta solo per questa scena, da cambiare solo qui: le altre scene tengono quello condiviso",
+    ),
+    ("Make Local", "Rendi locale"),
+    (
+        "Turn a Shared node into this scene's own copy of what it's linked to: the shared signal node and every node wired into it, with their settings and wires, where the Shared node stood. Its wires and mappings read the copy; the shared signals stay as they are for the other scenes.",
+        "Trasforma un nodo Condiviso nella copia propria di questa scena di ciò a cui è collegato: il nodo segnale condiviso e ogni nodo collegato in ingresso, con impostazioni e fili, dove stava il nodo Condiviso. I suoi fili e le sue mappature leggono la copia; i segnali condivisi restano come sono per le altre scene.",
+    ),
+    ("Show Shared Signals", "Mostra i segnali condivisi"),
+    (
+        "Put on a scene's canvas the shared signals its mappings read without a cable (\"shared:n_ab12/0\"): a Shared node for each such output, in a column left of the graph, the mappings now reading it, so each has its cable. The selected scene unless scene has an id. What it plays doesn't change.",
+        "Mette sul canvas di una scena i segnali condivisi che le sue mappature leggono senza cavo (\"shared:n_ab12/0\"): un nodo Condiviso per ognuna di quelle uscite, in colonna a sinistra del grafo, con le mappature che ora leggono quello, così ognuna ha il suo cavo. La scena selezionata se scene non indica un id. Ciò che suona non cambia.",
+    ),
+    ("Share Signals", "Condividi segnali"),
+    (
+        "Move signal nodes of a scene (a whole group of them, or one) into the shared signals, which run once for every scene, and leave a Shared node linked to each of their outputs the scene uses (the last node's, if it uses none) in their place: its wires and mappings now read those. Refused if one is no signal node (or a Probe), is fed by a node that stays in the scene, or has a parameter a signal moves. A group picked whole goes with its name.",
+        "Sposta nodi segnale di una scena (un gruppo intero, o uno solo) nei segnali condivisi, che girano una volta per ogni scena, e lascia al loro posto un nodo Condiviso collegato a ciascuna delle loro uscite che la scena usa (quella dell'ultimo nodo, se non ne usa nessuna): i suoi fili e le sue mappature ora leggono quelli. Rifiutato se uno non è un nodo segnale (o è un Probe), è alimentato da un nodo che resta nella scena, o ha un parametro mosso da un segnale. Un gruppo preso intero porta con sé il suo nome.",
+    ),
     ("Nothing yet. Drag one of its outputs from the deck's sources onto a slider, in any scene.", "Ancora niente. Trascina una delle sue uscite dalle sorgenti del deck su uno slider, in qualsiasi scena."),
     (
         "Signal nodes that run once a frame for the whole show, whichever scenes are on: the live one, one fading out, the layers, the one you edit. Every scene can map their outputs: drag one from the deck's sources onto a slider. Change a threshold here and every scene follows.",

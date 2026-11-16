@@ -463,7 +463,7 @@ impl Live {
             }
             slot.macros = Some(values);
             // the signal nodes' settings, when they changed (same order as the build's)
-            let (signals, keys) = velo_engine::signal::plan(scene);
+            let (signals, keys) = velo_engine::signal::plan(scene, &self.signals.keys);
             let kinds: Vec<velo_engine::signal::Kind> = signals.into_iter().map(|s| s.kind).collect();
             if keys == slot.signals && slot.built && slot.kinds.as_ref() != Some(&kinds) {
                 self.engine.send(Command::Signals { key: slot.key, kinds: kinds.clone() });
@@ -1111,14 +1111,20 @@ pub struct Audio {
     /// Each detector's signal over the last [`GRAPH_S`]: when (UI seconds), the highest since the
     /// sample before, whether it fired.
     pub graphs: [VecDeque<(f64, f32, bool)>; 3],
-    /// Whether the input stayed under the gate since the sample before: no hit could fire.
+    /// Whether the input has stayed under the gate for [`GATE_HOLD_S`]: no hit can fire. Held
+    /// that long so what says it stays put while the music comes and goes at the gate's edge.
     pub gated: bool,
+    /// When the input was last over the gate (UI seconds).
+    loud: f64,
 }
+
+/// How long the input stays under the gate before the graphs say so.
+const GATE_HOLD_S: f64 = 1.0;
 
 impl Audio {
     fn new(features: Arc<SharedFeatures>, wave: Arc<SharedWave>) -> Self {
         let links = Links { features, wave, tuning: Arc::default(), meter: Arc::default() };
-        Self { links, stop: Arc::new(AtomicBool::new(true)), state: Arc::default(), input: None, settings: Settings::default(), graphs: Default::default(), gated: false }
+        Self { links, stop: Arc::new(AtomicBool::new(true)), state: Arc::default(), input: None, settings: Settings::default(), graphs: Default::default(), gated: false, loud: f64::NEG_INFINITY }
     }
 
     /// The input to listen to at start: the one chosen, or the test loop (`VELO_AUDIO=synth`).
@@ -1165,7 +1171,10 @@ impl Audio {
                 graph.pop_front();
             }
         }
-        self.gated = f32::from_bits(self.links.meter.level.swap(0, Relaxed)) - 200.0 <= self.settings.gate_db;
+        if f32::from_bits(self.links.meter.level.swap(0, Relaxed)) - 200.0 > self.settings.gate_db {
+            self.loud = now;
+        }
+        self.gated = now - self.loud >= GATE_HOLD_S;
     }
 
     /// Whether everything heard since the last ask stayed under the gate (nothing heard at all,
@@ -1383,6 +1392,7 @@ mod tests {
             media: None,
             text: None,
             icon: String::new(),
+            link: None,
         };
         let scene = Scene { id: "s_a".into(), nodes: vec![node("n_a", "velo.noise"), node("n_b", "velo.output")], ..Default::default() };
         let file = |s: &Scene| shot_file(dir, s, [1920, 1080]).unwrap();
@@ -1446,6 +1456,7 @@ mod tests {
             media: None,
             text: None,
             icon: String::new(),
+            link: None,
         };
         assert_eq!(detection(Some(&node)), Settings::default());
         // its parameters at their defaults read the same as none set
