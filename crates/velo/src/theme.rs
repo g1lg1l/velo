@@ -129,6 +129,16 @@ pub const TE_ORANGE: Color32 = rgb(0xf47860);
 /// What's printed on a lit cap or key.
 pub const TE_INK: Color32 = rgb(0x181818);
 
+/// What the film recorder draws over the window (`reel.rs`): an output window as macOS shows
+/// one, the caption, the pointer. Not the interface, so the same in every theme.
+pub const FILM_SHADOW: Color32 = Color32::from_black_alpha(110);
+pub const FILM_WINDOW: Color32 = rgb(0x1e2024);
+pub const FILM_LIGHTS: [Color32; 3] = [rgb(0xff5f57), rgb(0xfebc2e), rgb(0x28c840)];
+pub const FILM_TITLE: Color32 = Color32::from_gray(200);
+pub const FILM_EDGE: Color32 = Color32::from_rgba_premultiplied(46, 46, 46, 46);
+pub const FILM_CAPTION: Color32 = Color32::from_rgba_premultiplied(7, 9, 11, 235);
+pub const FILM_POINTER_EDGE: Color32 = Color32::from_black_alpha(220);
+
 impl Theme {
     /// Images drawn as they are (the brand icon): the painter's "tint" that changes nothing.
     pub const NO_TINT: Color32 = Color32::WHITE;

@@ -18,6 +18,8 @@ use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Color32, Event, Key, PointerButton, Pos2, Stroke, pos2, vec2};
 
+use crate::theme;
+
 const FPS: f64 = 30.0;
 /// How long the pointer takes to get where a `move` sends it, and a typed letter to follow the last.
 const TRAVEL: f64 = 0.38;
@@ -272,17 +274,17 @@ impl Reel {
             let size = vec2(520.0, 292.5 + 30.0) * (0.86 + 0.14 * k);
             let frame = egui::Rect::from_center_size(pos2(520.0, 520.0 + 24.0 * (1.0 - k)), size);
             let alpha = |c: Color32| c.gamma_multiply(k);
-            painter.rect_filled(frame.expand(10.0).translate(vec2(0.0, 8.0)), 18.0, alpha(Color32::from_black_alpha(110)));
-            painter.rect_filled(frame, 10.0, alpha(Color32::from_rgb(30, 32, 36)));
+            painter.rect_filled(frame.expand(10.0).translate(vec2(0.0, 8.0)), 18.0, alpha(theme::FILM_SHADOW));
+            painter.rect_filled(frame, 10.0, alpha(theme::FILM_WINDOW));
             let bar = egui::Rect::from_min_size(frame.min, vec2(frame.width(), 30.0));
-            for (i, color) in [Color32::from_rgb(255, 95, 87), Color32::from_rgb(254, 188, 46), Color32::from_rgb(40, 200, 64)].into_iter().enumerate() {
+            for (i, color) in theme::FILM_LIGHTS.into_iter().enumerate() {
                 painter.circle_filled(bar.left_center() + vec2(18.0 + 20.0 * i as f32, 0.0), 6.0, alpha(color));
             }
-            painter.text(bar.center(), egui::Align2::CENTER_CENTER, "Velo · Output", egui::FontId::proportional(13.0), alpha(Color32::from_gray(200)));
+            painter.text(bar.center(), egui::Align2::CENTER_CENTER, "Velo · Output", egui::FontId::proportional(13.0), alpha(theme::FILM_TITLE));
             let screen = egui::Rect::from_min_max(bar.left_bottom(), frame.max);
             painter.rect_filled(screen, egui::CornerRadius { nw: 0, ne: 0, sw: 10, se: 10 }, alpha(Color32::BLACK));
             painter.image(picture, screen.shrink(1.0), egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), alpha(Color32::WHITE));
-            painter.rect_stroke(frame, 10.0, Stroke::new(1.0, alpha(Color32::from_white_alpha(46))), egui::StrokeKind::Inside);
+            painter.rect_stroke(frame, 10.0, Stroke::new(1.0, alpha(theme::FILM_EDGE)), egui::StrokeKind::Inside);
         }
         // the caption: where the camera will be looking, as large there as anywhere, coming in
         if !self.caption.is_empty() {
@@ -298,8 +300,8 @@ impl Reel {
             let ink = Color32::WHITE.gamma_multiply(k);
             let galley = painter.layout_no_wrap(words.to_string(), egui::FontId::proportional(22.0 * scale), ink);
             let pill = egui::Rect::from_center_size(pos2(view.center().x - 20.0 * scale, y), galley.size() + vec2(44.0, 26.0) * scale);
-            painter.rect_filled(pill, 14.0 * scale, Color32::from_rgba_unmultiplied(8, 10, 12, 235).gamma_multiply(k));
-            painter.rect_stroke(pill, 14.0 * scale, Stroke::new(scale, Color32::from_white_alpha(40).gamma_multiply(k)), egui::StrokeKind::Inside);
+            painter.rect_filled(pill, 14.0 * scale, theme::FILM_CAPTION.gamma_multiply(k));
+            painter.rect_stroke(pill, 14.0 * scale, Stroke::new(scale, theme::FILM_EDGE.gamma_multiply(k)), egui::StrokeKind::Inside);
             painter.galley(pill.center() - galley.size() / 2.0, galley, ink);
         }
         // a click's ripple, then the arrow: white, edged dark, as a pointer is
@@ -309,7 +311,7 @@ impl Reel {
             painter.circle_stroke(self.pointer, 6.0 + 22.0 * k, Stroke::new(2.5, Color32::from_white_alpha((200.0 * (1.0 - k)) as u8)));
         }
         let at = |x: f32, y: f32| self.pointer + vec2(x, y) * 1.25;
-        let edge = Stroke::new(1.5, Color32::from_black_alpha(220));
+        let edge = Stroke::new(1.5, theme::FILM_POINTER_EDGE);
         painter.add(egui::Shape::convex_polygon(vec![at(0.0, 0.0), at(0.0, 16.5), at(4.2, 12.6), at(11.8, 12.0)], Color32::WHITE, edge));
         painter.add(egui::Shape::convex_polygon(vec![at(3.4, 12.2), at(6.6, 19.6), at(9.4, 18.4), at(6.4, 11.4)], Color32::WHITE, edge));
         ctx.request_repaint();
