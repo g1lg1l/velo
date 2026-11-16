@@ -129,6 +129,35 @@ pub const TE_ORANGE: Color32 = rgb(0xf47860);
 /// What's printed on a lit cap or key.
 pub const TE_INK: Color32 = rgb(0x181818);
 
+/// The film's own colors (reel.rs): the Output's window as a desktop draws it, the captions and
+/// the pointer, the same whatever theme the interface under them is in.
+pub mod film {
+    use super::{Color32, rgb};
+
+    /// The window's shadow, its body and its title.
+    pub const SHADOW: Color32 = Color32::from_black_alpha(110);
+    pub const WINDOW: Color32 = rgb(0x1e2024);
+    pub const TITLE: Color32 = Color32::from_gray(200);
+    /// Its close, minimize and zoom buttons.
+    pub const LIGHTS: [Color32; 3] = [rgb(0xff5f57), rgb(0xfebc2e), rgb(0x28c840)];
+    /// The pointer's edge.
+    pub const POINTER_EDGE: Color32 = Color32::from_black_alpha(220);
+
+    /// The window's edge (egui makes white at an alpha at run time only).
+    pub fn edge() -> Color32 {
+        Color32::from_white_alpha(46)
+    }
+
+    /// A caption's pill, near black and nearly opaque, and its edge.
+    pub fn caption() -> Color32 {
+        Color32::from_rgba_unmultiplied(8, 10, 12, 235)
+    }
+
+    pub fn caption_edge() -> Color32 {
+        Color32::from_white_alpha(40)
+    }
+}
+
 impl Theme {
     /// Images drawn as they are (the brand icon): the painter's "tint" that changes nothing.
     pub const NO_TINT: Color32 = Color32::WHITE;
