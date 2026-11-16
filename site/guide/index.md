@@ -11,7 +11,7 @@ It is free and open source, built in Rust on wgpu, and runs on Windows and macOS
 
 <figure>
   <video controls preload="none" playsinline poster="/velo.jpg" src="/velo.mp4" style="width: 100%; border-radius: 10px"></video>
-  <figcaption>Forty seconds of Velo: a scene from nothing, the kick on a slider, launched on the beat.</figcaption>
+  <figcaption>Eighty seconds of Velo: a scene from nothing, the bass wired to a star by hand, a shader blended in, launched onto the output.</figcaption>
 </figure>
 
 ## Who it is for

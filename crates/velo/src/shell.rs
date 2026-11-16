@@ -1864,9 +1864,18 @@ fn audio_menu(ui: &mut Ui, t: &Theme, state: &AudioState, current: Option<&Input
         apps.push((id.clone(), name.clone(), false));
     }
     inputs.extend(apps.into_iter().map(|(id, name, playing)| (tr!("ONE APP"), Input::App { id, name: name.clone() }, format!("{}  {}", icons::APP_WINDOW, if playing { tr!("{} · playing", name) } else { name }))));
+    // an audio file, played in a loop: the one playing, and another to pick
+    if let Some(Input::File(path)) = current {
+        let name = std::path::Path::new(path).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        inputs.push((tr!("AUDIO FILE"), Input::File(path.clone()), format!("{}  {name}", icons::PLAY_CIRCLE)));
+    }
+    inputs.push((tr!("AUDIO FILE"), Input::File(String::new()), format!("{}  {}", icons::FOLDER_OPEN, tr!("Play an MP3…"))));
     let items: Vec<(&str, &str)> = inputs.iter().map(|(group, _, label)| (*group, label.as_str())).collect();
     if let Some(i) = kit::choose(ui, t, &items, inputs.iter().position(|(_, input, _)| current == Some(input))) {
         pick = Some(inputs.swap_remove(i).1);
+    }
+    if pick == Some(Input::File(String::new())) {
+        pick = rfd::FileDialog::new().add_filter(tr!("MP3 audio"), &["mp3"]).pick_file().map(|p| Input::File(p.to_string_lossy().into_owned()));
     }
     (pick, help)
 }

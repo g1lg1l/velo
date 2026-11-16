@@ -131,9 +131,9 @@ struct Settings {
     /// the canvas (0: the default).
     split: Split,
     split_share: f32,
-    /// Cables drawn as curves; off (as it starts), as a circuit's traces: level and upright
-    /// runs and 45° turns.
-    curved_cables: bool,
+    /// Cables drawn as a circuit's traces: level and upright runs and 45° turns, turning at
+    /// their bends. Off (as it starts), soft curves.
+    circuit_cables: bool,
     /// The inspector in a window of its own over everything, instead of docked.
     inspector_floating: bool,
     /// The audio input, remembered per machine.
@@ -1378,9 +1378,9 @@ impl App {
             if kit::icon_button(ui, &t, icons::GIT_MERGE, tr!("Tie cables: drag a line across them (or Alt+drag any time)"), tie).clicked() {
                 self.canvas.tie_tool = !tie;
             }
-            let curved = self.settings.curved_cables;
-            if kit::icon_button(ui, &t, icons::WAVE_SINE, if curved { tr!("Cables as traces: straight runs and 45° turns") } else { tr!("Cables as curves") }, curved).clicked() {
-                self.settings.curved_cables = !curved;
+            let circuit = self.settings.circuit_cables;
+            if kit::icon_button(ui, &t, icons::PATH, if circuit { tr!("Cables as soft curves") } else { tr!("Cables as traces: straight runs and 45° turns, to lay out by their bends") }, circuit).clicked() {
+                self.settings.circuit_cables = !circuit;
             }
             let hidden = self.canvas.hidden;
             if kit::icon_button(ui, &t, icons::EYE, if hidden { tr!("Show the nodes") } else { tr!("Hide the nodes: the picture alone") }, hidden).clicked() {
@@ -4051,8 +4051,17 @@ impl eframe::App for App {
         }
         files::capture_to_file(&ctx);
         self.draw(ui);
+        // (a film's output window shows what goes out: the live scene, by its card's picture
+        // while another one is being edited)
+        let on_air = self.live.as_ref().and_then(|l| l.live_scene().map(String::from));
+        let picture = match (&self.live, &on_air) {
+            (Some(live), Some(scene)) if self.session.active_scene.as_ref() != Some(scene) => live.shot(scene),
+            (Some(live), _) => live.picture(),
+            _ => None,
+        };
+        let output = self.live_output().is_some();
         if let Some(reel) = &mut self.reel {
-            reel.frame(&ctx);
+            reel.frame(&ctx, picture, output);
         }
         // live: at the preview's rate (it comes at most every 16 ms); else a frame a second at
         // rest, for the autosave check

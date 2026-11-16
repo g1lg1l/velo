@@ -12,6 +12,7 @@ pub mod features;
 pub mod spectrum;
 pub mod synth;
 pub mod tempo;
+pub mod track;
 
 pub use analysis::{Analyzer, BANDS, Detect, HITS, HOP, Hop, Mode, Settings};
 pub use capture::{Capture, Source};
