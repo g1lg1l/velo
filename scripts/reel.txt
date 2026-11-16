@@ -1,0 +1,44 @@
+# The film on the site's home, played by scripts/reel.sh (crates/velo/src/reel.rs reads it):
+# a step a line, `seconds what`. Points are the window's (1440 x 810).
+# move x y | click | down | up | key Name | type words | say a caption
+0.8 say This is Velo. It listens to the music and plays light.
+3.8 move 109 54
+4.4 click
+5.1 move 168 87
+5.7 click
+5.9 say Start a scene from nothing.
+6.9 move 640 430
+7.4 click
+7.9 say Press Tab and type what you want.
+8.2 key Tab
+8.8 type shapes
+9.9 key Enter
+10.8 key Tab
+11.2 type kaleido
+12.3 key Enter
+13.2 key Tab
+13.6 type feedback
+14.7 key Enter
+15.6 key Tab
+16.0 type output
+17.0 key Enter
+17.2 say Each node is wired after the last one.
+18.4 move 855 432
+19.0 click
+19.6 say Drag Kick onto a slider. Now the kick moves it.
+20.5 move 1214 727
+20.9 down
+22.2 move 1305 457
+22.5 up
+24.6 move 1014 727
+25.0 down
+26.3 move 1305 416
+26.6 up
+26.8 say Bass onto Spin. Any sound, any slider.
+28.2 move 430 300
+28.7 click
+29.1 key H
+29.6 say Space puts it on the output, in time with the music.
+30.0 key Space
+34.0 say Build, map, play. That is Velo.
+34.4 key Backslash

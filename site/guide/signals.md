@@ -102,6 +102,11 @@ A show often reads the music the same way in every scene: one kick made of the b
 - Change a threshold in the shared signals and every scene follows. Select a shared node to see what it moves in every scene, and change any of those links from there.
 - A card moved by a shared signal dragged from the deck has a jack for it, with no cable on the canvas: its node lives on the shared canvas.
 - To see it on the scene's canvas, add it as a node: press <kbd>Tab</kbd> and pick it under **Shared**. You get a card linked to the shared signal, with a cable to whatever it moves, and you can wire it into the scene's own signal nodes.
+<figure>
+  <img src="/shots/linked.jpg" alt="A scene's canvas with a linked card named Pump wired to a Kaleido; the inspector shows the shared signal, read by this scene only, Edit here off, its Math and Remap settings greyed out" />
+  <figcaption>A shared signal in a scene: a linked card with its cable, its settings locked until Edit here is on.</figcaption>
+</figure>
+
 - Built something in a scene that every scene should have? Select its signal nodes (a whole group, or one), right-click and choose **Share with every scene**. They move to the shared signals, and a linked card stays in their place, wired as before.
 - Want this scene to go its own way? Right-click the linked card and choose **Make local**: the scene gets its own copy of that signal and of what feeds it, and the other scenes keep the shared one.
 - A scene whose sliders read shared signals through jacks alone can show them all as linked cards: open the command palette and run **Show Shared Signals**.

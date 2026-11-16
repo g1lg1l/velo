@@ -641,7 +641,8 @@ impl App {
     /// button) and "restore unsaved work?" dialogs.
     pub fn file_modals(&mut self, ctx: &egui::Context) {
         // the close button: unsaved work asks first; saved work, or an answer given, just goes
-        if ctx.input(|i| i.viewport().close_requested()) && self.quitting.is_none() && self.dirty() {
+        // (a film's run ends by itself, with what it built unsaved: nobody's there to answer)
+        if ctx.input(|i| i.viewport().close_requested()) && self.quitting.is_none() && self.dirty() && self.reel.is_none() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending.get_or_insert(Pending::Quit);
         }
