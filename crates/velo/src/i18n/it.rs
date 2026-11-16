@@ -201,8 +201,12 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Make local", "Rendi locale"),
     // cables as a circuit's traces
     ("Add a bend here", "Aggiungi una piega qui"),
-    ("Cables as traces: straight runs and 45° turns", "Cavi come tracce: tratti dritti e pieghe a 45°"),
-    ("Cables as curves", "Cavi come curve"),
+    // an audio file as the input
+    ("AUDIO FILE", "FILE AUDIO"),
+    ("Play an MP3…", "Riproduci un MP3…"),
+    ("MP3 audio", "Audio MP3"),
+    ("Cables as traces: straight runs and 45° turns, to lay out by their bends", "Cavi come tracce: tratti dritti e pieghe a 45°, da disporre con le loro pieghe"),
+    ("Cables as soft curves", "Cavi come curve morbide"),
     (
         "This scene's own copy of it and of what feeds it, to change here alone: the other scenes keep the shared one",
         "Una copia sua e di ciò che lo alimenta solo per questa scena, da cambiare solo qui: le altre scene tengono quello condiviso",

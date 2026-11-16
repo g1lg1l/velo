@@ -195,11 +195,11 @@ onBeforeUnmount(() => seen?.disconnect())
     <!-- the film: Velo used by its own script (scripts/reel.sh) -->
     <section class="wrap section" data-reveal>
       <div class="head">
-        <p class="eyebrow">Forty seconds</p>
+        <p class="eyebrow">Eighty seconds</p>
         <h2>Tab, type, drag. It plays.</h2>
-        <p class="sub">A scene from nothing: four nodes by name, the kick dragged onto a slider, Space to put it on the output in time with the music.</p>
+        <p class="sub">A scene from nothing: an Audio In, a star with the bass wired to its size by hand, trails, a dark marble shader blended in. Then the output window, and the scene launched onto it.</p>
       </div>
-      <video class="film" controls preload="none" playsinline :poster="withBase('/velo.jpg')" :src="withBase('/velo.mp4')" aria-label="Velo being used: a scene built from four nodes, the kick and the bass mapped onto a Kaleido, the scene launched" />
+      <video class="film" controls preload="none" playsinline :poster="withBase('/velo.jpg')" :src="withBase('/velo.mp4')" aria-label="Velo being used: a scene built from an Audio In, a star moved by the bass, a Kaleido, a Feedback and a Marble shader blended together, then launched onto the output window" />
     </section>
 
     <!-- the patch -->

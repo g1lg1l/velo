@@ -76,7 +76,7 @@ The bar at the bottom of the canvas, from the left:
 | Zoom to fit | Every node in view (<kbd>H</kbd>); a scene opens this way, and stays fitted as the window changes until you pan or zoom |
 | **Arrange** | Lays the graph out for you |
 | **Tie** | Turns a plain drag into a line that ties cables ([Cable ties](./cable-ties)) |
-| **Curves** | Cables as curves; off, as a circuit's traces: straight runs and 45° turns |
+| **Traces** | Cables as a circuit's traces, straight runs and 45° turns, to lay out by their bends; off, soft curves |
 | **Eye** | Hides the nodes: the picture alone behind them |
 
 ### Arrange
@@ -89,7 +89,7 @@ Arrange lays the cables out too. A cable that would run under a column of cards 
 
 - **Groups.** Select a few nodes and press <kbd>Ctrl</kbd> <kbd>G</kbd> (or right-click one, **Group**): a frame goes round them, with a name. The frame follows its nodes. Drag its title to move them all, click it to select them, double-click it to rename, right-click it to ungroup. A group changes nothing in the picture.
 - **Notes.** Right-click the empty canvas, **Write a note here**: words straight on the canvas, a title over a part of the graph or a note to self. Drag a note to move it, double-click it to edit, right-click it for its size (Large, Heading, Label) or to delete it.
-- **Bends.** Double-click a cable (or right-click it, **Add a bend here**): it gets a point there, to drag it round whatever is in its way. Double-click the point to take it off. A bend is a [cable tie](./cable-ties) holding one cable. As traces, a cable turns at its bends and runs level, upright or at 45° between them: put two bends level or one above the other for a straight run, anywhere else for a 45° slope. A bend you drag lines up with the ports its cable joins and with its other bends when it comes near; hold <kbd>Alt</kbd> to put it anywhere.
+- **Bends.** Double-click a cable (or right-click it, **Add a bend here**): it gets a point there, to drag it round whatever is in its way. Double-click the point to take it off. A bend is a [cable tie](./cable-ties) holding one cable. With the toolbar's **Traces** on, a cable turns at its bends and runs level, upright or at 45° between them: put two bends level or one above the other for a straight run, anywhere else for a 45° slope. A bend you drag lines up with the ports its cable joins and with its other bends when it comes near; hold <kbd>Alt</kbd> to put it anywhere.
 
 ### Hide the nodes
 

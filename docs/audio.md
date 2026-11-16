@@ -12,6 +12,7 @@ The audio chip in the top bar picks one input. The choice is remembered per mach
 | **Default input** | The system's default input device. |
 | **A device** | Any input by name: a mic, an audio interface, a mixer with USB audio, or a virtual device (BlackHole, VB-Cable). |
 | **One app** (macOS 14.2+) | Only that app's sound, so notifications and calls stay out. |
+| **An audio file** | An MP3, played in a loop on the default output: music to work with when nothing else plays. |
 
 Computer audio per platform (through cpal):
 
@@ -22,6 +23,8 @@ Computer audio per platform (through cpal):
 | Linux | The PipeWire sink's monitor. |
 
 **One app** (`apps.rs`): the audio menu lists the apps using audio, playing ones first. A process belongs to the outermost `.app` in an Applications folder, so a browser's helpers count as the browser and daemons stay out. Picking one makes a private tap on its processes in a private aggregate device, opened like any input; the app keeps playing out loud. The choice is saved by the app's bundle path: while the app is closed Velo waits for it, and when its processes change the tap is made again. Not yet: Windows (WASAPI process loopback), Linux (PipeWire), Safari (it plays through WebKit's own process).
+
+**An audio file** (`track.rs`): the audio menu's **Play an MP3…** picks it. It's decoded whole, played on the default output over and over (each channel its own, the file's rate stepped into the device's), and analysed from the frame the output is on, so the picture is in time with what you hear. With no output device it plays silently on a clock; so does a capture run. `VELO_AUDIO=song.mp3` starts on a file, `VELO_AUDIO_FROM=seconds` from there in it.
 
 **Permissions.** On macOS opening an input can block until the permission prompt is answered, so inputs are opened on the audio thread and the chip says "Waiting for permission". An input that delivers only exact zeros for 2 s is flagged, with the Settings pane to open. The app bundle carries `NSAudioCaptureUsageDescription` and `NSMicrophoneUsageDescription`.
 
@@ -108,4 +111,4 @@ With computer audio Velo hears the sound before the speakers play it; Bluetooth 
 
 ## 7. Crates
 
-`cpal` (device I/O and loopback) and `rtrb` (the callback's ring); on macOS the `objc2` Core Audio bindings for one app's tap. The FFTs, filters, detectors, drum network and tempo tracker are Velo's own code, a few thousand lines with no C dependency.
+`cpal` (device I/O and loopback), `rtrb` (the callback's ring) and `nanomp3` (an audio file's decoder, pure Rust); on macOS the `objc2` Core Audio bindings for one app's tap. The FFTs, filters, detectors, drum network and tempo tracker are Velo's own code, a few thousand lines with no C dependency.

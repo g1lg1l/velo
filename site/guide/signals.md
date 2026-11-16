@@ -25,6 +25,7 @@ Click the audio chip in the top bar, or the input in an Audio In's inspector (th
 - **Default input**: the system's microphone or line in.
 - **Devices**: every input device, such as an audio interface, a mixer with USB audio or a microphone.
 - **One app** (macOS 14.2 and later): just one app's sound, say Spotify, so notifications and calls stay out. Velo waits for the app while it's closed.
+- **Play an MP3…**: a song from a file, played in a loop through your speakers. Handy to build a show when nothing else is playing.
 
 Picking the computer's or one app's sound also turns on **Follow the music**, so the tempo comes from what plays.
 

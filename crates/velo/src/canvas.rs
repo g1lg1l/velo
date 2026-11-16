@@ -2101,7 +2101,7 @@ impl App {
             })
             .collect();
         // a cable's line, through the ties holding it: a trace, or a curve (the toolbar's switch)
-        let curved = self.settings.curved_cables;
+        let curved = !self.settings.circuit_cables;
         let route = |key: &str, a: Pos2, b: Pos2| {
             // (a tie of one cable is a bend in it: a point it passes, not a bundle to run straight through)
             let mut through: Vec<(Pos2, f32)> =

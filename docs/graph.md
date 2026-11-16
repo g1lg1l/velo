@@ -22,7 +22,7 @@ A project is a list of scenes and one shared signal graph (§3, Shared signals);
 
 - A **node** has a stable id (`n_ab12`), a kind (`velo.noise`), a name, a position, the parameters the user changed (the rest keep the shader's defaults), its mappings, and, by kind, its code (Shader, Shader FX), its file (`media`) or its words (`text`). Unknown kinds from a newer file load and keep their wires.
 - An **edge** goes from an output to an input, each `(node id, port)`. An input takes one wire.
-- A **tie** gathers cables into a bundle where it sits on the canvas. Cables are drawn as traces (level, upright and 45° runs, turning at their ties: `canvas::traced`) or as curves (`canvas::routed`), a preference of the app. Arrange (`canvas::arrange`) lays each group out as one box and gives a cable that skips a column a lane between that column's boxes, kept by ties.
+- A **tie** gathers cables into a bundle where it sits on the canvas. Cables are drawn as curves (`canvas::routed`) or, with the toolbar's Traces on, as traces (level, upright and 45° runs, turning at their ties: `canvas::traced`): a preference of the app. Arrange (`canvas::arrange`) lays each group out as one box and gives a cable that skips a column a lane between that column's boxes, kept by ties.
 - A node can be turned off (power button, context menu, `E`): an off node passes its first input through (black if it has none), an off signal node gives nothing. Output nodes stay on.
 
 ## 3. Ports, parameters, sources
