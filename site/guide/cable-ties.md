@@ -22,6 +22,6 @@ Any of these takes it off, and the cables go their own ways again:
 
 ## Ties for free
 
-The toolbar's **Arrange** ties bundles for you as it lays the graph out: two or more cables leaving one output are tied just past it, and two or more coming into one node are tied just before it.
+The toolbar's **Arrange** makes the ties again as it lays the graph out: a cable that would run under a column of cards is held in a lane between them, a tie where it comes in and one where it goes out, and the cables of one lane share its ties. With curved cables, two or more cables leaving one output are also tied just past it, and two or more coming into one node just before it.
 
 Making, moving and removing a tie are each one undo step, like any other change. <kbd>Ctrl</kbd> <kbd>Z</kbd> brings a removed tie back.

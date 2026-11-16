@@ -154,6 +154,12 @@ enum Act {
     Arrange,
     /// Frame the selected nodes together under a name; write words on the canvas at a point.
     Group,
+    /// Move the selected signal nodes into the shared signals, a linked node left in their place.
+    Share,
+    /// A Shared node turned into the scene's own copy of what it's linked to.
+    Local(String),
+    /// A bend put on a cable (as ties name it) at a point of the screen.
+    Bend(String, Pos2),
     Note(Pos2),
 }
 
@@ -211,6 +217,14 @@ pub struct Menu {
     selected: usize,
     /// Scroll the list to its top this frame.
     top: bool,
+}
+
+/// A row of the node menu: a kind, or (a Shared's) an output of the shared signals to link it
+/// to, by its key ("shared:n_ab12/0") and its name.
+#[derive(Clone)]
+struct Pick {
+    kind: &'static NodeKind,
+    link: Option<(String, String)>,
 }
 
 impl Menu {
@@ -317,6 +331,8 @@ pub struct State {
     pub props: Option<String>,
     /// What the right button was pressed on: a node, or the empty canvas, and where.
     context: Option<(Option<String>, Pos2)>,
+    /// The cable it was pressed on, as ties name it: its menu can put a bend there.
+    context_cable: Option<String>,
     /// The Grid cell its inspector edits (from 0).
     pub grid_cell: usize,
     /// A signal dropped on a card: its output ("n_ab12/4"), the card's node, where: the
@@ -350,6 +366,9 @@ pub struct State {
     /// The Audio In's tape reels: their angle; the loudest its level was lately, falling.
     reel: f32,
     peak: f32,
+    /// The shared signals a Shared node's inspector may change from a scene (its Edit here),
+    /// by their node's id: until the app closes, never saved.
+    pub unlocked: std::collections::HashSet<String>,
 }
 
 /// A bubble round a port a dragged wire is drawn to: its size (0..1) on its way from `from` to
@@ -462,27 +481,53 @@ fn plane_room(scene: &Scene, n: &velo_core::Node) -> Rect {
     Rect::from_min_size(r.min, r.size() + vec2(0.0, jacks(n).len() as f32 * JACK_H))
 }
 
-/// Where each node goes for the graph to read left to right: a column per step from where it
-/// starts (a signal before what it moves, the Output last), each column's nodes in the order of
-/// what feeds them, right-aligned and spaced, the whole centered where it was. The nodes that
-/// move, and where to.
-pub fn arrange(scene: &Scene) -> Vec<(String, [f32; 2])> {
-    let nodes = &scene.nodes;
-    let index: HashMap<&str, usize> = nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
-    // what feeds what: wires, and signals into what they move
-    let mut links: Vec<(usize, usize)> = scene.edges.iter().filter_map(|e| Some((*index.get(e.from.0.as_str())?, *index.get(e.to.0.as_str())?))).collect();
-    for (j, n) in nodes.iter().enumerate() {
-        links.extend(n.mappings.iter().filter_map(|m| velo_core::signal_output(&m.source).and_then(|(id, _)| index.get(id)).map(|&i| (i, j))));
-    }
+/// A tie to make: where on the plane, and the cables it holds (as ties name them).
+pub type Held = ([f32; 2], Vec<String>);
+/// A link that skips columns, and where it goes through each column it crosses: in, out.
+type Lane = ((usize, usize), Vec<[Pos2; 2]>);
+/// The room a lane takes between a column's boxes, and how far past the column it reaches.
+const LANE_H: f32 = 16.0;
+const LANE_REACH: f32 = 20.0;
+
+/// Boxes laid out to read left to right: a column per step from where a box starts (what feeds
+/// it is in a column before; a `pinned` one, an Output, in the last), each column's boxes in the
+/// order of what feeds them, right-aligned and spaced. `ys` breaks ties: where each stood. Each
+/// box's place, from the first column's left edge; and, for each link that skips columns, its
+/// lane through each one it crosses (where it comes in, where it goes out): room kept free
+/// between that column's boxes, so its cable passes between them, not under them. And where
+/// each box's column starts (a box narrower than its column stands in from there).
+fn layered(sizes: &[Vec2], links: &[(usize, usize)], pinned: &[bool], ys: &[f32]) -> (Vec<Rect>, Vec<Lane>, Vec<f32>) {
+    let count = sizes.len();
+    let mut links = links.to_vec();
     links.retain(|(a, b)| a != b);
     links.sort_unstable();
     links.dedup();
-    // a node's column: one past the furthest of what feeds it (a loop stops growing at the count)
-    let mut col = vec![0usize; nodes.len()];
-    for _ in 0..nodes.len() {
+    // a link that closes a loop (two groups feeding each other) pushes nothing right: found
+    // depth first, in order, so the same links are left out each time
+    fn walk(i: usize, links: &[(usize, usize)], state: &mut [u8], flow: &mut Vec<(usize, usize)>) {
+        state[i] = 1;
+        for &(a, b) in links.iter().filter(|l| l.0 == i) {
+            if state[b] != 1 {
+                flow.push((a, b));
+                if state[b] == 0 {
+                    walk(b, links, state, flow);
+                }
+            }
+        }
+        state[i] = 2;
+    }
+    let (mut state, mut flow) = (vec![0u8; count], Vec::new());
+    for i in 0..count {
+        if state[i] == 0 {
+            walk(i, &links, &mut state, &mut flow);
+        }
+    }
+    // a box's column: one past the furthest of what feeds it
+    let mut col = vec![0usize; count];
+    for _ in 0..count {
         let mut moved = false;
-        for &(a, b) in &links {
-            if col[b] <= col[a] && col[a] + 1 < nodes.len() {
+        for &(a, b) in &flow {
+            if col[b] <= col[a] && col[a] + 1 < count {
                 (col[b], moved) = (col[a] + 1, true);
             }
         }
@@ -491,31 +536,58 @@ pub fn arrange(scene: &Scene) -> Vec<(String, [f32; 2])> {
         }
     }
     let last = col.iter().copied().max().unwrap_or(0);
-    for (i, n) in nodes.iter().enumerate() {
-        if node_kind(&n.kind).is_some_and(|k| k.category == velo_core::Category::Output) {
-            col[i] = last;
-        }
+    for i in (0..count).filter(|&i| pinned[i]) {
+        col[i] = last;
     }
-    // a node nothing feeds sits just before the first one it feeds, near it, not far left
-    for i in (0..nodes.len()).filter(|&i| !links.iter().any(|&(_, b)| b == i)) {
+    // a box nothing feeds sits just before the first one it feeds, near it, not far left
+    for i in (0..count).filter(|&i| !links.iter().any(|&(_, b)| b == i)) {
         if let Some(first) = links.iter().filter(|&&(a, _)| a == i).map(|&(_, b)| col[b]).min() {
             col[i] = col[i].max(first.saturating_sub(1));
         }
     }
-    let columns: Vec<Vec<usize>> = (0..=last).map(|c| (0..nodes.len()).filter(|&i| col[i] == c).collect()).collect();
-    // each node level with what it's linked to, pushed down past the one above it: left to
+    // the lanes: a slim box in each column a link skips, stacked with the others so it gets
+    // room of its own, level with what it joins. A box's links share its lane in a column
+    let (mut sizes, mut ys) = (sizes.to_vec(), ys.to_vec());
+    let mut lane_of: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    let mut joins: Vec<(usize, usize)> = Vec::new();
+    let mut chains: Vec<((usize, usize), Vec<usize>)> = Vec::new();
+    for &(a, b) in &links {
+        if !flow.contains(&(a, b)) || col[b] <= col[a] + 1 {
+            joins.push((a, b));
+            continue;
+        }
+        let (mut from, mut chain) = (a, Vec::new());
+        for c in col[a] + 1..col[b] {
+            let lane = *lane_of.entry((a, c)).or_insert_with(|| {
+                sizes.push(vec2(0.0, LANE_H));
+                // (under the boxes it's level with, wherever those stood: arranged again, the same)
+                ys.push(f32::MAX);
+                col.push(c);
+                sizes.len() - 1
+            });
+            joins.push((from, lane));
+            chain.push(lane);
+            from = lane;
+        }
+        joins.push((from, b));
+        chains.push(((a, b), chain));
+    }
+    joins.sort_unstable();
+    joins.dedup();
+    let (links, boxes, count) = (joins, count, sizes.len());
+    let columns: Vec<Vec<usize>> = (0..=last).map(|c| (0..count).filter(|&i| col[i] == c).collect()).collect();
+    // each box level with what it's linked to, pushed down past the one above it: left to
     // right with what feeds it, then right to left the ones nothing feeds, with what they feed
     const GAP_X: f32 = 2.0 * SPACING;
     const GAP_Y: f32 = 40.0;
-    let size = |i: usize| plane_room(scene, &nodes[i]).size();
-    let mut center = vec![0.0f32; nodes.len()];
+    let mut center = vec![0.0f32; count];
     let mean = |ys: Vec<f32>| (!ys.is_empty()).then(|| ys.iter().sum::<f32>() / ys.len() as f32);
     let stack = |list: &[usize], want: &[Option<f32>], center: &mut Vec<f32>| {
         let mut order: Vec<usize> = (0..list.len()).collect();
-        order.sort_by(|&a, &b| want[a].unwrap_or(f32::MAX).total_cmp(&want[b].unwrap_or(f32::MAX)).then(nodes[list[a]].pos[1].total_cmp(&nodes[list[b]].pos[1])));
+        order.sort_by(|&a, &b| want[a].unwrap_or(f32::MAX).total_cmp(&want[b].unwrap_or(f32::MAX)).then(ys[list[a]].total_cmp(&ys[list[b]])));
         let mut floor: Option<f32> = None;
         for k in order {
-            let (i, h) = (list[k], size(list[k]).y);
+            let (i, h) = (list[k], sizes[list[k]].y);
             let top = match (want[k].map(|c| c - h / 2.0), floor) {
                 (Some(w), Some(f)) => w.max(f),
                 (Some(w), None) => w,
@@ -540,22 +612,124 @@ pub fn arrange(scene: &Scene) -> Vec<(String, [f32; 2])> {
             .collect();
         stack(list, &want, &mut center);
     }
-    // the columns side by side, cards right-aligned in theirs: a card's place is a usual card's
-    // top left, wider ones reach left
-    let mut placed: Vec<(usize, [f32; 2])> = Vec::new();
+    // the columns side by side, boxes right-aligned in theirs: wider ones reach left. A lane
+    // runs its column's whole width, a little past each side
+    let (mut placed, mut starts) = (vec![Rect::NOTHING; count], vec![0.0; boxes]);
     let mut x = 0.0;
     for list in columns.iter().filter(|l| !l.is_empty()) {
-        let width = list.iter().map(|&i| size(i).x).fold(0.0, f32::max);
-        placed.extend(list.iter().map(|&i| (i, [x + width - NODE_W, center[i] - size(i).y / 2.0])));
+        let width = list.iter().map(|&i| sizes[i].x).fold(0.0, f32::max);
+        for &i in list {
+            if i < boxes {
+                starts[i] = x;
+            }
+            placed[i] = if i < boxes { Rect::from_min_size(pos2(x + width - sizes[i].x, center[i] - sizes[i].y / 2.0), sizes[i]) } else { Rect::from_x_y_ranges(x - LANE_REACH..=x + width + LANE_REACH, center[i]..=center[i]) };
+        }
         x += width + GAP_X;
     }
-    let room = |i: usize, p: [f32; 2]| Rect::from_min_size(pos2(p[0] + NODE_W - size(i).x, p[1]), size(i));
-    let new = placed.iter().map(|&(i, p)| room(i, p)).reduce(Rect::union);
-    let shift = match (bounds(scene, None), new) {
+    let lanes = chains.into_iter().map(|(link, chain)| (link, chain.into_iter().map(|lane| [placed[lane].left_top(), placed[lane].right_top()]).collect())).collect();
+    placed.truncate(boxes);
+    (placed, lanes, starts)
+}
+
+/// Where each node goes for the graph to read left to right ([`layered`]: a signal before what
+/// it moves, the Output last), the whole centered where it was. A group is one box among the
+/// others, its nodes arranged the same way inside it: they stay together, and nothing else lands
+/// in its frame. A cable that would cross a column of cards gets a lane between them
+/// ([`layered`]), held there by a tie where it comes into the column and one where it leaves
+/// (the cables of one lane in one tie). The nodes that move and where to, and those ties: where,
+/// and which cables (as ties name them).
+pub fn arrange(scene: &Scene) -> (Vec<(String, [f32; 2])>, Vec<Held>) {
+    let nodes = &scene.nodes;
+    let index: HashMap<&str, usize> = nodes.iter().enumerate().map(|(i, n)| (n.id.as_str(), i)).collect();
+    // what feeds what: wires, and signals into what they move
+    let mut links: Vec<(usize, usize)> = scene.edges.iter().filter_map(|e| Some((*index.get(e.from.0.as_str())?, *index.get(e.to.0.as_str())?))).collect();
+    // (and each cable by its name, for the ties)
+    let mut cables: Vec<(usize, usize, String)> = scene.edges.iter().filter_map(|e| Some((*index.get(e.from.0.as_str())?, *index.get(e.to.0.as_str())?, velo_core::Tie::wire(&e.to)))).collect();
+    for (j, n) in nodes.iter().enumerate() {
+        links.extend(n.mappings.iter().filter_map(|m| velo_core::signal_output(&m.source).and_then(|(id, _)| index.get(id)).map(|&i| (i, j))));
+        cables.extend(jacks(n).into_iter().filter_map(|source| Some((*index.get(velo_core::signal_output(source)?.0)?, j, velo_core::Tie::line(&n.id, source)))));
+    }
+    let size = |i: usize| plane_room(scene, &nodes[i]).size();
+    let output = |i: usize| node_kind(&nodes[i].kind).is_some_and(|k| k.category == velo_core::Category::Output);
+    // the boxes: a group's nodes (a node is in one group), then each node by itself
+    const LONE: usize = usize::MAX;
+    let (mut of, mut boxes): (Vec<usize>, Vec<(Vec<usize>, bool)>) = (vec![LONE; nodes.len()], Vec::new());
+    for g in &scene.groups {
+        let held: Vec<usize> = g.nodes.iter().filter_map(|id| index.get(id.as_str()).copied()).filter(|&i| of[i] == LONE).collect();
+        if !held.is_empty() {
+            held.iter().for_each(|&i| of[i] = boxes.len());
+            boxes.push((held, true));
+        }
+    }
+    for (i, of) in of.iter_mut().enumerate().filter(|(_, of)| **of == LONE) {
+        *of = boxes.len();
+        boxes.push((vec![i], false));
+    }
+    // inside each box: its nodes' places from its top left, the room it takes (a group's with
+    // its frame and title), and its own lanes, by the nodes they join
+    let inside: Vec<(Vec<Rect>, Vec2, Vec<Lane>)> = boxes
+        .iter()
+        .map(|(held, group)| {
+            let at = |i: usize| held.iter().position(|&h| h == i);
+            let wires: Vec<(usize, usize)> = links.iter().filter_map(|&(a, b)| Some((at(a)?, at(b)?))).collect();
+            let sizes: Vec<Vec2> = held.iter().map(|&i| size(i)).collect();
+            let (places, lanes, _) = layered(&sizes, &wires, &held.iter().map(|&i| output(i)).collect::<Vec<_>>(), &held.iter().map(|&i| nodes[i].pos[1]).collect::<Vec<_>>());
+            // (a lane above or below every card makes the frame taller)
+            let all = places.iter().copied().chain(lanes.iter().flat_map(|(_, l)| l.iter().map(|[a, b]| Rect::from_two_pos(*a, *b)))).reduce(Rect::union).unwrap_or(Rect::ZERO);
+            let (pad, title) = if *group { (GROUP_PAD, GROUP_TITLE) } else { (0.0, 0.0) };
+            let by = vec2(pad, pad + title) - all.min.to_vec2();
+            let lanes = lanes.into_iter().map(|((a, b), l)| ((held[a], held[b]), l.into_iter().map(|p| p.map(|p| p + by)).collect())).collect();
+            (places.iter().map(|r| r.translate(by)).collect(), all.size() + vec2(2.0 * pad, 2.0 * pad + title), lanes)
+        })
+        .collect();
+    let sizes: Vec<Vec2> = inside.iter().map(|(_, room, _)| *room).collect();
+    let wires: Vec<(usize, usize)> = links.iter().map(|&(a, b)| (of[a], of[b])).collect();
+    let pinned: Vec<bool> = boxes.iter().map(|(held, _)| held.iter().any(|&i| output(i))).collect();
+    let ys: Vec<f32> = boxes.iter().map(|(held, _)| held.iter().map(|&i| nodes[i].pos[1]).fold(f32::INFINITY, f32::min)).collect();
+    let (places, lanes, starts) = layered(&sizes, &wires, &pinned, &ys);
+    // a card's place is a usual card's top left: wider ones reach left
+    let mut rooms = vec![Rect::NOTHING; nodes.len()];
+    for (b, (held, _)) in boxes.iter().enumerate() {
+        for (k, &i) in held.iter().enumerate() {
+            rooms[i] = inside[b].0[k].translate(places[b].min.to_vec2());
+        }
+    }
+    let shift = match (bounds(scene, None), rooms.iter().copied().reduce(Rect::union)) {
         (Some(old), Some(new)) => old.center() - new.center(),
         _ => Vec2::ZERO,
     };
-    placed.into_iter().map(|(i, p)| (i, [(p[0] + shift.x).round(), (p[1] + shift.y).round()])).filter(|&(i, p)| nodes[i].pos != p).map(|(i, p)| (nodes[i].id.clone(), p)).collect()
+    let place = |r: Rect| [(r.right() - NODE_W + shift.x).round(), (r.top() + shift.y).round()];
+    let to: Vec<[f32; 2]> = rooms.iter().map(|r| place(*r)).collect();
+    let stands = |n: &velo_core::Node| index.get(n.id.as_str()).map_or(n.pos, |&i| to[i]);
+    // each cable's lanes: between two boxes the boxes', inside a group the group's own. The
+    // cables through one point are one tie's
+    let mut ties: Vec<Held> = Vec::new();
+    for (a, b, key) in cables {
+        let mut through: Vec<Pos2> = if of[a] == of[b] {
+            let by = places[of[a]].min.to_vec2();
+            inside[of[a]].2.iter().filter(|(link, _)| *link == (a, b)).flat_map(|(_, l)| l.iter().flatten().map(move |p| *p + by + shift)).collect()
+        } else {
+            lanes.iter().filter(|(link, _)| *link == (of[a], of[b])).flat_map(|(_, l)| l.iter().flatten().map(|p| *p + shift)).collect()
+        };
+        // into a card narrower than its column: a bend where the column starts, level with the
+        // input, so the cable climbs in the gap between the columns and comes in level, not
+        // across the wider boxes above and below
+        let lone = of[a] != of[b] && !boxes[of[b]].1 && rooms[b].left() > starts[of[b]] + 1.0;
+        if let (true, Some((from, into))) = (lone, plane_ends(scene, &key, &stands)) {
+            let last = through.last().map_or(from.y, |p| p.y);
+            if (last - into.y).abs() >= 1.0 {
+                through.push(pos2(starts[of[b]] + shift.x - LANE_REACH, into.y));
+            }
+        }
+        for p in through {
+            let at = [p.x.round(), p.y.round()];
+            match ties.iter_mut().find(|(q, _)| *q == at) {
+                Some((_, held)) => held.push(key.clone()),
+                None => ties.push((at, vec![key.clone()])),
+            }
+        }
+    }
+    (to.into_iter().enumerate().filter(|&(i, p)| nodes[i].pos != p).map(|(i, p)| (nodes[i].id.clone(), p)).collect(), ties)
 }
 
 /// How long a tie keeps its cables straight and level, side by side, and how far apart.
@@ -563,6 +737,8 @@ const TIE_RUN: f32 = 30.0;
 const TIE_GAP: f32 = 4.0;
 /// How long a bend (a tie of one cable) keeps its cable level.
 const BEND_RUN: f32 = 6.0;
+/// How near (screen points) a dragged tie lines up with a port or another tie of its cables.
+const BEND_SNAP: f32 = 7.0;
 
 /// A cable from `a` to `b` through the ties holding it (screen points: its own place in each
 /// bundle, left to right), straight through each, curving between.
@@ -575,6 +751,46 @@ fn routed(a: Pos2, b: Pos2, through: &[(Pos2, f32)], zoom: f32) -> Vec<Pos2> {
         from = p + half;
     }
     pts.extend(bezier(from, b, zoom));
+    pts
+}
+
+/// How far a cable runs level out of an output and into an input before it turns, as a trace.
+const STUB: f32 = 14.0;
+
+/// From `a` to `b` as a circuit's trace: runs that are level, upright or at 45° and nothing
+/// else. A level run, the slope, a level run; where it climbs more than it travels, a slope, an
+/// upright run, a slope. Two points level, upright or at 45° of each other: one straight run.
+fn leg(a: Pos2, b: Pos2) -> Vec<Pos2> {
+    let d = b - a;
+    let (dx, dy) = (d.x.abs(), d.y.abs());
+    if dx < 0.5 || dy < 0.5 || (dx - dy).abs() < 0.5 {
+        return vec![a, b];
+    }
+    let (sx, sy) = (d.x.signum(), d.y.signum());
+    let turn = if dx > dy { vec2(sx * (dx - dy) / 2.0, 0.0) } else { vec2(sx * dx / 2.0, sy * dx / 2.0) };
+    vec![a, a + turn, b - turn, b]
+}
+
+/// A cable from `a` to `b` as a trace ([`leg`]) through the ties holding it (as [`routed`] takes
+/// them): level out of the output and into the input, level through a bundle's tie, turning at a
+/// bend.
+fn traced(a: Pos2, b: Pos2, through: &[(Pos2, f32)], zoom: f32) -> Vec<Pos2> {
+    let stub = vec2(STUB * zoom, 0.0);
+    let mut stops = vec![a, a + stub];
+    for &(p, run) in through {
+        // (a bend is a point; a bundle's tie holds its cables level a little)
+        let half = if run > BEND_RUN { vec2(run * zoom / 2.0, 0.0) } else { Vec2::ZERO };
+        stops.extend([p - half, p + half]);
+    }
+    stops.extend([b - stub, b]);
+    let mut pts = vec![a];
+    for pair in stops.windows(2) {
+        for p in leg(pair[0], pair[1]).into_iter().skip(1) {
+            if pts.last().is_none_or(|q| q.distance(p) > 0.25) {
+                pts.push(p);
+            }
+        }
+    }
     pts
 }
 
@@ -1516,6 +1732,7 @@ impl Settings<'_> {
             velo_core::REMAP if v("auto") > 0.5 => tr!("In, stretched to its own range").to_string(),
             velo_core::REMAP => tr!("In, from {}–{} to {}–{}", two(v("in_min")), two(v("in_max")), two(v("out_min")), two(v("out_max"))),
             velo_core::PROBE => tr!("The picture's {}", named("measure").to_lowercase()),
+            velo_core::SHARED_IN => tr!("Shared: the same in every scene").to_string(),
             _ => String::new(),
         }
     }
@@ -1883,13 +2100,14 @@ impl App {
                 (cam.screen(center, pos2(tie.pos[0], tie.pos[1])), held, TIE_GAP * cam.zoom * (1.0 + 5.0 * loose))
             })
             .collect();
-        // a cable's line, through the ties holding it
+        // a cable's line, through the ties holding it: a trace, or a curve (the toolbar's switch)
+        let curved = self.settings.curved_cables;
         let route = |key: &str, a: Pos2, b: Pos2| {
             // (a tie of one cable is a bend in it: a point it passes, not a bundle to run straight through)
             let mut through: Vec<(Pos2, f32)> =
                 ties.iter().filter_map(|(at, held, gap)| held.iter().position(|c| c == key).map(|k| (*at + vec2(0.0, (k as f32 - (held.len() - 1) as f32 / 2.0) * gap), if held.len() == 1 { BEND_RUN } else { TIE_RUN }))).collect();
             through.sort_by(|p, q| p.0.x.total_cmp(&q.0.x));
-            routed(a, b, &through, cam.zoom)
+            if curved { routed(a, b, &through, cam.zoom) } else { traced(a, b, &through, cam.zoom) }
         };
         // every wire on screen as a polyline (off-screen ones: None)
         let wires: Vec<Option<(usize, Vec<Pos2>)>> = scene
@@ -2078,25 +2296,27 @@ impl App {
         }
         // arranged: every node to its place in one undo step, sliding there, the view following
         if std::mem::take(&mut st.arrange) {
-            let moves: HashMap<String, [f32; 2]> = arrange(scene).into_iter().collect();
+            let (moves, lanes) = arrange(scene);
+            let moves: HashMap<String, [f32; 2]> = moves.into_iter().collect();
             for (node, to) in &moves {
                 if let Some(n) = scene.node(node) {
                     st.glides.insert(node.clone(), (n.pos, now));
                 }
                 ops.push(("node.move", json!({ "node": node, "pos": to }), Some("arrange")));
             }
-            // each tie goes as far as the nodes its cables join, on average
-            let moved = |id: &str| scene.node(id).map_or(Vec2::ZERO, |n| moves.get(id).map_or(Vec2::ZERO, |to| vec2(to[0] - n.pos[0], to[1] - n.pos[1])));
+            // the cables laid out again with the nodes: the ties that were there go (where the
+            // nodes went they'd hold nothing in place), then a lane's ties for each cable that
+            // would cross a column of cards
             for tie in &scene.ties {
-                let ends: Vec<&str> = tie.cables.iter().flat_map(|key| cable_nodes(scene, key)).collect();
-                if !ends.is_empty() {
-                    let by = ends.iter().map(|id| moved(id)).fold(Vec2::ZERO, |a, b| a + b) / ends.len() as f32;
-                    ops.push(("tie.move", json!({ "tie": tie.id, "pos": [tie.pos[0] + by.x, tie.pos[1] + by.y] }), Some("arrange")));
-                }
+                ops.push(("tie.remove", json!({ "tie": tie.id }), Some("arrange")));
             }
-            // and bundles where they help: an output's cables just past it, a node's just
-            // before it (none a tie already holds all of)
-            for (at, cables) in bundles(scene, &|n| moves.get(&n.id).copied().unwrap_or(n.pos)) {
+            for (at, cables) in lanes {
+                ops.push(("tie.add", json!({ "pos": at, "cables": cables }), Some("arrange")));
+            }
+            // and, for curves, bundles where they help: an output's cables just past it, a
+            // node's just before it (traces run together by themselves)
+            let bare = Scene { ties: Vec::new(), ..scene.clone() };
+            for (at, cables) in bundles(&bare, &|n| moves.get(&n.id).copied().unwrap_or(n.pos)).into_iter().filter(|_| curved) {
                 ops.push(("tie.add", json!({ "pos": [at.x, at.y], "cables": cables }), Some("arrange")));
                 st.cinch.push(([at.x, at.y], now));
             }
@@ -2246,7 +2466,16 @@ impl App {
             }
             Some(Drag::Tie { id, grab }) => {
                 if let Some(p) = pointer {
-                    let to = cam.graph(center, p) - *grab;
+                    let mut at = cam.screen(center, cam.graph(center, p) - *grab);
+                    // near level with a port its cables join, or level or upright with another
+                    // of their ties, it lines up with it: straight runs come easy (Alt: anywhere)
+                    if let (false, Some(k)) = (alt, scene.ties.iter().position(|t| t.id == *id)) {
+                        let others = || ties.iter().enumerate().filter(|(j, t)| *j != k && t.1.iter().any(|c| ties[k].1.contains(c))).map(|(_, t)| t.0);
+                        let ports = ties[k].1.iter().filter_map(|c| ends.get(c)).flat_map(|(a, b)| [a.y, b.y]);
+                        let near = |v: f32, to: &mut dyn Iterator<Item = f32>| to.filter(|w| (w - v).abs() <= BEND_SNAP).min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs())).unwrap_or(v);
+                        at = pos2(near(at.x, &mut others().map(|o| o.x)), near(at.y, &mut ports.chain(others().map(|o| o.y))));
+                    }
+                    let to = cam.graph(center, at);
                     ops.push(("tie.move", json!({ "tie": id, "pos": [to.x, to.y] }), Some("tie.move")));
                 }
             }
@@ -3216,6 +3445,11 @@ impl App {
                 }
                 _ => Some((None, p)),
             };
+            st.context_cable = match hit(p) {
+                Hit::Wire(e) => Some(velo_core::Tie::wire(&scene.edges[e].to)),
+                Hit::Map(m) => Some(velo_core::Tie::line(&nodes[maps[m].0].id, &maps[m].3)),
+                _ => None,
+            };
         }
         let (target, mut act) = (st.context.clone(), None);
         kit::context_menu(&t, &bg).show(|ui| match &target {
@@ -3223,6 +3457,15 @@ impl App {
                 let node = index.get(id.as_str()).map(|&i| &nodes[i]);
                 if ui.add(egui::Button::new(format!("{}  {}", icons::SQUARES_FOUR, tr!("Group"))).shortcut_text(keys_of("canvas.group"))).clicked() {
                     act = Some(Act::Group);
+                }
+                // signal nodes of a scene: into the shared signals, a linked node left here
+                let shareable = scene.id != velo_core::SHARED && st.selected.iter().all(|id| index.get(id.as_str()).is_some_and(|&i| velo_core::shareable(&nodes[i].kind)));
+                if shareable && ui.button(format!("{}  {}", icons::BROADCAST, tr!("Share with every scene"))).clicked() {
+                    act = Some(Act::Share);
+                }
+                // a Shared node: this scene's own copy of what it reads, to change here alone
+                if node.is_some_and(|n| n.kind == velo_core::SHARED_IN) && ui.button(format!("{}  {}", icons::LINK_BREAK, tr!("Make local"))).clicked() {
+                    act = Some(Act::Local(id.clone()));
                 }
                 let has_props = node.is_some_and(|n| crate::live::shader(&n.kind, n.code.as_deref()).is_some());
                 if ui.add_enabled(has_props, egui::Button::new(format!("{}  {}", icons::SLIDERS_HORIZONTAL, tr!("Parameters")))).clicked() {
@@ -3252,6 +3495,12 @@ impl App {
                 }
             }
             Some((None, p)) => {
+                // on a cable: a point of its own to route it by, there
+                if let Some(cable) = &st.context_cable
+                    && ui.button(format!("{}  {}", icons::PATH, tr!("Add a bend here"))).clicked()
+                {
+                    act = Some(Act::Bend(cable.clone(), *p));
+                }
                 if ui.add(egui::Button::new(format!("{}  {}", icons::PLUS, tr!("Add a node…"))).shortcut_text(keys_of("canvas.add"))).clicked() {
                     act = Some(Act::Add(*p));
                 }
@@ -3283,6 +3532,12 @@ impl App {
             Some(Act::Fit) => st.zoom_to = Some(ZoomTo::Fit),
             Some(Act::Arrange) => st.arrange = true,
             Some(Act::Group) => ops.push(("group.add", json!({ "nodes": st.selected }), None)),
+            Some(Act::Share) => ops.push(("node.share", json!({ "nodes": st.selected }), None)),
+            Some(Act::Local(id)) => ops.push(("node.make_local", json!({ "node": id }), None)),
+            Some(Act::Bend(cable, p)) => {
+                let at = cam.graph(center, p);
+                ops.push(("tie.add", json!({ "pos": [at.x, at.y], "cables": [cable] }), None));
+            }
             Some(Act::Note(p)) => {
                 let g = cam.graph(center, p);
                 ops.push(("note.add", json!({ "pos": [g.x, g.y], "text": "" }), None));
@@ -3569,7 +3824,17 @@ impl App {
             // a dropped wire needs something with an input; one put into a wire, an output too
             (!wiring || !k.inputs.is_empty()) && (!into || !k.outputs.is_empty()) && (!shared || velo_core::shareable(k.id)) && words.iter().all(|w| text.contains(w.as_str()))
         };
-        let found: Vec<&'static NodeKind> = NODE_KINDS.iter().filter(fits).collect();
+        // a Shared for each output of the shared signals, in a scene: not on a dropped wire (it
+        // takes none), nor to replace a node
+        let links = if shared || wiring || menu.replace.is_some() { Vec::new() } else { crate::shared_sources(&self.session.project) };
+        let linked = |name: &str| words.iter().all(|w| format!("{} {}", name.to_lowercase(), tr!("Shared").to_lowercase()).contains(w.as_str()));
+        let found: Vec<Pick> = NODE_KINDS
+            .iter()
+            .flat_map(|k| match k.id {
+                velo_core::SHARED_IN => links.iter().filter(|(_, name)| linked(name)).map(|l| Pick { kind: k, link: Some(l.clone()) }).collect(),
+                _ => Some(Pick { kind: k, link: None }).filter(|p| fits(&p.kind)).into_iter().collect::<Vec<_>>(),
+            })
+            .collect();
         // the tabs: All, then the groups in the menu's order; one with nothing found is off
         let mut tabs: Vec<Option<&'static str>> = vec![None];
         for k in NODE_KINDS {
@@ -3577,7 +3842,7 @@ impl App {
                 tabs.push(Some(k.group()));
             }
         }
-        let has = |g: Option<&str>| g.is_none_or(|g| found.iter().any(|k| k.group() == g));
+        let has = |g: Option<&str>| g.is_none_or(|g| found.iter().any(|p| p.kind.group() == g));
         // Ctrl+Tab (Shift: back) walks the tabs that have something
         let (back, next) = ctx.input_mut(|i| (i.consume_key(Modifiers::CTRL | Modifiers::SHIFT, Key::Tab), i.consume_key(Modifiers::CTRL, Key::Tab)));
         let mut tab = menu.tab.filter(|&g| has(Some(g)));
@@ -3590,7 +3855,7 @@ impl App {
             }
             (menu.tab, tab, menu.selected, menu.top) = (tabs[i], tabs[i], 0, true);
         }
-        let matches: Vec<&'static NodeKind> = found.iter().copied().filter(|k| tab.is_none_or(|g| k.group() == g)).collect();
+        let matches: Vec<Pick> = found.iter().filter(|p| tab.is_none_or(|g| p.kind.group() == g)).cloned().collect();
         // what the new node will be wired after, for the footer
         let after = append_source(&self.session, &self.canvas.selected, menu.from.as_ref()).and_then(|(id, _)| self.session.active()?.node(&id).map(|n| n.name.clone()));
         let mut chosen = None;
@@ -3630,7 +3895,8 @@ impl App {
             list.show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 let mut group = None;
-                for (i, k) in matches.iter().enumerate() {
+                for (i, pick) in matches.iter().enumerate() {
+                    let k = pick.kind;
                     // the groups' names in All; a tab says it already
                     if tab.is_none() && group != Some(k.group()) {
                         group = Some(k.group());
@@ -3640,7 +3906,7 @@ impl App {
                             kit::caps(ui, &t, &i18n::t(k.group()).to_uppercase());
                         });
                     }
-                    let r = kit::row_sized(ui, &t, Id::unique(("node-menu-row", k.id)), i == menu.selected, MENU_ROW_H);
+                    let r = kit::row_sized(ui, &t, Id::unique(("node-menu-row", k.id, pick.link.as_ref().map(|l| &l.0))), i == menu.selected, MENU_ROW_H);
                     let mut painter = ui.painter_at(r.rect);
                     painter.multiply_opacity(kit::row_alpha(ui, &r));
                     // its icon on a tile of its category's color, its name over what it does
@@ -3649,12 +3915,12 @@ impl App {
                     painter.rect_filled(tile, t.radius_sm, color.gamma_multiply(0.16));
                     kit::icon_at(&painter, tile.center(), node_icon(k.id), 17.0, color);
                     let x = tile.right() + t.pad + 2.0;
-                    painter.text(pos2(x, r.rect.center().y), Align2::LEFT_BOTTOM, i18n::t(k.label), t.body(), t.fg_text);
+                    painter.text(pos2(x, r.rect.center().y), Align2::LEFT_BOTTOM, pick.link.as_ref().map_or(i18n::t(k.label), |l| l.1.as_str()), t.body(), t.fg_text);
                     if let Some(about) = node_blurb(k.id) {
                         kit::fit_text(&painter, pos2(x, r.rect.center().y + 2.0), Align2::LEFT_TOP, about, t.small(), t.fg_muted, r.rect.right() - t.pad - x);
                     }
                     if r.clicked() {
-                        chosen = Some(*k);
+                        chosen = Some(pick.clone());
                     }
                     if i == menu.selected && (up || down) {
                         r.scroll_to_me(None);
@@ -3679,16 +3945,16 @@ impl App {
                 ui.label(egui::RichText::new(text).small().color(t.fg_muted));
             });
             if enter {
-                chosen = matches.get(menu.selected).copied();
+                chosen = matches.get(menu.selected).cloned();
             }
             tab_key
         });
-        if let Some(kind) = chosen {
+        if let Some(Pick { kind, link }) = chosen {
             let (graph, from, into, replace) = (menu.graph, menu.from.take(), menu.into.take(), menu.replace.take());
             self.canvas.menu = None;
             match replace {
                 Some(node) => self.replace_node(&node, kind),
-                None => self.add_node(kind, graph, from, into),
+                None => self.add_node(kind, graph, from, into, link),
             }
         } else if close || tab_key {
             self.canvas.menu = None;
@@ -3712,8 +3978,9 @@ impl App {
 
     /// Adds a node from the menu. With a dropped wire, or one node selected, it's wired from
     /// that output and placed after it (TouchDesigner's append); otherwise it goes at `at`.
-    /// `into`: the input it then feeds (a node put into a wire).
-    fn add_node(&mut self, kind: &'static NodeKind, at: Pos2, from: Option<(String, u8)>, into: Option<(String, u8)>) {
+    /// `into`: the input it then feeds (a node put into a wire). `link`: a Shared's output of
+    /// the shared signals and its name, which the node takes.
+    fn add_node(&mut self, kind: &'static NodeKind, at: Pos2, from: Option<(String, u8)>, into: Option<(String, u8)>, link: Option<(String, String)>) {
         let dropped = from.is_some();
         let source = append_source(&self.session, &self.canvas.selected, from.as_ref()).filter(|_| !kind.inputs.is_empty());
         let Some(scene) = self.session.active() else { return };
@@ -3736,7 +4003,8 @@ impl App {
         // a Shader node starts from its first preset, named after it
         let code = velo_engine::template(kind.id);
         let name = code.and_then(|c| velo_engine::ShaderNode::parse(c).ok()).map_or_else(|| i18n::t(kind.label).to_string(), |n| i18n::t(&n.name).to_string());
-        self.run_merge("node.add", json!({ "kind": kind.id, "pos": [pos.x, pos.y], "name": name, "code": code }), "node.add");
+        let (link, name) = link.map_or((None, name), |(key, name)| (Some(key), name));
+        self.run_merge("node.add", json!({ "kind": kind.id, "pos": [pos.x, pos.y], "name": name, "code": code, "link": link }), "node.add");
         let added = self.session.active().filter(|s| s.nodes.len() > before).and_then(|s| s.nodes.last()).map(|n| n.id.clone());
         if let (Some(new), Some((src, port))) = (&added, source) {
             self.run_merge("edge.connect", json!({ "from": [src, port], "to": [new, 0] }), "node.add");
@@ -4180,6 +4448,7 @@ fn node_icon(id: &str) -> &'static str {
         v::TIME => icons::CLOCK,
         v::RANDOM => icons::DICE_FIVE,
         v::PROBE => icons::CROSSHAIR,
+        v::SHARED_IN => icons::LINK,
         v::REMAP => icons::ARROWS_DOWN_UP,
         v::MATH => icons::MATH_OPERATIONS,
         v::GAIN => icons::GAUGE,
@@ -4210,6 +4479,7 @@ fn group_icon(group: Option<&str>) -> &'static str {
         Some("Control") => icons::ARROWS_SPLIT,
         Some("Output") => icons::MONITOR,
         Some("Signals") => icons::BROADCAST,
+        Some("Shared") => icons::LINK,
         _ => icons::FUNCTION,
     }
 }
@@ -4280,6 +4550,7 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::SPRING => tr!("Follows what comes in on a spring: it overshoots and swings back."),
         velo_core::SLOPE => tr!("How fast what comes in rises or falls: 1 for a sudden jump."),
         velo_core::PROBE => tr!("A picture read as a number: its brightness or a channel, over all of it, a part or a point."),
+        velo_core::SHARED_IN => tr!("A shared signal on this scene's canvas, wired to what it moves: the same in every scene, changed in one place."),
         _ => return None,
     })
 }
@@ -4297,7 +4568,7 @@ mod tests {
         crate::templates::add(&mut session, rings, None).unwrap();
         let scene = session.active().unwrap().clone();
         let mut moved = scene.clone();
-        for (id, to) in arrange(&scene) {
+        for (id, to) in arrange(&scene).0 {
             moved.nodes.iter_mut().find(|n| n.id == id).unwrap().pos = to;
         }
         let x = |kind: &str| moved.nodes.iter().find(|n| n.kind == kind).map(|n| plane_rect(&moved, n, n.pos)).unwrap();
@@ -4308,7 +4579,110 @@ mod tests {
                 assert!(!plane_room(&moved, a).intersects(plane_room(&moved, b)), "{} over {}", a.kind, b.kind);
             }
         }
-        assert!(arrange(&moved).is_empty(), "arranged twice, nothing moves");
+        assert!(arrange(&moved).0.is_empty(), "arranged twice, nothing moves");
+    }
+
+    #[test]
+    fn arranging_keeps_a_groups_nodes_together_in_a_frame_of_their_own() {
+        // two chains into a Blend, framed across: each group holds the start of one and the end
+        // of the other, so by columns alone the two frames would lie over each other
+        let mut s = Session::default();
+        s.run("scene.add", json!({})).unwrap();
+        let mut add = |kind: &str| {
+            s.run("node.add", json!({ "kind": kind })).unwrap();
+            s.active().unwrap().nodes.last().unwrap().id.clone()
+        };
+        let [a1, a2, b1, b2, blend, lone, out] = ["velo.noise", "velo.blur", "velo.gradient", "velo.kaleido", "velo.blend", "velo.shapes", "velo.output"].map(&mut add);
+        for (from, to, port) in [(&a1, &a2, 0), (&b1, &b2, 0), (&a2, &blend, 0), (&b2, &blend, 1), (&blend, &out, 0)] {
+            s.run("edge.connect", json!({ "from": [from, 0], "to": [to, port] })).unwrap();
+        }
+        s.run("group.add", json!({ "nodes": [a1, b2], "name": "X" })).unwrap();
+        s.run("group.add", json!({ "nodes": [b1, a2], "name": "Y" })).unwrap();
+        let mut moved = s.active().unwrap().clone();
+        for (id, to) in arrange(&moved.clone()).0 {
+            moved.nodes.iter_mut().find(|n| n.id == id).unwrap().pos = to;
+        }
+        let room = |id: &str| plane_room(&moved, moved.node(id).unwrap());
+        // a group's frame as the canvas draws it: round its nodes, its title on top
+        let frames: Vec<Rect> = moved.groups.iter().map(|g| g.nodes.iter().map(|id| room(id)).reduce(Rect::union).unwrap().expand(GROUP_PAD)).map(|body| Rect::from_min_max(body.min - vec2(0.0, GROUP_TITLE), body.max)).collect();
+        assert!(!frames[0].intersects(frames[1]), "one frame over the other: {frames:?}");
+        for (g, frame) in moved.groups.iter().zip(&frames) {
+            for n in moved.nodes.iter().filter(|n| !g.nodes.contains(&n.id)) {
+                assert!(!frame.intersects(room(&n.id)), "{} in {}'s frame", n.name, g.name);
+            }
+        }
+        for (i, a) in moved.nodes.iter().enumerate() {
+            for b in &moved.nodes[i + 1..] {
+                assert!(!room(&a.id).intersects(room(&b.id)), "{} over {}", a.name, b.name);
+            }
+        }
+        assert!(room(&blend).right() < room(&out).left() && room(&lone).right() < room(&out).left(), "the Output last");
+        assert!(arrange(&moved).0.is_empty(), "arranged twice, nothing moves");
+    }
+
+    #[test]
+    fn a_trace_runs_level_upright_or_at_45_and_through_its_bends() {
+        let (a, b) = (pos2(0.0, 0.0), pos2(300.0, 170.0));
+        // on its own, through a bend, through a bundle's tie; forward, climbing, going back
+        let bend = (pos2(120.0, -60.0), BEND_RUN);
+        let tie = (pos2(200.0, 240.0), TIE_RUN);
+        for (to, through) in [(b, vec![]), (b, vec![bend]), (b, vec![bend, tie]), (pos2(40.0, 400.0), vec![]), (pos2(-200.0, 90.0), vec![bend])] {
+            let pts = traced(a, to, &through, 1.0);
+            assert_eq!((pts[0], pts[pts.len() - 1]), (a, to));
+            assert_eq!((pts[1].y, pts[pts.len() - 2].y), (a.y, to.y), "level out of the output and into the input");
+            for pair in pts.windows(2) {
+                let d = pair[1] - pair[0];
+                assert!(d.x.abs() < 0.01 || d.y.abs() < 0.01 || (d.x.abs() - d.y.abs()).abs() < 0.01, "a run that's neither level, upright nor at 45°: {d:?} in {pts:?}");
+            }
+            for (p, run) in &through {
+                assert!(pts.iter().any(|q| q.distance(*p) < 0.01) || *run > BEND_RUN, "it turns at its bend: {pts:?}");
+                assert!(near_polyline(*p, &pts, 0.5), "through {p:?}: {pts:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn arranging_gives_a_cable_that_skips_a_column_a_lane_between_the_cards() {
+        // Noise → Blur → Blend, and Noise straight into Blend's other input, past the Blur; a
+        // Gradient feeds the Blur's column too, so there's a card either side of the lane
+        let mut s = Session::default();
+        s.run("scene.add", json!({})).unwrap();
+        let mut add = |kind: &str| {
+            s.run("node.add", json!({ "kind": kind })).unwrap();
+            s.active().unwrap().nodes.last().unwrap().id.clone()
+        };
+        let [noise, blur, kaleido, blend, mix] = ["velo.noise", "velo.blur", "velo.kaleido", "velo.blend", "velo.blend"].map(&mut add);
+        for (from, to, port) in [(&noise, &blur, 0), (&noise, &kaleido, 0), (&blur, &mix, 0), (&kaleido, &mix, 1), (&mix, &blend, 0), (&noise, &blend, 1)] {
+            s.run("edge.connect", json!({ "from": [from, 0], "to": [to, port] })).unwrap();
+        }
+        let scene = s.active().unwrap().clone();
+        let (moves, ties) = arrange(&scene);
+        let mut moved = scene.clone();
+        for (id, to) in moves {
+            moved.nodes.iter_mut().find(|n| n.id == id).unwrap().pos = to;
+        }
+        // the long wire's lane: a tie into and out of each of the two columns it crosses
+        let long = velo_core::Tie::wire(&(blend.clone(), 1));
+        let lane: Vec<Pos2> = ties.iter().filter(|(_, cables)| cables.contains(&long)).map(|(at, _)| pos2(at[0], at[1])).collect();
+        assert_eq!((lane.len(), ties.len()), (4, 4), "{ties:?}");
+        let rooms: Vec<Rect> = moved.nodes.iter().map(|n| plane_room(&moved, n)).collect();
+        for pair in lane.chunks(2) {
+            assert_eq!(pair[0].y, pair[1].y, "level through the column");
+            for r in &rooms {
+                assert!(!r.expand(4.0).intersects(Rect::from_two_pos(pair[0], pair[1])), "the lane {pair:?} runs under a card {r:?}");
+            }
+        }
+        // and as a trace the whole cable keeps off every card but its own two
+        let (a, b) = plane_ends(&moved, &long, &|n| n.pos).unwrap();
+        let mut through: Vec<(Pos2, f32)> = lane.iter().map(|p| (*p, BEND_RUN)).collect();
+        through.sort_by(|p, q| p.0.x.total_cmp(&q.0.x));
+        let pts = traced(a, b, &through, 1.0);
+        for (n, r) in moved.nodes.iter().zip(&rooms).filter(|(n, _)| n.id != noise && n.id != blend) {
+            for pair in pts.windows(2) {
+                let steps = (pair[0].distance(pair[1]) / 4.0).ceil().max(1.0) as usize;
+                assert!((0..=steps).all(|k| !r.contains(pair[0] + (pair[1] - pair[0]) * (k as f32 / steps as f32))), "the cable crosses {}", n.name);
+            }
+        }
     }
 
     #[test]
@@ -4803,6 +5177,39 @@ mod tests {
         assert_eq!(jacks(&h.scene().nodes[0]).len(), 1, "a jack on its card");
         h.app.run("edit.undo", json!({}));
         assert!(h.scene().nodes[0].mappings.is_empty());
+    }
+
+    #[test]
+    fn a_shared_signal_sits_on_a_scenes_canvas_linked_and_locked_until_edit_here() {
+        let mut h = Harness::new();
+        // a Smooth of the scene, shared: a linked node stands where it was
+        h.app.run("node.add", json!({ "kind": velo_core::SMOOTH, "name": "Pump", "pos": [0, 400] }));
+        let smooth = h.scene().nodes.last().unwrap().id.clone();
+        h.app.run("node.share", json!({ "nodes": [smooth] }));
+        let link = h.scene().nodes.last().unwrap().clone();
+        assert_eq!((link.kind.as_str(), link.name.as_str(), link.link.clone()), (velo_core::SHARED_IN, "Pump", Some(velo_core::shared_key(&smooth, 0))));
+        assert!(h.app.session.project.shared.node(&smooth).is_some());
+        // selected: the shared Smooth's settings in its inspector, locked until Edit here is on
+        h.app.canvas.selected = vec![link.id.clone()];
+        h.ctx.enable_accesskit();
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        let switch = h.widget("Edit here").expect("the lock in the Shared node's inspector");
+        assert!(!h.app.canvas.unlocked.contains(&smooth), "locked to start with");
+        h.click(switch.center());
+        assert!(h.app.canvas.unlocked.contains(&smooth), "unlocked for the session");
+        // a setting changed from the scene lands in the shared signals, where every scene reads it
+        h.app.run("node.set_param", json!({ "node": smooth, "param": "rise_ms", "value": 50.0 }));
+        assert_eq!(h.app.session.project.shared.node(&smooth).unwrap().params["rise_ms"][0], 50.0);
+        // the node menu lists it under Shared: picked, another node linked to it
+        h.app.canvas.selected.clear();
+        h.app.canvas.menu = Some(Menu::new(pos2(600.0, 400.0), None, None, None));
+        h.frame(Vec::new());
+        h.text("pump");
+        h.key(Key::Enter, NONE);
+        let added = h.scene().nodes.last().unwrap();
+        assert_eq!((added.name.as_str(), added.link.clone()), ("Pump 2", Some(velo_core::shared_key(&smooth, 0))));
+        assert!(added.id != link.id && h.app.canvas.menu.is_none());
     }
 
     #[test]

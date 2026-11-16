@@ -36,7 +36,7 @@ Abridged from a real file:
 
 ```ron
 (
-    format: 6,
+    format: 7,
     name: "Untitled",
     canvas: (width: 1920, height: 1080, fps: 60),
     scenes: [(
@@ -92,6 +92,7 @@ Abridged from a real file:
 - A scene's `silence: true` makes it the one the autopilot holds while the music is silent (scenes.md §3), on one scene at most; left out otherwise. It needs no format step: an older Velo skips the field and simply never goes to it.
 - `params` holds only the values the user changed, one vec4 each (a float uses the first number); the rest keep the shader header's defaults.
 - A mapping's `source` is a signal node's output, `"<node id>/<output index>"` (here the scene's Audio In, output 6: the hat), or an output of the shared signals, `"shared:<node id>/<output index>"`.
+- A Shared node (`kind: "velo.shared"`) has a `link`, the output of the shared signals it stands for on its scene's canvas, named as a mapping names it (`link: Some("shared:n_Kq9P/0")`).
 - `shared` is the shared signal graph (graph.md §3): scene-shaped (its `id` is always `"shared"`, whatever a hand-edited file says; its `launch` means nothing), only its signal nodes run. Left out while it has no nodes, groups or notes.
 - `media` holds an Image or Video node's file (or folder of frames) and a Text node's font file, as an absolute path; `text` holds a Text node's words.
 - UI-only data lives inline and the engine ignores it: node positions, a node's emoji `icon`, a scene's cable `ties` (each `(id, pos, cables)`, a cable named by where it ends: a wire by its input, `"n_ab12/0"`, a signal's line by the node it moves and its source, `"n_cd34 n_ef56/2"`).
@@ -124,3 +125,4 @@ A file parses into the current model (new fields have defaults), then `Project::
 | 3 | 4 | A Shader node that reads an input (one is wired in, or its header asks for a texture) becomes a Shader FX |
 | 4 | 5 | Nothing in the file: a binding's control may now be a key (`Key("4")`), which format 4 has no name for. An older Velo refuses a format 5 file and never misreads it: by its number ("saved by a newer Velo") when no key is bound, and as not a valid project when one is, since it stops at the word it doesn't know before it gets to the number |
 | 5 | 6 | Nothing in the file: a project may now hold `shared` signals and mappings reading them (`"shared:n_ab12/0"`), which format 5 has no idea of. A format-5 Velo refuses a format 6 file by its number (it would skip `shared` and leave those mappings moving nothing) |
+| 6 | 7 | Nothing in the file: a scene may now hold Shared nodes (`velo.shared`), each with a `link` to an output of the shared signals. A format-6 Velo refuses a format 7 file by its number (it would load them as nodes of a kind it doesn't know, reading nothing) |

@@ -789,6 +789,7 @@ mod tests {
             media: None,
             text: None,
             icon: String::new(),
+            link: None,
         });
         write_bundle(&dir, &project).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("shaders/tunnel.wgsl")).unwrap(), velo_engine::TEMPLATE);

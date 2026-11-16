@@ -100,7 +100,12 @@ A show often reads the music the same way in every scene: one kick made of the b
 - Its nodes' outputs show up on the deck's sources, marked with a 📡. Drag one onto any slider, in any scene.
 - They run once for the whole show, whichever scenes are on: the live one, one fading out, the layers, the one you edit. Two scenes crossfading on one shared kick pulse together.
 - Change a threshold in the shared signals and every scene follows. Select a shared node to see what it moves in every scene, and change any of those links from there.
-- A card moved by a shared signal has a jack for it, like any other, with no cable on the canvas: its node lives on the shared canvas.
+- A card moved by a shared signal dragged from the deck has a jack for it, with no cable on the canvas: its node lives on the shared canvas.
+- To see it on the scene's canvas, add it as a node: press <kbd>Tab</kbd> and pick it under **Shared**. You get a card linked to the shared signal, with a cable to whatever it moves, and you can wire it into the scene's own signal nodes.
+- Built something in a scene that every scene should have? Select its signal nodes (a whole group, or one), right-click and choose **Share with every scene**. They move to the shared signals, and a linked card stays in their place, wired as before.
+- Want this scene to go its own way? Right-click the linked card and choose **Make local**: the scene gets its own copy of that signal and of what feeds it, and the other scenes keep the shared one.
+- A scene whose sliders read shared signals through jacks alone can show them all as linked cards: open the command palette and run **Show Shared Signals**.
+- A linked card's settings are locked: they belong to the shared signals. Turn **Edit here** on in its inspector to change them without leaving the scene. It tells you how many scenes read that signal, because the change reaches all of them.
 
 <figure>
   <img src="/shots/shared.jpg" alt="The Shared signals canvas: Audio In feeding a Beat Kick named Pump, an Energy follower and their product, the shared signals entry lit at the top of the scenes panel, a scene playing in the preview" />

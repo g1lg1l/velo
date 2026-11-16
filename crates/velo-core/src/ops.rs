@@ -75,6 +75,9 @@ struct AddNode {
     text: Option<String>,
     #[serde(default)]
     icon: String,
+    /// A Shared node's output of the shared signals ("shared:n_ab12/0").
+    #[serde(default)]
+    link: Option<String>,
     #[serde(default)]
     scene: Option<String>,
 }
@@ -570,7 +573,7 @@ pub static OPERATORS: &[Operator] = &[
         undo: true,
         poll: has_scenes,
         exec: |s, v| {
-            let AddNode { kind, pos, name, mut params, mappings, code, media, text, icon, scene: scene_id } = props(v)?;
+            let AddNode { kind, pos, name, mut params, mappings, code, media, text, icon, link, scene: scene_id } = props(v)?;
             if kind == AUDIO {
                 params.entry("hidden".into()).or_insert([AUDIO_HIDDEN, 0.0, 0.0, 0.0]);
             }
@@ -580,7 +583,16 @@ pub static OPERATORS: &[Operator] = &[
             if scene.id == SHARED && !shareable(&kind) {
                 return Err(format!("the shared signals take signal nodes only (no Probe: there's no picture to read), not {}", info.label));
             }
-            let base = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).unwrap_or_else(|| info.label.to_string());
+            // a Shared node: the shared output it's linked to, named after it
+            let (link, linked) = if kind == SHARED_IN {
+                let (to, port) = link.as_deref().and_then(shared_output).ok_or("a Shared node needs link, an output of the shared signals (\"shared:n_ab12/0\")")?;
+                let n = s.project.shared.node(to).filter(|n| node_kind(&n.kind).is_some_and(|k| usize::from(port) < k.outputs.len())).ok_or_else(|| format!("the shared signals have no output {to}/{port}"))?;
+                (Some(shared_key(to, port)), Some(n.name.clone()))
+            } else {
+                (None, None)
+            };
+            let scene = s.graph_mut(scene_id.as_deref())?;
+            let base = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).or(linked).unwrap_or_else(|| info.label.to_string());
             let taken = |name: &str| scene.nodes.iter().any(|n| n.name == name);
             let name = if taken(&base) { (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).unwrap_or(base) } else { base };
             // an ISF shader (GLSL) keeps ISF's extension, so editors know it
@@ -588,7 +600,7 @@ pub static OPERATORS: &[Operator] = &[
             let file = is_shader(&kind).then(|| shader_file(&s.project, &name, if isf { "fs" } else { "wgsl" }));
             let scene = s.graph_mut(scene_id.as_deref())?;
             let text = first_text(&kind).map(|first| text.unwrap_or(first));
-            scene.nodes.push(Node { id, kind, name, off: false, pos, params, mappings, code, file, media, text, icon: short_icon(&icon) });
+            scene.nodes.push(Node { id, kind, name, off: false, pos, params, mappings, code, file, media, text, icon: short_icon(&icon), link });
             Ok(())
         },
     },
@@ -868,6 +880,269 @@ pub static OPERATORS: &[Operator] = &[
         },
     },
     Operator {
+        id: "node.share",
+        label: "Share Signals",
+        description: "Move signal nodes of a scene (a whole group of them, or one) into the shared signals, which run once for every scene, and leave a Shared node linked to each of their outputs the scene uses (the last node's, if it uses none) in their place: its wires and mappings now read those. Refused if one is no signal node (or a Probe), is fed by a node that stays in the scene, or has a parameter a signal moves. A group picked whole goes with its name.",
+        example: r#"{"nodes": ["n_ab12", "n_cd34"]}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let NodeRef { nodes, scene, .. } = props(v)?;
+            let graph = s.graph_mut(scene.as_deref())?;
+            if graph.id == SHARED {
+                return Err("these are shared already".into());
+            }
+            let scene_id = graph.id.clone();
+            let picked: Vec<String> = graph.nodes.iter().filter(|n| nodes.contains(&n.id)).map(|n| n.id.clone()).collect();
+            if picked.is_empty() {
+                return Err("nodes of this scene are required".into());
+            }
+            let goes = |id: &str| picked.iter().any(|p| p == id);
+            let name_of = |id: &str| graph.node(id).map_or_else(|| id.to_string(), |n| n.name.clone());
+            for n in graph.nodes.iter().filter(|n| goes(&n.id)) {
+                if !shareable(&n.kind) {
+                    return Err(format!("{} can't be shared: the shared signals take signal nodes only (no Probe)", n.name));
+                }
+                if !n.mappings.is_empty() {
+                    return Err(format!("{} has a parameter a signal moves, which the shared signals can't: unplug it first", n.name));
+                }
+            }
+            if let Some(e) = graph.edges.iter().find(|e| goes(&e.to.0) && !goes(&e.from.0)) {
+                return Err(format!("{} is fed by {}, which stays in the scene: share it too", name_of(&e.to.0), name_of(&e.from.0)));
+            }
+            // the outputs the scene goes on reading, in its wires' then its mappings' order
+            let mut used: Vec<(String, u8)> = Vec::new();
+            let wires = graph.edges.iter().filter(|e| goes(&e.from.0) && !goes(&e.to.0)).map(|e| e.from.clone());
+            let maps = graph.nodes.iter().filter(|n| !goes(&n.id)).flat_map(|n| &n.mappings).filter_map(|m| signal_output(&m.source)).filter(|(id, _)| goes(id)).map(|(id, port)| (id.to_string(), port));
+            for output in wires.chain(maps) {
+                if !used.contains(&output) {
+                    used.push(output);
+                }
+            }
+            // none: the last node of the chain, what it was built for
+            if used.is_empty() {
+                let last = picked.iter().rev().find(|id| !graph.edges.iter().any(|e| e.from.0 == **id && goes(&e.to.0))).unwrap_or(&picked[picked.len() - 1]);
+                used.push((last.clone(), 0));
+            }
+            let mut fresh: Vec<String> = Vec::new();
+            for _ in &used {
+                fresh.push(new_id("n_", |id| s.project.graphs().any(|c| c.node(id).is_some()) || fresh.iter().any(|f| f == id)));
+            }
+            let Project { scenes, shared, .. } = &mut s.project;
+            let graph = scenes.iter_mut().find(|c| c.id == scene_id).ok_or("no such scene")?;
+            // below what's shared already, as they stood
+            let bottom = shared.nodes.iter().map(|n| n.pos[1]).fold(f32::NEG_INFINITY, f32::max);
+            let top = graph.nodes.iter().filter(|n| goes(&n.id)).map(|n| n.pos[1]).fold(f32::INFINITY, f32::min);
+            let dy = if bottom.is_finite() { bottom + 200.0 - top } else { 0.0 };
+            // a group picked whole goes along; a Shared node reading its only output takes its name
+            let (whole, rest): (Vec<Group>, Vec<Group>) = std::mem::take(&mut graph.groups).into_iter().partition(|g| g.nodes.iter().all(|n| goes(n)));
+            graph.groups = rest;
+            let mut links: Vec<Node> = Vec::new();
+            for (k, (id, port)) in used.iter().enumerate() {
+                let Some(n) = graph.node(id) else { continue };
+                let outputs = node_kind(&n.kind).map_or(&[][..], |kind| kind.outputs);
+                let group = whole.iter().find(|g| g.nodes.contains(id)).filter(|g| used.iter().filter(|(u, _)| g.nodes.contains(u)).count() == 1);
+                let base = match (group, outputs.get(usize::from(*port))) {
+                    (Some(g), _) => g.name.clone(),
+                    (None, Some(output)) if outputs.len() > 1 => format!("{} {output}", n.name),
+                    _ => n.name.clone(),
+                };
+                let taken = |name: &str| graph.nodes.iter().filter(|n| !goes(&n.id)).chain(&links).any(|n| n.name == name);
+                let name = if taken(&base) { (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).unwrap_or(base) } else { base };
+                // where the node stood, one under another when it had several outputs in use
+                let under = used[..k].iter().filter(|(u, _)| u == id).count() as f32;
+                let link = Node {
+                    id: fresh[k].clone(),
+                    kind: SHARED_IN.into(),
+                    name,
+                    off: false,
+                    pos: [n.pos[0], n.pos[1] + under * 160.0],
+                    params: BTreeMap::new(),
+                    mappings: Vec::new(),
+                    code: None,
+                    file: None,
+                    media: None,
+                    text: None,
+                    icon: String::new(),
+                    link: Some(shared_key(id, *port)),
+                };
+                links.push(link);
+            }
+            let reads = |source: &str| signal_output(source).and_then(|(id, port)| used.iter().position(|u| u.0 == id && u.1 == port)).map(|k| format!("{}/0", links[k].id));
+            for e in graph.edges.iter_mut().filter(|e| !goes(&e.to.0)) {
+                if let Some(k) = used.iter().position(|u| *u == e.from) {
+                    e.from = (links[k].id.clone(), 0);
+                }
+            }
+            for n in graph.nodes.iter_mut().filter(|n| !goes(&n.id)) {
+                for m in &mut n.mappings {
+                    if let Some(new) = reads(&m.source) {
+                        // its tie holds the cable where it now starts
+                        let (was, now) = (Tie::line(&n.id, &m.source), Tie::line(&n.id, &new));
+                        for cable in graph.ties.iter_mut().flat_map(|t| &mut t.cables).filter(|c| **c == was) {
+                            cable.clone_from(&now);
+                        }
+                        m.source = new;
+                    }
+                }
+            }
+            for g in &mut graph.groups {
+                g.nodes.retain(|n| !goes(n));
+            }
+            graph.groups.retain(|g| !g.nodes.is_empty());
+            for m in &mut graph.macros {
+                m.targets.retain(|t| !goes(&t.node));
+            }
+            let (moved, stay): (Vec<Node>, Vec<Node>) = std::mem::take(&mut graph.nodes).into_iter().partition(|n| goes(&n.id));
+            graph.nodes = stay;
+            graph.nodes.extend(links);
+            let (inner, kept): (Vec<Edge>, Vec<Edge>) = std::mem::take(&mut graph.edges).into_iter().partition(|e| goes(&e.from.0));
+            graph.edges = kept;
+            shared.edges.extend(inner.into_iter().filter(|e| goes(&e.to.0)));
+            for mut n in moved {
+                let taken = |name: &str| shared.nodes.iter().any(|n| n.name == name);
+                if taken(&n.name) {
+                    n.name = (2..).map(|k| format!("{} {k}", n.name)).find(|x| !taken(x)).unwrap_or(n.name);
+                }
+                n.pos[1] += dy;
+                shared.nodes.push(n);
+            }
+            for mut g in whole {
+                g.id = new_id("g_", |id| shared.groups.iter().any(|g| g.id == id));
+                shared.groups.push(g);
+            }
+            Ok(())
+        },
+    },
+    Operator {
+        id: "node.make_local",
+        label: "Make Local",
+        description: "Turn a Shared node into this scene's own copy of what it's linked to: the shared signal node and every node wired into it, with their settings and wires, where the Shared node stood. Its wires and mappings read the copy; the shared signals stay as they are for the other scenes.",
+        example: r#"{"node": "n_ab12"}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let NodeRef { node, scene, .. } = props(v)?;
+            let node = node.ok_or("node is required")?;
+            let graph = s.graph_mut(scene.as_deref())?;
+            let scene_id = graph.id.clone();
+            let link = graph.nodes[node_index(graph, &node)?].clone();
+            let linked = link.link.as_deref().filter(|_| link.kind == SHARED_IN).and_then(shared_output).map(|(id, port)| (id.to_string(), port));
+            let (to, port) = linked.ok_or_else(|| format!("{} isn't a Shared node", link.name))?;
+            let shared = &s.project.shared;
+            let end = shared.node(&to).ok_or("the shared signal it was linked to is gone")?.pos;
+            // the node behind it, then what's wired into that, upstream
+            let mut chain = vec![to.clone()];
+            let mut i = 0;
+            while i < chain.len() {
+                let feeds: Vec<String> = shared.edges.iter().filter(|e| e.to.0 == chain[i]).map(|e| e.from.0.clone()).collect();
+                for from in feeds {
+                    if !chain.contains(&from) {
+                        chain.push(from);
+                    }
+                }
+                i += 1;
+            }
+            let mut ids: BTreeMap<String, String> = BTreeMap::new();
+            for id in &chain {
+                let new = new_id("n_", |new| s.project.graphs().any(|c| c.node(new).is_some()) || ids.values().any(|v| v == new));
+                ids.insert(id.clone(), new);
+            }
+            let Project { scenes, shared, .. } = &mut s.project;
+            let graph = scenes.iter_mut().find(|c| c.id == scene_id).ok_or("no such scene")?;
+            graph.nodes.retain(|n| n.id != node);
+            // as they stand in the shared signals, the linked one where the Shared node was
+            for n in shared.nodes.iter().filter(|n| chain.contains(&n.id)) {
+                let taken = |name: &str| graph.nodes.iter().any(|n| n.name == name);
+                let name = if taken(&n.name) { (2..).map(|k| format!("{} {k}", n.name)).find(|x| !taken(x)).unwrap_or_else(|| n.name.clone()) } else { n.name.clone() };
+                graph.nodes.push(Node { id: ids[&n.id].clone(), name, pos: [n.pos[0] - end[0] + link.pos[0], n.pos[1] - end[1] + link.pos[1]], ..n.clone() });
+            }
+            for e in shared.edges.iter().filter(|e| chain.contains(&e.from.0) && chain.contains(&e.to.0)) {
+                graph.edges.push(Edge { from: (ids[&e.from.0].clone(), e.from.1), to: (ids[&e.to.0].clone(), e.to.1) });
+            }
+            // what read the Shared node reads the copy's output
+            for e in graph.edges.iter_mut().filter(|e| e.from.0 == node) {
+                e.from = (ids[&to].clone(), port);
+            }
+            let now = format!("{}/{port}", ids[&to]);
+            for n in &mut graph.nodes {
+                for m in n.mappings.iter_mut().filter(|m| signal_output(&m.source).is_some_and(|(id, _)| id == node)) {
+                    let (was, new) = (Tie::line(&n.id, &m.source), Tie::line(&n.id, &now));
+                    for cable in graph.ties.iter_mut().flat_map(|t| &mut t.cables).filter(|c| **c == was) {
+                        cable.clone_from(&new);
+                    }
+                    m.source.clone_from(&now);
+                }
+            }
+            // in the group the Shared node was in, all of them
+            for g in &mut graph.groups {
+                if let Some(at) = g.nodes.iter().position(|n| *n == node) {
+                    g.nodes.splice(at..=at, chain.iter().map(|id| ids[id].clone()));
+                }
+            }
+            Ok(())
+        },
+    },
+    Operator {
+        id: "scene.link_shared",
+        label: "Show Shared Signals",
+        description: "Put on a scene's canvas the shared signals its mappings read without a cable (\"shared:n_ab12/0\"): a Shared node for each such output, in a column left of the graph, the mappings now reading it, so each has its cable. The selected scene unless scene has an id. What it plays doesn't change.",
+        example: "{}",
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let NodeRef { scene, .. } = props(v)?;
+            let scene_id = s.scene_mut(scene.as_deref())?.id.clone();
+            let graph = s.project.scene(&scene_id).ok_or("no such scene")?;
+            // each output once, in the order the mappings name them; one that's gone is left as it is
+            let mut read: Vec<(String, u8)> = Vec::new();
+            for (id, port) in graph.nodes.iter().flat_map(|n| &n.mappings).filter_map(|m| shared_output(&m.source)) {
+                if s.project.shared.node(id).is_some() && !read.iter().any(|r| r.0 == id && r.1 == port) {
+                    read.push((id.to_string(), port));
+                }
+            }
+            if read.is_empty() {
+                return Ok(());
+            }
+            let [x, y] = graph.nodes.iter().fold([f32::INFINITY; 2], |[x, y], n| [x.min(n.pos[0]), y.min(n.pos[1])]);
+            let mut links: Vec<Node> = Vec::new();
+            for (k, (id, port)) in read.iter().enumerate() {
+                let Some(n) = s.project.shared.node(id) else { continue };
+                let outputs = node_kind(&n.kind).map_or(&[][..], |kind| kind.outputs);
+                let base = match outputs.get(usize::from(*port)) {
+                    Some(output) if outputs.len() > 1 => format!("{} {output}", n.name),
+                    _ => n.name.clone(),
+                };
+                let taken = |name: &str| graph.nodes.iter().chain(&links).any(|n| n.name == name);
+                let name = if taken(&base) { (2..).map(|i| format!("{base} {i}")).find(|n| !taken(n)).unwrap_or(base) } else { base };
+                let new = new_id("n_", |new| s.project.graphs().any(|c| c.node(new).is_some()) || links.iter().any(|l| l.id == new));
+                links.push(Node {
+                    id: new,
+                    kind: SHARED_IN.into(),
+                    name,
+                    off: false,
+                    pos: [x - 300.0, y + k as f32 * 200.0],
+                    params: BTreeMap::new(),
+                    mappings: Vec::new(),
+                    code: None,
+                    file: None,
+                    media: None,
+                    text: None,
+                    icon: String::new(),
+                    link: Some(shared_key(id, *port)),
+                });
+            }
+            let graph = s.scene_mut(Some(&scene_id))?;
+            for m in graph.nodes.iter_mut().flat_map(|n| &mut n.mappings) {
+                if let Some(k) = shared_output(&m.source).and_then(|(id, port)| read.iter().position(|r| r.0 == id && r.1 == port)) {
+                    m.source = format!("{}/0", links[k].id);
+                }
+            }
+            graph.nodes.extend(links);
+            Ok(())
+        },
+    },
+    Operator {
         id: "node.set_param",
         label: "Set Parameter",
         description: "Set one of a node's parameters by its id: a number, true/false, or a list of up to four numbers (a color, a vec2). Shaders clamp to their own ranges.",
@@ -886,6 +1161,9 @@ pub static OPERATORS: &[Operator] = &[
             if param.trim().is_empty() || slot.iter().any(|x| !x.is_finite()) {
                 return Err("a parameter id and finite values are required".into());
             }
+            // a shared signal's setting is changed from whichever scene reads it too (its Shared
+            // node's inspector): ids are unique in the project, so the node says which graph
+            let scene = scene.or_else(|| s.project.shared.node(&node).map(|_| SHARED.to_string()));
             let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
             scene.nodes[i].params.insert(param, slot);
@@ -920,6 +1198,9 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let ReplaceNode { node, kind, params, mappings, code, scene } = props(v)?;
             let new = node_kind(&kind).ok_or_else(|| format!("unknown node kind {kind}"))?;
+            if kind == SHARED_IN {
+                return Err("a Shared node is added with its link (node.add), not made from another node".into());
+            }
             let graph = s.graph_mut(scene.as_deref())?;
             let i = node_index(graph, &node)?;
             let old = graph.nodes[i].clone();
@@ -950,7 +1231,7 @@ pub static OPERATORS: &[Operator] = &[
                 }
             }
             let scene = s.graph_mut(scene.as_deref())?;
-            scene.nodes[i] = Node { kind, name, off: old.off && new.category != Category::Output, params, mappings, code, file, media, text, ..old };
+            scene.nodes[i] = Node { kind, name, off: old.off && new.category != Category::Output, params, mappings, code, file, media, text, link: None, ..old };
             // the wires that still fit (each checked as if made now), the rest go
             let edges = std::mem::take(&mut scene.edges);
             for e in edges {
@@ -1430,7 +1711,21 @@ pub(crate) fn grid_out(scene: &mut Scene) {
         None => {
             let id = new_id("n_", |id| scene.node(id).is_some());
             let pos = [scene.nodes[g].pos[0] + 260.0, scene.nodes[g].pos[1]];
-            scene.nodes.push(Node { id: id.clone(), kind: OUTPUT.into(), name: "Output".into(), off: false, pos, params: BTreeMap::new(), mappings: Vec::new(), code: None, file: None, media: None, text: None, icon: String::new() });
+            scene.nodes.push(Node {
+                id: id.clone(),
+                kind: OUTPUT.into(),
+                name: "Output".into(),
+                off: false,
+                pos,
+                params: BTreeMap::new(),
+                mappings: Vec::new(),
+                code: None,
+                file: None,
+                media: None,
+                text: None,
+                icon: String::new(),
+                link: None,
+            });
             id
         }
     };
@@ -1473,6 +1768,7 @@ pub(crate) fn signal_source(project: &mut Project, c: usize, source: &str) -> Op
         media: None,
         text: None,
         icon: String::new(),
+        link: None,
     });
     Some(format!("{id}/{port}"))
 }
@@ -1533,7 +1829,9 @@ fn adopt(p: &Project, mut scene: Scene, name: Option<String>) -> Scene {
 /// of a node `from` doesn't have keeps its name (and reads 0).
 fn import_shared(project: &mut Project, scenes: &mut [Scene], from: &Scene) {
     let mut wanted: Vec<&str> = Vec::new();
-    for (id, _) in scenes.iter().flat_map(|s| &s.nodes).flat_map(|n| &n.mappings).filter_map(|m| shared_output(&m.source)) {
+    let read = |n: &'_ Node| n.mappings.iter().map(|m| m.source.clone()).chain(n.link.clone()).collect::<Vec<_>>();
+    let sources: Vec<String> = scenes.iter().flat_map(|s| &s.nodes).flat_map(read).collect();
+    for (id, _) in sources.iter().filter_map(|source| shared_output(source)) {
         if from.node(id).is_some() && !wanted.contains(&id) {
             wanted.push(id);
         }
@@ -1567,9 +1865,15 @@ fn import_shared(project: &mut Project, scenes: &mut [Scene], from: &Scene) {
             project.shared.edges.push(Edge { from: (a.clone(), e.from.1), to: (b.clone(), e.to.1) });
         }
     }
-    for m in scenes.iter_mut().flat_map(|s| &mut s.nodes).flat_map(|n| &mut n.mappings) {
-        if let Some(key) = shared_output(&m.source).and_then(|(id, port)| Some(shared_key(ids.get(id)?, port))) {
-            m.source = key;
+    let moved = |source: &str| shared_output(source).and_then(|(id, port)| Some(shared_key(ids.get(id)?, port)));
+    for n in scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+        for m in &mut n.mappings {
+            if let Some(key) = moved(&m.source) {
+                m.source = key;
+            }
+        }
+        if let Some(key) = n.link.as_deref().and_then(moved) {
+            n.link = Some(key);
         }
     }
 }
