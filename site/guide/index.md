@@ -9,6 +9,11 @@ It is free and open source, built in Rust on wgpu, and runs on Windows and macOS
   <figcaption>The demo Velo opens with: Audio In's bands moving the V Beams shader, live.</figcaption>
 </figure>
 
+<figure>
+  <video controls preload="none" playsinline poster="/velo.jpg" src="/velo.mp4" style="width: 100%; border-radius: 10px"></video>
+  <figcaption>Forty seconds of Velo: a scene from nothing, the kick on a slider, launched on the beat.</figcaption>
+</figure>
+
 ## Who it is for
 
 - **DJs and producers** who want visuals for their own sets with no VJ background. Velo opens on a demo that already moves with whatever the computer plays.

@@ -28,6 +28,7 @@ mod markdown;
 mod midi;
 mod orb;
 mod osc;
+mod reel;
 mod shell;
 mod specimen;
 mod templates;
@@ -406,6 +407,8 @@ struct App {
     space: Option<(f64, bool)>,
     /// `VELO_DEMO_SCENES`: a scene to select once the first one is live, and whether to launch it.
     demo_drop: Option<(String, bool)>,
+    /// `VELO_REEL`: the film being made of this run, its script playing the pointer and the keys.
+    reel: Option<reel::Reel>,
     /// The start screen is up: the recent projects, a new one, one from a file, the demo.
     start: bool,
     /// When the last UI frame started: the next one never comes sooner than the display needs.
@@ -474,6 +477,7 @@ impl App {
             assigning: None,
             space: None,
             demo_drop: None,
+            reel: None,
             start: false,
             painted: Instant::now(),
             waited: 0.0,
@@ -514,6 +518,7 @@ impl App {
                 }
             }
         }
+        app.reel = reel::Reel::from_env();
         // VELO_DEMO_ARRANGE: the first scene shown arranged, as the toolbar's button does (screenshots)
         app.canvas.arrange = std::env::var_os("VELO_DEMO_ARRANGE").is_some();
         // VELO_DEMO_FIND=words: the canvas' search open with them typed (screenshots)
@@ -3938,6 +3943,7 @@ impl App {
             assigning: None,
             space: None,
             demo_drop: None,
+            reel: None,
             start: false,
             painted: Instant::now(),
             waited: 0.0,
@@ -4045,6 +4051,9 @@ impl eframe::App for App {
         }
         files::capture_to_file(&ctx);
         self.draw(ui);
+        if let Some(reel) = &mut self.reel {
+            reel.frame(&ctx);
+        }
         // live: at the preview's rate (it comes at most every 16 ms); else a frame a second at
         // rest, for the autosave check
         ctx.request_repaint_after(if self.live.is_some() { Duration::from_millis(16) } else { Duration::from_secs(1) });
@@ -4054,6 +4063,10 @@ impl eframe::App for App {
     /// Screenshot runs take no input: macOS still focuses the off-screen capture window, and
     /// keys, scrolls and pinches meant for other apps would edit or move what's captured.
     fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // VELO_REEL: the film's script is the mouse and the keys
+        if let Some(reel) = &mut self.reel {
+            return reel.input(raw_input);
+        }
         if std::env::var_os("VELO_CAPTURE_TO").is_some() {
             raw_input.events.clear();
             let at = |var: &str| std::env::var(var).ok().and_then(|v| v.split_once(',').and_then(|(x, y)| Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))));
@@ -4095,6 +4108,9 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self) {
+        if let Some(reel) = &mut self.reel {
+            reel.finish();
+        }
         self.exit_cleanup();
         self.finish_update();
     }
