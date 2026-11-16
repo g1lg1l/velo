@@ -550,7 +550,7 @@ pub(crate) fn read(mut response: ureq::http::Response<ureq::Body>) -> Result<Val
     let status = response.status();
     let text = response.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| e.to_string())?;
     if !status.is_success() {
-        let message = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["error"]["message"].as_str().or(v["error"].as_str()).map(String::from)).unwrap_or(text);
+        let message = serde_json::from_str::<Value>(&text).ok().and_then(|v| v["error"]["message"].as_str().or(v["message"].as_str()).or(v["error"].as_str()).map(String::from)).unwrap_or(text);
         return Err(format!("{status}: {message}"));
     }
     serde_json::from_str(&text).map_err(|e| e.to_string())

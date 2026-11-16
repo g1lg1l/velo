@@ -425,6 +425,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Turbo models: 1 to 8. Others: 20 or more.", "Modelli Turbo: da 1 a 8. Gli altri: 20 o più."),
     ("Asking…", "Chiedo…"),
     ("It answers.", "Risponde."),
+    ("{} new, held while this scene is on the output: adding them rebuilds it, a black frame or two.", "{} nuove, tenute da parte finché questa scena è in uscita: aggiungerle la ricostruisce, un fotogramma nero o due."),
+    ("Add them now", "Aggiungile ora"),
     ("In order", "In ordine"),
     ("At random", "A caso"),
     ("Every", "Ogni"),

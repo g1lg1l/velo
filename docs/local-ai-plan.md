@@ -2,9 +2,9 @@
 
 Branch `feat/local-ai`, base `e900be2` (0.9.6-beta).
 
-**Stato:** F1 (AI Image, txt2img manuale) implementata e coperta da test, incluso un
-round-trip HTTP contro un finto server; **non ancora provata con un modello vero**
-(serve F0: sd-server + pesi scaricati). F0 misure, F2–F4 da fare. Documento di lavoro, in italiano:
+**Stato (2026-11-16):** F1 (AI Image, txt2img manuale) implementata e **provata contro un
+modello vero**: dall'inspector (headless) a Genera, all'immagine nel nodo, con
+Z-Image-Turbo su sd-server. F0 fatta, numeri in §3.1. F2 e F3 da fare; F4 bocciata dalle misure. Documento di lavoro, in italiano:
 prima di un PR upstream va tradotto o tolto (CONTRIBUTING chiede un'issue prima di
 toccare il decision log, e questo lo tocca: vedi §6).
 
@@ -134,6 +134,42 @@ Ogni fase è un PR piccolo (CONTRIBUTING: "one concern each"), con test.
   (Z-Image-Turbo, klein 4B, SD-Turbo); RAM con LLM della chat caricato in parallelo.
 - *Done:* numeri reali, scelta del default.
 
+### 3.1 Risultati F0 (MacBook M5 Pro 64 GB, 2026-11-16)
+
+Setup: stable-diffusion.cpp `532d2c1` compilato con Metal, `sd-server` con
+Z-Image-Turbo Q4_K (3,86 GB) + Qwen3-4B-Instruct-2507 Q4_K_M come text encoder (2,50 GB)
++ VAE `ae.safetensors` (0,34 GB), tutti Apache-2.0, `--cfg-scale 1.0`. Flash attention
+attiva (probe automatico), nessun carico concorrente sulla GPU. Richieste identiche a quelle
+di Velo (`<sd_cpp_extra_args>` con seed e step).
+
+| Dimensione | Step | Totale per immagine | Di cui sampling | Note |
+|---|---|---|---|---|
+| 512 | 8 | 16,0 / 17,5 / 18,2 s | 14,5–16,6 s | prima richiesta a freddo: 23,7 s |
+| 512 | 4 | 9,7 / 9,6 s | 8,1 s | qualità buona per proiezione, appena più morbida → **default 4** |
+| 768 | 8 | 45,0 / 53,8 s | 40,8–49,6 s | |
+| 1024 | 8 | 99,4 s | 92,3 s | sampling superlineare nei pixel (attenzione) |
+
+- **Memoria:** sd-server occupa ~7,2 GB (phys_footprint), di cui 6,2 GB di pesi, tutti in
+  GPU. Su 64 GB convive con Velo e un LLM per la chat; su 16 GB no.
+- **Round trip da Velo:** click su Genera nell'inspector → file nel nodo in **8,7 s**
+  (512, 4 step), un passo di undo (`an_ai_image_fills_from_a_real_server`, `#[ignore]`).
+- **Bug trovati grazie al server vero** (e corretti): sd.cpp legge gli step da
+  `sample_params.sample_steps`, non da `sample_steps` al primo livello (venivano ignorati
+  in silenzio); gli errori 500 di sd-server hanno il testo in `message`, non in `error`.
+- **Porta:** il default di sd-server è davvero 1234 (`--listen-port`), come LM Studio.
+
+**Verdetti sui gate:**
+- **G1** — una pool di 8 immagini a 512 si fa in ~80 s: va bene per preparare tra un
+  pezzo e l'altro o tra due set, non per reagire al beat. Il design a pool regge.
+- **G2** — confermato leggendo `media.rs`: un file nuovo ricostruisce la scena, e il `Reel`
+  nuovo parte con la cache vuota (slot neri finché il file non ricarica, conteggio degli Hits
+  azzerato). **Mitigato in F1:** le immagini per una scena in uscita (la live, o un layer)
+  restano in attesa e entrano quando la scena esce; "Aggiungile ora" per chi lo vuole.
+  La correzione vera (il `Reel` che conserva la cache attraverso il rebuild) è un lavoro
+  di engine a sé.
+- **G3** — ~0,1 immagini/s contro le ≥2 fps richieste: **F4 (sorgente live `ai:`) bocciata**
+  con questo stack. Da riaprire solo con un modello a 1 step molto più piccolo e misurato.
+
 **F1 — AI Image MVP (txt2img, manuale)**
 - `velo-core`: kind, `is_list`, `node.add_media`, `sets_text`; test in `velo-core/src/tests.rs`
   (aggiunta, taglio a `pool`, undo, round-trip RON, kind nel catalogo).
@@ -193,9 +229,9 @@ Tutto in `crates/velo/src/ai.rs` / `chat.rs`, niente di strutturale.
 
 | # | Rischio | Gate / mitigazione |
 |---|---|---|
-| G1 | Generazione troppo lenta per l'uso live | Misura F0; il design lavora a pool pre-generato, mai per frame |
-| G2 | Un file nuovo in una scena live fa ripartire o scattare la Media List | Test in F1; fallback: file nuovi applicati al prossimo launch |
-| G3 | Realtime `ai:` irraggiungibile su Mac | Non iniziare F4 sotto 2 fps misurati |
+| G1 | Generazione troppo lenta per l'uso live | Misurato: 10 s/immagine a 512 (4 step). Pool pre-generata, mai per frame |
+| G2 | Un file nuovo in una scena live fa ripartire o scattare la Media List | Confermato. Le immagini aspettano che la scena esca dall'uscita |
+| G3 | Realtime `ai:` irraggiungibile su Mac | Misurato ~0,1 img/s: F4 bocciata |
 | G4 | Contesto troncato in silenzio sui modelli locali | §4.3 |
 | G5 | Licenze dei pesi in serate pagate | Avviso nel pannello, nessun peso distribuito |
 | G6 | Memoria: LLM + diffusione + GPU di Velo | Un job alla volta, scaricamento del modello, misura in F0 |

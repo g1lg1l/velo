@@ -35,7 +35,7 @@ pub struct Prefs {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { endpoint: PRESETS[0].1.into(), model: String::new(), size: 512, steps: 8 }
+        Self { endpoint: PRESETS[0].1.into(), model: String::new(), size: 512, steps: 4 }
     }
 }
 
@@ -55,7 +55,7 @@ pub const MOST: usize = 8;
 pub fn request(prefs: &Prefs, prompt: &str, seed: i64) -> Value {
     let size = format!("{0}x{0}", prefs.size);
     let sd_cpp = ai::host(&prefs.endpoint) == ai::host(PRESETS[0].1);
-    let prompt = if sd_cpp { format!("{prompt}<sd_cpp_extra_args>{}</sd_cpp_extra_args>", json!({ "seed": seed, "sample_steps": prefs.steps })) } else { prompt.to_string() };
+    let prompt = if sd_cpp { format!("{prompt}<sd_cpp_extra_args>{}</sd_cpp_extra_args>", json!({ "seed": seed, "sample_params": { "sample_steps": prefs.steps } })) } else { prompt.to_string() };
     let mut body = json!({ "prompt": prompt, "n": 1, "size": size, "response_format": "b64_json", "seed": seed, "steps": prefs.steps });
     if !prefs.model.trim().is_empty() {
         body["model"] = json!(prefs.model.trim());
@@ -197,13 +197,42 @@ impl Drop for Job {
 pub struct Gens {
     jobs: HashMap<String, Job>,
     failed: HashMap<String, String>,
+    /// Pictures made for a node of a scene on the output, held until it leaves: a file added to
+    /// a list rebuilds its scene, and a rebuilt list starts its slots empty (a black frame or
+    /// two, the hits counted from naught), which the audience mustn't see.
+    waiting: HashMap<String, Vec<PathBuf>>,
     /// The endpoint's test, while it runs and once it answered.
     checking: Option<Receiver<Result<String, String>>>,
     checked: Option<Result<String, String>>,
 }
 
+#[cfg(test)]
+impl Gens {
+    /// What went wrong with a node's last pictures, as its inspector says it.
+    pub fn failed(&self, node: &str) -> Option<&str> {
+        self.failed.get(node).map(String::as_str)
+    }
+}
+
 impl App {
-    /// Pictures that came: each added to its node, in whichever scene it is, one undo step each.
+    /// The scene a node is in, and whether it's on the output: the live one, or a layer (on
+    /// or off: a layer can come on at any time).
+    fn node_scene(&self, node: &str) -> Option<(String, bool)> {
+        let scene = self.session.project.graphs().find(|s| s.node(node).is_some())?;
+        let live = self.live.as_ref().and_then(|l| l.live_scene()) == Some(scene.id.as_str());
+        Some((scene.id.clone(), live || scene.layer != velo_core::Layer::Scene))
+    }
+
+    /// Adds pictures to a node, one undo step each.
+    fn add_pictures(&mut self, node: &str, scene: &str, pictures: &[PathBuf]) {
+        for path in pictures {
+            self.session.close_merge();
+            self.run("node.add_media", json!({ "node": node, "media": path.to_string_lossy(), "scene": scene }));
+        }
+    }
+
+    /// Pictures that came: each added to its node, in whichever scene it is, one undo step each;
+    /// held while that scene is on the output, and added once it's off.
     pub fn poll_generations(&mut self) {
         let mut came = Vec::new();
         let mut finished = Vec::new();
@@ -231,13 +260,23 @@ impl App {
                 Ok(path) => {
                     self.gens.failed.remove(&node);
                     // the node may have gone meanwhile: the picture stays on disk, unplayed
-                    let Some(scene) = self.session.project.graphs().find(|s| s.node(&node).is_some()).map(|s| s.id.clone()) else { continue };
-                    self.session.close_merge();
-                    self.run("node.add_media", json!({ "node": node, "media": path.to_string_lossy(), "scene": scene }));
+                    match self.node_scene(&node) {
+                        Some((_, true)) => self.gens.waiting.entry(node).or_default().push(path),
+                        Some((scene, false)) => self.add_pictures(&node, &scene, &[path]),
+                        None => {}
+                    }
                 }
                 Err(e) => {
                     self.gens.failed.insert(node, e);
                 }
+            }
+        }
+        // held pictures whose scene went off the output
+        let off: Vec<String> = self.gens.waiting.keys().filter(|n| self.node_scene(n).is_none_or(|(_, on)| !on)).cloned().collect();
+        for node in off {
+            let pictures = self.gens.waiting.remove(&node).unwrap_or_default();
+            if let Some((scene, _)) = self.node_scene(&node) {
+                self.add_pictures(&node, &scene, &pictures);
             }
         }
         if let Some(rx) = &self.gens.checking
@@ -254,7 +293,8 @@ impl App {
         let mut prompt = n.text.clone().unwrap_or_default();
         let running = self.gens.jobs.get(node).map(|j| (j.done, j.asked));
         let failed = self.gens.failed.get(node).cloned();
-        let (mut typed, mut done, mut ask, mut stop) = (false, false, None, false);
+        let held = self.gens.waiting.get(node).map_or(0, Vec::len);
+        let (mut typed, mut done, mut ask, mut stop, mut now) = (false, false, None, false, false);
         kit::section(ui, t, icons::SPARKLE, tr!("PROMPT"), first, |ui| {
             let field = egui::TextEdit::multiline(&mut prompt).desired_rows(3).desired_width(f32::INFINITY).font(t.body()).hint_text(tr!("What the pictures show: a subject, a style, colors, light"));
             let r = ui.add(field);
@@ -279,10 +319,19 @@ impl App {
                     kit::hint(ui, t, &tr!("Made on this computer by {} (Preferences → AI and agents)", ai::host(&self.settings.imagegen.endpoint)));
                 }
             }
+            if held > 0 {
+                ui.add_space(t.gap);
+                kit::hint(ui, t, &tr!("{} new, held while this scene is on the output: adding them rebuilds it, a black frame or two.", held));
+                now = kit::actions(ui, t, &[(Variant::Outline, Some(icons::PLUS), tr!("Add them now"))])[0].clicked();
+            }
             if let Some(e) = &failed {
                 kit::warning(ui, t, e);
             }
         });
+        if now && let Some((scene, _)) = self.node_scene(node) {
+            let pictures = self.gens.waiting.remove(node).unwrap_or_default();
+            self.add_pictures(node, &scene, &pictures);
+        }
         if typed {
             self.run_merge("node.set_text", json!({ "node": node, "text": prompt }), &format!("text {node}"));
         }
@@ -389,7 +438,7 @@ mod tests {
         prefs.model.clear();
         let body = request(&prefs, "neon jellyfish", 42);
         let prompt = body["prompt"].as_str().unwrap();
-        assert!(prompt.starts_with("neon jellyfish<sd_cpp_extra_args>") && prompt.contains(r#""seed":42"#) && prompt.contains(r#""sample_steps":4"#), "{prompt}");
+        assert!(prompt.starts_with("neon jellyfish<sd_cpp_extra_args>") && prompt.contains(r#""seed":42"#) && prompt.contains(r#""sample_params":{"sample_steps":4}"#), "{prompt}");
         assert!(body.get("model").is_none());
     }
 
@@ -431,6 +480,53 @@ mod tests {
         assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["prompt"], "green");
         assert_eq!(std::fs::read(&path).unwrap(), png);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pictures_for_a_scene_on_the_output_wait_until_it_leaves() {
+        let mut app = App::for_tests();
+        app.run("scene.add", json!({}));
+        app.run("node.add", json!({ "kind": velo_core::AI_IMAGE }));
+        let node = app.session.active().unwrap().nodes[0].id.clone();
+        let files = |app: &App| velo_core::media_list(app.session.active().unwrap().node(&node).unwrap()).into_iter().map(String::from).collect::<Vec<_>>();
+        // a job whose pictures this test hands over
+        let came = |app: &mut App, path: &str| {
+            let (tx, pictures) = channel();
+            tx.send(Ok(PathBuf::from(path))).unwrap();
+            // the job's thread is done: its channel closes
+            drop(tx);
+            app.gens.jobs.insert(node.clone(), Job { pictures, stop: Arc::new(AtomicBool::new(false)), asked: 1, done: 0 });
+            app.poll_generations();
+        };
+        came(&mut app, "/gen/a.png");
+        assert_eq!(files(&app), ["/gen/a.png"], "off the output: added as it comes");
+        // a layer can come on at any time: held
+        app.run("scene.set_layer", json!({ "layer": "Top" }));
+        came(&mut app, "/gen/b.png");
+        assert_eq!(files(&app), ["/gen/a.png"]);
+        assert_eq!(app.gens.waiting[&node], [PathBuf::from("/gen/b.png")]);
+        assert!(app.gens.jobs.is_empty(), "its job done");
+        // a scene again: what waited goes in
+        app.run("scene.set_layer", json!({ "layer": "Scene" }));
+        app.poll_generations();
+        assert_eq!(files(&app), ["/gen/a.png", "/gen/b.png"]);
+        assert!(app.gens.waiting.is_empty());
+    }
+
+    /// Against a real server: `VELO_IMAGEGEN_ENDPOINT=http://127.0.0.1:1234/v1 cargo test -p velo
+    /// a_real_server -- --ignored --nocapture` (optionally `VELO_IMAGEGEN_SIZE`, `_STEPS`).
+    #[test]
+    #[ignore = "needs a local images server"]
+    fn a_real_server_makes_a_picture() {
+        let endpoint = std::env::var("VELO_IMAGEGEN_ENDPOINT").expect("VELO_IMAGEGEN_ENDPOINT");
+        let number = |name: &str, or: u32| std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(or);
+        let prefs = Prefs { endpoint, model: String::new(), size: number("VELO_IMAGEGEN_SIZE", 512), steps: number("VELO_IMAGEGEN_STEPS", 8) };
+        let dir = std::env::temp_dir().join(format!("velo-gen-real-{}", std::process::id()));
+        let started = std::time::Instant::now();
+        let path = make_in(&dir, &prefs, "neon jellyfish drifting in dark smoke, glowing cyan and magenta", 42).unwrap_or_else(|e| panic!("{e}"));
+        let picture = image::open(&path).unwrap();
+        println!("{}x{} in {:.2} s: {}", picture.width(), picture.height(), started.elapsed().as_secs_f64(), path.display());
+        assert_eq!((picture.width(), picture.height()), (prefs.size, prefs.size));
     }
 
     #[test]
