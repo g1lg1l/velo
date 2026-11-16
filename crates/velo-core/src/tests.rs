@@ -855,6 +855,38 @@ fn an_lfo_is_a_source_for_its_scene() {
 }
 
 #[test]
+fn an_ai_image_keeps_its_prompt_and_its_newest_pictures() {
+    let mut s = session();
+    let ai = add(&mut s, AI_IMAGE, 0.0);
+    let list = add(&mut s, MEDIA_LIST, 200.0);
+    let blur = add(&mut s, "velo.blur", 400.0);
+    let node = |s: &Session, id: &str| s.active().unwrap().node(id).unwrap().clone();
+    ok(&mut s, "node.set_text", json!({ "node": ai, "text": "neon jellyfish in smoke" }));
+    assert_eq!(node(&s, &ai).text.as_deref(), Some("neon jellyfish in smoke"));
+    // pictures as they come, the newest last; one already there isn't added again
+    for k in 0..3 {
+        ok(&mut s, "node.add_media", json!({ "node": ai, "media": format!("/gen/{k}.png") }));
+    }
+    ok(&mut s, "node.add_media", json!({ "node": ai, "media": "/gen/1.png" }));
+    assert_eq!(media_list(&node(&s, &ai)), ["/gen/0.png", "/gen/1.png", "/gen/2.png"]);
+    // a pool of two: the oldest goes
+    ok(&mut s, "node.set_param", json!({ "node": ai, "param": "pool", "value": 2.0 }));
+    ok(&mut s, "node.add_media", json!({ "node": ai, "media": "/gen/3.png" }));
+    assert_eq!(media_list(&node(&s, &ai)), ["/gen/2.png", "/gen/3.png"]);
+    ok(&mut s, "edit.undo", json!({}));
+    assert_eq!(media_list(&node(&s, &ai)), ["/gen/0.png", "/gen/1.png", "/gen/2.png"], "one undo step a picture");
+    // a Media List takes them too, but never drops one
+    ok(&mut s, "node.add_media", json!({ "node": list, "media": "/clips/a.mov" }));
+    assert_eq!(media_list(&node(&s, &list)), ["/clips/a.mov"]);
+    assert!(s.run("node.add_media", json!({ "node": blur, "media": "/a.png" })).is_err(), "only nodes that play a list");
+    assert!(s.run("node.add_media", json!({ "node": ai, "media": "  " })).is_err(), "no file");
+    assert!(plays_list(AI_IMAGE) && plays_list(MEDIA_LIST) && !plays_list(IMAGE));
+    // saved and back
+    let text = ron::to_string(&s.project).unwrap();
+    assert_eq!(ron::from_str::<Project>(&text).unwrap(), s.project);
+}
+
+#[test]
 fn an_image_node_takes_a_file_or_a_folder() {
     let mut s = session();
     let image = add(&mut s, IMAGE, 0.0);

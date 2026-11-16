@@ -532,7 +532,7 @@ pub fn set_key(endpoint: &str, key: &str) -> Result<(), String> {
 }
 
 /// A request that didn't get through, said plainly.
-fn unreached(endpoint: &str, e: ureq::Error) -> String {
+pub(crate) fn unreached(endpoint: &str, e: ureq::Error) -> String {
     match e {
         ureq::Error::Io(ref io) if io.kind() == std::io::ErrorKind::ConnectionRefused => tr!("Nothing answers at {}: is it running?", host(endpoint)),
         ureq::Error::ConnectionFailed | ureq::Error::Timeout(_) => tr!("Nothing answers at {}: is it running?", host(endpoint)),
@@ -541,12 +541,12 @@ fn unreached(endpoint: &str, e: ureq::Error) -> String {
     }
 }
 
-fn http() -> ureq::Agent {
+pub(crate) fn http() -> ureq::Agent {
     // a local model on a laptop can take minutes for one step
     ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(600))).timeout_connect(Some(Duration::from_secs(5))).http_status_as_error(false).build().into()
 }
 
-fn read(mut response: ureq::http::Response<ureq::Body>) -> Result<Value, String> {
+pub(crate) fn read(mut response: ureq::http::Response<ureq::Body>) -> Result<Value, String> {
     let status = response.status();
     let text = response.body_mut().with_config().limit(64 << 20).read_to_string().map_err(|e| e.to_string())?;
     if !status.is_success() {

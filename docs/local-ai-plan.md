@@ -1,6 +1,10 @@
 # Piano: AI locale in Velo (nodo AI Image + chat LLM locale)
 
-Branch `feat/local-ai`, base `e900be2` (0.9.6-beta). Documento di lavoro, in italiano:
+Branch `feat/local-ai`, base `e900be2` (0.9.6-beta).
+
+**Stato:** F1 (AI Image, txt2img manuale) implementata e coperta da test, incluso un
+round-trip HTTP contro un finto server; **non ancora provata con un modello vero**
+(serve F0: sd-server + pesi scaricati). F0 misure, F2–F4 da fare. Documento di lavoro, in italiano:
 prima di un PR upstream va tradotto o tolto (CONTRIBUTING chiede un'issue prima di
 toccare il decision log, e questo lo tocca: vedi §6).
 

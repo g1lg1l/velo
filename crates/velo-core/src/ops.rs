@@ -969,7 +969,7 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "node.set_media",
         label: "Set Image",
-        description: "Set what an Image or Video node shows: an image file (PNG, JPEG, WebP…), an animated GIF, a movie (.mov or .mp4: HAP, and on macOS H.264, HEVC or ProRes), or a folder of numbered frames played as an image sequence, by absolute path. On a Particles node, the picture each particle is, or a 3D model (.obj or .ply) they are born on with Shape Model; on a Mesh node, the 3D model (.obj or .ply with faces) it draws; on a Media List, its files, a path a line; on a Text or Text List node, its own font (.ttf or .otf), which its Font set to File shows; on a Live node, its source, ndi:<name>, spout:<name> (Windows) or camera:<name> (Windows and macOS), or program: what plays under the layer its scene is (scene.set_layer, on top), for an effect over everything. Empty clears it.",
+        description: "Set what an Image or Video node shows: an image file (PNG, JPEG, WebP…), an animated GIF, a movie (.mov or .mp4: HAP, and on macOS H.264, HEVC or ProRes), or a folder of numbered frames played as an image sequence, by absolute path. On a Particles node, the picture each particle is, or a 3D model (.obj or .ply) they are born on with Shape Model; on a Mesh node, the 3D model (.obj or .ply with faces) it draws; on a Media List or an AI Image, its files, a path a line; on a Text or Text List node, its own font (.ttf or .otf), which its Font set to File shows; on a Live node, its source, ndi:<name>, spout:<name> (Windows) or camera:<name> (Windows and macOS), or program: what plays under the layer its scene is (scene.set_layer, on top), for an effect over everything. Empty clears it.",
         example: r#"{"node": "n_ab12", "media": "/Users/me/Loops/tunnel.gif"}"#,
         undo: true,
         poll: has_scenes,
@@ -977,17 +977,52 @@ pub static OPERATORS: &[Operator] = &[
             let SetMedia { node, media, scene } = props(v)?;
             let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
-            if !shows_media(&scene.nodes[i].kind) && !sets_text(&scene.nodes[i].kind) && ![MEDIA_LIST, PARTICLES, MESH, LIVE].contains(&scene.nodes[i].kind.as_str()) {
-                return Err(format!("{node} isn't an Image, Video, Live, Media List, Particles, Mesh, Text or Text List node"));
+            if !shows_media(&scene.nodes[i].kind) && !sets_text(&scene.nodes[i].kind) && ![MEDIA_LIST, AI_IMAGE, PARTICLES, MESH, LIVE].contains(&scene.nodes[i].kind.as_str()) {
+                return Err(format!("{node} isn't an Image, Video, Live, Media List, AI Image, Particles, Mesh, Text or Text List node"));
             }
             scene.nodes[i].media = Some(media.trim().to_string()).filter(|m| !m.is_empty());
             Ok(())
         },
     },
     Operator {
+        id: "node.add_media",
+        label: "Add a File",
+        description: "Add a file at the end of what a Media List or an AI Image plays, by absolute path. An AI Image keeps its newest pictures, as many as its Pool says: the oldest goes. A file it already plays isn't added twice.",
+        example: r#"{"node": "n_ab12", "media": "/Users/me/Pictures/one.png"}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let SetMedia { node, media, scene } = props(v)?;
+            let scene = s.graph_mut(scene.as_deref())?;
+            let i = node_index(scene, &node)?;
+            let n = &mut scene.nodes[i];
+            if !plays_list(&n.kind) {
+                return Err(format!("{node} isn't a Media List or an AI Image node"));
+            }
+            let media = media.trim();
+            if media.is_empty() {
+                return Err("no file to add".into());
+            }
+            let mut files: Vec<String> = media_list(n).into_iter().map(String::from).collect();
+            if files.iter().any(|f| f == media) {
+                return Ok(());
+            }
+            files.push(media.to_string());
+            let room = list_room(n);
+            if n.kind == AI_IMAGE {
+                // the newest stay
+                files.drain(..files.len().saturating_sub(room));
+            } else if files.len() > room {
+                return Err(format!("a Media List plays {room} files at most"));
+            }
+            n.media = Some(files.join("\n"));
+            Ok(())
+        },
+    },
+    Operator {
         id: "node.set_text",
         label: "Set Text",
-        description: "Set the words a Text node shows; a newline starts another line. On a Text List each item starts with the record separator (U+001E) and may run over lines; words without one are an item a line.",
+        description: "Set the words a Text node shows; a newline starts another line. On a Text List each item starts with the record separator (U+001E) and may run over lines; words without one are an item a line. On an AI Image, the prompt its pictures are made from.",
         example: r#"{"node": "n_ab12", "text": "VELO"}"#,
         undo: true,
         poll: has_scenes,
@@ -995,8 +1030,8 @@ pub static OPERATORS: &[Operator] = &[
             let SetText { node, text, scene } = props(v)?;
             let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
-            if !sets_text(&scene.nodes[i].kind) {
-                return Err(format!("{node} isn't a Text or Text List node"));
+            if !sets_text(&scene.nodes[i].kind) && scene.nodes[i].kind != AI_IMAGE {
+                return Err(format!("{node} isn't a Text, Text List or AI Image node"));
             }
             scene.nodes[i].text = Some(text);
             Ok(())

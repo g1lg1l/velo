@@ -2342,7 +2342,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             .collect();
         let bytes: Vec<u8> = pixels.iter().flat_map(|v| v.to_ne_bytes()).collect();
         queue.write_texture(wave.texture().as_image_copy(), &bytes, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(columns as u32 * 16), rows_per_image: None }, wgpu::Extent3d { width: columns as u32, height: 3, depth_or_array_layers: 1 });
-        let skip = ["image", "text", "textlist", "medialist", "particles", "mesh"];
+        let skip = ["image", "text", "textlist", "medialist", "ai_image", "particles", "mesh"];
         let all = BUILTINS.iter().filter(|b| !skip.contains(&b.0)).chain(&crate::PRESETS).chain(&crate::EFFECT_PRESETS);
         for (slug, code) in all.filter(|(slug, _)| only.is_empty() || only.split(',').any(|o| o == *slug)) {
             let node = ShaderNode::parse(code).unwrap();

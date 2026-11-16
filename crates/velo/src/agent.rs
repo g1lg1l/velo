@@ -484,6 +484,7 @@ impl App {
             kit::callout(ui, t, icons::LIGHTNING, &status, if self.agents_connected().is_some() { t.accent } else { t.fg_muted });
             ui.add_space(t.pad);
         });
+        self.prefs_images(ui, t);
         kit::card(ui, t, tr!("SET UP"), |ui| {
             kit::para(ui, t, tr!("With the switch above on, other apps drive Velo through velo-mcp, the bridge that ships with it. Velo's own AI panel needs none of this."), t.fg_text);
             ui.add_space(t.gap);

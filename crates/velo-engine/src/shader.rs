@@ -18,7 +18,7 @@ pub const GLOBALS: [&str; 21] =
 pub const GLOBAL_FLOATS: usize = 24;
 
 /// The built-in nodes, written in the same format as anyone's (dogfooding the format).
-pub const BUILTINS: [(&str, &str); 36] = [
+pub const BUILTINS: [(&str, &str); 37] = [
     ("noise", include_str!("../shaders/noise.wgsl")),
     ("gradient", include_str!("../shaders/gradient.wgsl")),
     ("shapes", include_str!("../shaders/shapes.wgsl")),
@@ -41,7 +41,9 @@ pub const BUILTINS: [(&str, &str); 36] = [
     ("particles", include_str!("../shaders/particles.wgsl")),
     ("mesh", include_str!("../shaders/mesh.wgsl")),
     ("opacity", include_str!("../shaders/opacity.wgsl")),
-    ("medialist", include_str!("../shaders/medialist.wgsl")),
+    // the Media List and the AI Image play their files alike
+    ("medialist", concat!(include_str!("../shaders/medialist.wgsl"), include_str!("../shaders/medialist-draw.wgsl"))),
+    ("ai_image", concat!(include_str!("../shaders/ai_image.wgsl"), include_str!("../shaders/medialist-draw.wgsl"))),
     // math on pictures, layout and time (docs/graph.md §4)
     ("levels", include_str!("../shaders/levels.wgsl")),
     ("threshold", include_str!("../shaders/threshold.wgsl")),

@@ -8,7 +8,7 @@ use std::sync::mpsc;
 
 use std::borrow::Cow;
 
-use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, LIVE_PROGRAM, Layer, MEDIA_LIST, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, TEXT_LIST, is_shader, node_kind, shows_media};
+use velo_core::{Category, Edge, FEEDBACK, IMAGE, LIVE, LIVE_PROGRAM, Layer, MESH, Node, OUTPUT, PARTICLES, PROBE, SHADER, SHADER_FX, Scene, TEXT_LIST, is_shader, node_kind, plays_list, shows_media};
 
 use crate::media::{Lines, Reel, SLOTS};
 
@@ -86,16 +86,16 @@ pub fn own(code: &str) -> Result<ShaderNode, ShaderError> {
     Ok(node)
 }
 
-/// How many inputs a node reads: its kind's, or a Media List's slots ([`expand`]).
+/// How many inputs a node reads: its kind's, or a Media List's (an AI Image's) slots ([`expand`]).
 fn ports(n: &Node) -> usize {
-    if n.kind == MEDIA_LIST { SLOTS } else { node_kind(&n.kind).map_or(0, |k| k.inputs.len()) }
+    if plays_list(&n.kind) { SLOTS } else { node_kind(&n.kind).map_or(0, |k| k.inputs.len()) }
 }
 
 /// The scene as the engine builds it: a Media List with files gets [`SLOTS`] Image nodes of
 /// its own (`<list id>#<k>`) wired into it, with no file: its [`Reel`] streams its files
 /// through them.
 fn expand(scene: &Scene) -> Cow<'_, Scene> {
-    let lists = |n: &&Node| n.kind == MEDIA_LIST && !velo_core::media_list(n).is_empty();
+    let lists = |n: &&Node| plays_list(&n.kind) && !velo_core::media_list(n).is_empty();
     if !scene.nodes.iter().any(|n| lists(&n)) {
         return Cow::Borrowed(scene);
     }
@@ -408,7 +408,7 @@ fn build(
         .iter()
         .enumerate()
         .filter_map(|(n, (id, _))| {
-            let list = scene.node(id).filter(|l| l.kind == MEDIA_LIST)?;
+            let list = scene.node(id).filter(|l| plays_list(&l.kind))?;
             let [a, b, c] = [0, 1, 2].map(|k| index(&format!("{id}#{k}")));
             let files = velo_core::media_list(list).into_iter().map(String::from).collect();
             Reel::new(device, queue, id.clone(), n, &programs[specs[n].program].node, [a?, b?, c?], files, bc)
@@ -578,6 +578,24 @@ mod tests {
         assert_eq!(shaders(&p), ["noise", "gradient", "output"], "only the Output going out grades");
         assert_eq!((&p.nodes[2].0, &p.inputs[2], p.output), (&s.nodes[3].id, &vec![Some(1)], Some(2)), "the gradient, through the last Output with a wire");
         assert_eq!(plan(&scene(&["velo.noise", "velo.output", "velo.output"], &[])).output, None, "Outputs with nothing in: nothing goes out");
+    }
+
+    #[test]
+    fn an_ai_image_plays_its_pictures_as_a_media_list_does() {
+        let mut s = scene(&[velo_core::AI_IMAGE, "velo.output"], &[(0, 1, 0)]);
+        assert_eq!(shaders(&plan(&s)), ["ai_image", "output"], "no pictures yet, no slots");
+        s.nodes[0].media = Some("/gen/a.png\n/gen/b.png".into());
+        let p = plan(&s);
+        assert_eq!(shaders(&p), ["ai_image", "image", "image", "image", "output"]);
+        assert_eq!(p.inputs[0], [Some(1), Some(2), Some(3)]);
+        // the Media List's body, its own header: the list's parameters and its pool
+        let header = |name: &str| crate::shader::ShaderNode::parse(BUILTINS.iter().find(|b| b.0 == name).unwrap().1).unwrap();
+        let (ai, list) = (header("ai_image"), header("medialist"));
+        for p in &list.params {
+            assert!(ai.params.iter().any(|q| q.id == p.id && q.ty == p.ty), "the AI Image lacks {}", p.id);
+        }
+        let pool = ai.params.iter().find(|p| p.id == "pool").unwrap();
+        assert_eq!(pool.default[0] as usize, velo_core::AI_IMAGE_POOL, "the core's pool is the header's");
     }
 
     #[test]
