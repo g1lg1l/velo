@@ -153,6 +153,9 @@ struct Settings {
     /// How far ahead of the music the pictures are drawn, in ms: the projector's lag, so the
     /// beat lands on the beat on the wall. A property of this computer's output, not the show.
     lead_ms: f32,
+    /// How late the speakers play what the computer plays, in ms (Bluetooth): what Velo hears
+    /// of it waits that long. This computer's too, not the show's.
+    speaker_ms: f32,
     /// Each output's corner pin and masks, by where it goes (a display's name, "" for the
     /// window): the venue's cloth and projector, not the show's.
     projections: std::collections::BTreeMap<String, velo_engine::Projection>,
@@ -779,6 +782,7 @@ impl App {
             live.audio.listen(live::Audio::first_input(&app.settings.audio));
             live.set_link(app.settings.link);
             live.set_lead(app.settings.lead_ms);
+            live.audio.set_lag(app.settings.speaker_ms);
             live.shared.borrow_mut().projections.clone_from(&app.settings.projections);
         }
         app
@@ -2156,6 +2160,7 @@ impl App {
                 live.audio.listen(live::Audio::first_input(&self.settings.audio));
                 live.set_link(self.settings.link);
                 live.set_lead(self.settings.lead_ms);
+                live.audio.set_lag(self.settings.speaker_ms);
                 live.set_blackout(blackout);
                 live.set_pattern(pattern);
                 if let Some(scene) = was.and_then(|id| self.session.project.scene(&id)) {

@@ -1103,6 +1103,46 @@ struct Links {
     wave: Arc<SharedWave>,
     tuning: Arc<Tuning>,
     meter: Arc<Meter>,
+    /// How late the speakers play what the computer plays, in ms ([`Audio::set_lag`]).
+    lag: Arc<AtomicU32>,
+}
+
+impl Links {
+    /// The speakers' lag in samples at `rate`.
+    fn lag(&self, rate: f32) -> usize {
+        (self.lag.load(Relaxed) as f32 / 1000.0 * rate) as usize
+    }
+}
+
+/// The most the speakers can be said to lag ([`Audio::set_lag`]), in ms: more than Bluetooth's
+/// 100 to 300.
+pub const MAX_SPEAKER_LAG: f32 = 500.0;
+
+/// The samples heard, given back a while later. Bluetooth speakers play what the computer plays
+/// 100 to 300 ms after Velo hears it: held back that long before the analysis, everything heard
+/// (levels, hits, the spectrum, the tempo and its beat) lands with the sound in the room.
+struct Late {
+    ring: Vec<f32>,
+    at: usize,
+}
+
+impl Late {
+    /// Room for [`MAX_SPEAKER_LAG`] at `rate`.
+    fn new(rate: f32) -> Self {
+        Self { ring: vec![0.0; (MAX_SPEAKER_LAG / 1000.0 * rate) as usize + 1], at: 0 }
+    }
+
+    /// `samples` swapped for the ones heard `by` samples before them (silence before any were);
+    /// as they are with no lag.
+    fn pass(&mut self, samples: &mut [f32], by: usize) {
+        let n = self.ring.len();
+        let by = by.min(n - 1);
+        for s in samples {
+            self.ring[self.at] = *s;
+            *s = self.ring[(self.at + n - by) % n];
+            self.at = (self.at + 1) % n;
+        }
+    }
 }
 
 /// Seconds of the detectors' signals the Audio In's graphs show.
@@ -1131,7 +1171,7 @@ const GATE_HOLD_S: f64 = 1.0;
 
 impl Audio {
     fn new(features: Arc<SharedFeatures>, wave: Arc<SharedWave>) -> Self {
-        let links = Links { features, wave, tuning: Arc::default(), meter: Arc::default() };
+        let links = Links { features, wave, tuning: Arc::default(), meter: Arc::default(), lag: Arc::default() };
         Self { links, stop: Arc::new(AtomicBool::new(true)), state: Arc::default(), input: None, settings: Settings::default(), graphs: Default::default(), gated: false, loud: f64::NEG_INFINITY }
     }
 
@@ -1156,6 +1196,13 @@ impl Audio {
         self.links.tuning.store(&self.settings);
         let (links, stop, state) = (self.links.clone(), self.stop.clone(), self.state.clone());
         let _ = std::thread::Builder::new().name("velo audio".into()).spawn(move || listen(input, &links, &stop, &state));
+    }
+
+    /// The speakers play what the computer plays `ms` late (Bluetooth): what's heard of it (the
+    /// computer's sound, an app's, a file's; not a microphone, which hears the room) waits that
+    /// long, so the pictures land with the sound.
+    pub fn set_lag(&self, ms: f32) {
+        self.links.lag.store(ms.clamp(0.0, MAX_SPEAKER_LAG) as u32, Relaxed);
     }
 
     /// The state as last published; never waits for the audio thread.
@@ -1280,6 +1327,9 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
     // when samples last went through, and when the default device was last looked at
     let (mut fed, mut checked) = (Instant::now(), Instant::now());
     let mut buffer = vec![0.0f32; 4096];
+    // what this computer plays reaches lagging speakers late; a microphone hears the room as it is
+    let (mut late, played) = (Late::new(cap.rate), matches!(source, Source::Computer | Source::App { .. }));
+    let lag = || if played { links.lag(cap.rate) } else { 0 };
     // a new analyzer: the settings as they are
     links.tuning.changed.store(true, Release);
     while !stop.load(Relaxed) {
@@ -1317,6 +1367,7 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
             if fed.elapsed() > Duration::from_millis(50) {
                 let silence = ((fed.elapsed().as_secs_f32() * cap.rate) as usize).min(buffer.len());
                 buffer[..silence].fill(0.0);
+                late.pass(&mut buffer[..silence], lag());
                 links.wave.push_samples(&buffer[..silence]);
                 analyzer.push(&buffer[..silence], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
                 links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
@@ -1337,6 +1388,7 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
         } else if !heard && opened.elapsed() > NOTHING_AFTER {
             set(&|s| s.hearing = Hearing::Nothing);
         }
+        late.pass(&mut buffer[..take], lag());
         links.wave.push_samples(&buffer[..take]);
         analyzer.push(&buffer[..take], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
         links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
@@ -1404,7 +1456,7 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
     set(&|s| s.hearing = Hearing::Live);
     let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(track.rate), Tracker::new(), Tempo::new(track.rate));
     let dt = HOP as f32 / track.rate;
-    let (mut heard, mut looked, mut chunk) = (player.position(), None, vec![0.0f32; 1024]);
+    let (mut heard, mut looked, mut chunk, mut late) = (player.position(), None, vec![0.0f32; 1024], Late::new(track.rate));
     links.tuning.changed.store(true, Release);
     while !stop.load(Relaxed) {
         if let Some(s) = links.tuning.take() {
@@ -1419,6 +1471,7 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
         while heard < due {
             let n = (due - heard).min(chunk.len());
             track.mono(heard, &mut chunk[..n]);
+            late.pass(&mut chunk[..n], links.lag(track.rate));
             links.wave.push_samples(&chunk[..n]);
             analyzer.push(&chunk[..n], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
             links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
@@ -1442,6 +1495,22 @@ fn hop_out(hop: &velo_audio::Hop, tracker: &mut Tracker, dt: f32, tempo: &mut Te
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_is_heard_comes_back_as_late_as_the_speakers_are_and_at_once_with_no_lag() {
+        let mut late = Late::new(1000.0);
+        let mut heard = [1.0, 2.0, 3.0];
+        late.pass(&mut heard, 0);
+        assert_eq!(heard, [1.0, 2.0, 3.0], "no lag: as it came");
+        // two samples late, across calls: silence first, then what came two before
+        let mut heard = [4.0, 5.0, 6.0];
+        late.pass(&mut heard, 2);
+        assert_eq!(heard, [2.0, 3.0, 4.0]);
+        // more than the most is the most (500 ms at 1 kHz: 500 samples), not a panic
+        let mut heard = [7.0; 600];
+        late.pass(&mut heard, usize::MAX);
+        assert_eq!((heard[0], heard[499], heard[500]), (0.0, 6.0, 7.0), "silence from before anything was heard, then 5 and 6 as they come round");
+    }
 
     #[test]
     fn a_cards_picture_is_kept_under_all_its_scene_is() {

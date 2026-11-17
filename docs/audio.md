@@ -84,7 +84,7 @@ The beat clock's tempo comes from one of: the music (auto-BPM), a tap, a typed v
 
 In the app, **Follow the music** in the tempo chip's menu shows what it hears and how sure. While on, an estimate at least 30 % sure that agrees with the one before sets the tempo and the beat. It is on by default for computer audio and one app. Setting the tempo by hand (typed, nudged, tapped, resynced) turns it off: that is the lock. A MIDI clock or Link peers lead over it.
 
-Projectors and LED processors add 30 to 100 ms of display latency: the tempo chip's Projector lag draws everything the beat clock drives that much ahead (control.md §4); what the analysis hears can only follow. Not yet: a user tempo range, a regression set of real tracks in CI.
+Projectors and LED processors add 30 to 100 ms of display latency: the Output menu's Projector lag draws everything the beat clock drives that much ahead (control.md §4); what the analysis hears can only follow. Not yet: a user tempo range, a regression set of real tracks in CI.
 
 ## 5. Latency (48 kHz)
 
@@ -96,7 +96,7 @@ Projectors and LED processors add 30 to 100 ms of display latency: the tempo chi
 | Render and present | 16 ms |
 | Display or projector | 10 to 100 ms, out of Velo's hands |
 
-With computer audio Velo hears the sound before the speakers play it; Bluetooth speakers add 100 to 300 ms, and the visuals then run ahead. Not yet: a visual delay setting to match them.
+With computer audio Velo hears the sound before the speakers play it; Bluetooth speakers add 100 to 300 ms, and the visuals then run ahead. The Output menu's **Speaker lag** (0 to 500 ms, kept with the preferences) holds back what Velo hears of the computer's sound, an app's or a file's by that much before the analysis, so levels, hits, the spectrum and the heard tempo land with the sound in the room. A microphone or a line input hears the room as it is and isn't held back.
 
 ## 6. Testing
 
