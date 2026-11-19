@@ -166,6 +166,8 @@ pub struct Chat {
     bar_h: f32,
     /// Scroll to the newest message next frame.
     jump: bool,
+    /// Each item's height as last drawn, for the conversation and width they were drawn at.
+    heights: ((usize, f32), Vec<f32>),
     /// Pictures as textures, by file (None: it can't be read).
     thumbs: HashMap<PathBuf, Option<TextureHandle>>,
     /// What the workers found, as it comes.
@@ -859,11 +861,23 @@ impl App {
         let retry_on_card = c.last_reply().iter().any(|i| matches!(i, Item::Problem(_)));
         let provider = c.provider;
         let (mut typing, mut said) = (false, false);
+        // an item out of view isn't laid out: its height as last drawn stands in (the newest
+        // ones, still changing, always are)
+        let (view, count) = (ui.clip_rect(), c.items.len());
+        let heights = &mut self.chat.heights;
+        if heights.0 != (current, width) || heights.1.len() > count {
+            *heights = ((current, width), Vec::new());
+        }
         for (n, item) in c.items.iter_mut().enumerate() {
-            said |= matches!(item, Item::Text { .. });
+            said = !matches!(item, Item::User(_)) && (said || matches!(item, Item::Text { .. }));
+            let top = ui.cursor().top();
+            let settled = n + 3 < count && !matches!(item, Item::Text { text, shown } if *shown < text.len() && *shown < text.chars().count());
+            if let Some(&h) = heights.1.get(n).filter(|&&h| settled && (top > view.bottom() || top + h < view.top())) {
+                ui.add_space(h);
+                continue;
+            }
             match item {
                 Item::User(message) => {
-                    said = false;
                     // a new exchange: room above it (AI Elements' Message, py-4)
                     ui.add_space(if n == 0 { 4.0 } else { 18.0 });
                     if !message.pictures.is_empty() {
@@ -971,6 +985,8 @@ impl App {
                     }
                 }
             }
+            heights.1.resize(heights.1.len().max(n + 1), 0.0);
+            heights.1[n] = ui.cursor().top() - top;
         }
         // a reply on its way: the orb, what it's doing, for how long (RareUI's AI Status)
         if c.run.is_some() {

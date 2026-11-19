@@ -11,7 +11,7 @@ use eframe::egui::{self, Color32, FontId, Frame, Galley, Label, Rect, RichText, 
 use crate::theme::Theme;
 use crate::{icons, kit};
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Block {
     Heading(usize, String),
     Paragraph(String),
@@ -290,12 +290,25 @@ fn code(ui: &mut Ui, t: &Theme, lang: &str, code: &str, id: egui::Id) -> bool {
     copied
 }
 
+/// `markdown`'s blocks, read again only when it changed since `id` showed it last.
+fn read(ctx: &egui::Context, id: egui::Id, markdown: &str) -> Arc<Vec<Block>> {
+    let (key, hash) = (id.with("blocks"), egui::util::hash(markdown));
+    ctx.data_mut(|d| match d.get_temp::<(u64, Arc<Vec<Block>>)>(key) {
+        Some((h, read)) if h == hash => read,
+        _ => {
+            let read = Arc::new(blocks(markdown));
+            d.insert_temp(key, (hash, read.clone()));
+            read
+        }
+    })
+}
+
 /// Draws `markdown` at the width there is. True when a code block was copied (for a toast).
 pub fn show(ui: &mut Ui, t: &Theme, markdown: &str, id: impl Hash + std::fmt::Debug) -> bool {
     let id = ui.scope_id().with(id);
     let size = t.text_md + 1.0;
     let mut copied = false;
-    let blocks = blocks(markdown);
+    let blocks = read(ui.ctx(), id, markdown);
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         let mut last: Option<&Block> = None;
@@ -385,6 +398,16 @@ mod tests {
             ]
         );
         assert_eq!(blocks("```\nunclosed"), [Block::Code(String::new(), "unclosed".into())], "a reply still typing in");
+    }
+
+    #[test]
+    fn a_reply_is_read_once_until_it_changes() {
+        let (ctx, id) = (egui::Context::default(), egui::Id::unique("reply"));
+        let first = read(&ctx, id, "# Tunnel");
+        assert!(Arc::ptr_eq(&first, &read(&ctx, id, "# Tunnel")), "the same text: what was read");
+        let typed = read(&ctx, id, "# Tunnel\n\nmore");
+        assert_eq!(typed.len(), 2, "more of it: read again");
+        assert_eq!(*read(&ctx, egui::Id::unique("other"), "# Tunnel"), *first, "another reply reads its own");
     }
 
     #[test]
