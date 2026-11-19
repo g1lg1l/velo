@@ -14,6 +14,7 @@ pub mod model;
 pub mod modulate;
 pub mod presets;
 pub mod projection;
+pub mod record;
 pub mod runtime;
 pub mod shader;
 pub mod share;

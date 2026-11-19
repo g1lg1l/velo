@@ -706,14 +706,23 @@ impl App {
             Some(Target::Window) => tr!("Window").to_string(),
             Some(Target::Display(name)) => display_name(name),
         };
+        // recording: said on the chip, with how long it's been
+        let label = match &self.recording {
+            Some((_, since)) => {
+                let s = since.elapsed().as_secs();
+                format!("{label} · REC {}:{:02}", s / 60, s % 60)
+            }
+            None => label,
+        };
         let text = if icon_only { icons::CARET_DOWN.to_string() } else { format!("{label}  {}", icons::CARET_DOWN) };
         // in Blackout, the menu holding it says so
-        let r = kit::button(ui, t, Some(if blackout && dark { icons::POWER } else { icons::PROJECTOR_SCREEN }), &text, output.is_some() || live.sharing.is_some() || live.pattern || (blackout && dark));
+        let r = kit::button(ui, t, Some(if blackout && dark { icons::POWER } else { icons::PROJECTOR_SCREEN }), &text, output.is_some() || live.sharing.is_some() || live.pattern || (blackout && dark) || self.recording.is_some());
         self.hint(&r, tr!("Where the picture goes: a display, fullscreen, or a window. Close it from here."));
         if r.clicked() {
             shared.borrow_mut().requests.push(Request::Displays);
         }
         let (mut request, mut stage, mut share, mut lead) = (None, None, None, self.settings.lead_ms);
+        let (recording, mut mute) = (self.recording.is_some(), self.settings.record_mute);
         let mut speaker = self.settings.speaker_ms;
         let (sharing, frozen, pattern) = (live.sharing, live.frozen, live.pattern);
         let (adjusting, projection) = {
@@ -745,10 +754,23 @@ impl App {
                     share = Some((!on).then_some(kind));
                 }
             }
+            let keys = |id| self.settings.keymap.keys(id).first().map(keymap::text).unwrap_or_default();
+            // the program to a movie, with what's heard unless it's left out
+            ui.separator();
+            kit::menu_title(ui, t, tr!("RECORD"));
+            let r = ui.add(egui::Button::selectable(recording, format!("{}  {}", icons::FILM_STRIP, if recording { tr!("Stop recording") } else { tr!("Record the output") })).shortcut_text(keys("stage.record")));
+            if r.on_hover_text(tr!("The output as a movie (MP4) in your Movies folder, at the canvas's size and frame rate. Needs ffmpeg")).clicked() {
+                stage = Some("stage.record");
+            }
+            ui.add_enabled_ui(!recording, |ui| {
+                let mut sound = !mute;
+                if ui.checkbox(&mut sound, tr!("With the sound Velo hears")).changed() {
+                    mute = !sound;
+                }
+            });
             // the stage: a pattern to line up a projector, and Freeze and Blackout when the bar
             // has no room for them
             ui.separator();
-            let keys = |id| self.settings.keymap.keys(id).first().map(keymap::text).unwrap_or_default();
             let mut items = vec![("stage.pattern", icons::CROSSHAIR, tr!("Test pattern"), pattern)];
             if blackout {
                 items.extend([("stage.freeze", icons::SNOWFLAKE, tr!("Freeze"), frozen), ("stage.blackout", icons::POWER, tr!("Blackout"), dark)]);
@@ -840,6 +862,7 @@ impl App {
             live.audio.set_lag(speaker);
             self.settings.speaker_ms = speaker;
         }
+        self.settings.record_mute = mute;
         if let (Some(kind), Some(live)) = (share, &mut self.live) {
             live.share(kind);
         }

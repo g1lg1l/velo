@@ -370,6 +370,13 @@ impl ShaderNode {
         post += "@vertex\nfn velo_vs(@builtin(vertex_index) i: u32) -> VeloVertex {\n    let p = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));\n    return VeloVertex(vec4<f32>(p * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0), p);\n}\n";
         post += "@fragment\nfn velo_fs(v: VeloVertex) -> @location(0) vec4<f32> {\n";
         post += &load;
+        // at 0 nothing of the picture shows: its shader isn't run at all (a bypassed blur, a
+        // faded-out raymarch cost nothing)
+        match &mix_input {
+            Some(input) => post += &format!("    if amount <= 0.0 {{ return textureSampleLevel({input}, smp, v.uv, 0.0); }}\n"),
+            None if fade => post += "    if opacity <= 0.0 { return vec4<f32>(0.0); }\n",
+            None => {}
+        }
         post += "    let c = main_image(v.uv, v.uv * g.resolution);\n";
         match &mix_input {
             Some(input) => post += &format!("    return mix(textureSample({input}, smp, v.uv), c, clamp(amount, 0.0, 1.0));\n}}\n"),
@@ -502,7 +509,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     fn pictures_get_an_opacity_unless_they_have_their_own() {
         let node = ShaderNode::parse("/*{ \"name\": \"Red\", \"category\": \"generator\" }*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f {\n    return vec4f(1.0, 0.0, 0.0, 1.0);\n}\n").unwrap();
         assert_eq!(node.params.last().map(|p| (p.id.as_str(), p.default[0])), Some(("opacity", 1.0)));
-        assert!(node.wgsl.contains("return c * clamp(opacity, 0.0, 1.0);"));
+        assert!(node.wgsl.contains("return c * clamp(opacity, 0.0, 1.0);") && node.wgsl.contains("if opacity <= 0.0 { return vec4<f32>(0.0); }"));
         node.validate().unwrap();
         let text = ShaderNode::parse(BUILTINS.iter().find(|b| b.0 == "text").unwrap().1).unwrap();
         assert_eq!(text.params.iter().filter(|p| p.id == "opacity").count(), 1, "Text keeps its own");
@@ -522,6 +529,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         .unwrap();
         assert_eq!(node.params.last().map(|p| p.id.as_str()), Some("amount"));
         assert!(node.wgsl.contains("mix(textureSample(src, smp, v.uv), c, clamp(amount, 0.0, 1.0))"));
+        assert!(node.wgsl.contains("if amount <= 0.0 { return textureSampleLevel(src, smp, v.uv, 0.0); }"), "bypassed: not run");
         node.validate().unwrap();
     }
 

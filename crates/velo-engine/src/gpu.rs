@@ -222,6 +222,9 @@ struct RunNode {
     /// until [`Runner::set_points`]) and their compute binding, by frame parity (the picture it
     /// emits from may come from a node with feedback).
     sim: Option<(wgpu::Buffer, wgpu::Buffer, [wgpu::BindGroup; 2])>,
+    /// A particle node's `count` (how many live at most: only those are stepped and drawn), and
+    /// the count it was last stepped at.
+    alive: [AtomicU32; 2],
     /// A mesh node's samples and depth, and its triangles.
     mesh: Option<MeshState>,
     past: Option<Past>,
@@ -381,7 +384,7 @@ impl Runner {
                 (buffer, points, groups)
             });
             let mesh = program.node.mesh.then(|| MeshState { color: multisampled(device, size, FORMAT), depth: multisampled(device, size, DEPTH), vertices: None });
-            run.push(RunNode { program: spec.program, params, targets: Vec::new(), buffers, groups, sim, mesh, past: past.map(|p| p.0) });
+            run.push(RunNode { program: spec.program, params, targets: Vec::new(), buffers, groups, sim, alive: [PARTICLES.into(), PARTICLES.into()], mesh, past: past.map(|p| p.0) });
         }
         for (node, views) in run.iter_mut().zip(targets) {
             node.targets = views;
@@ -424,7 +427,13 @@ impl Runner {
     /// Sets a node's parameter values (one vec4 per parameter, in header order).
     pub fn set_params(&self, queue: &wgpu::Queue, programs: &[Program], node: usize, values: &[[f32; 4]]) {
         let n = &self.nodes[node];
-        queue.write_buffer(&n.params, 0, &programs[n.program].node.param_bytes(values));
+        let shader = &programs[n.program].node;
+        queue.write_buffer(&n.params, 0, &shader.param_bytes(values));
+        if n.sim.is_some()
+            && let Some(count) = shader.params.iter().position(|p| p.id == "count").and_then(|i| values.get(i))
+        {
+            n.alive[0].store((count[0].max(1.0) as u32).min(PARTICLES), Relaxed);
+        }
     }
 
     /// A particle node's model: its points, kept in -1..1 round the middle (the first
@@ -525,7 +534,10 @@ impl Runner {
                 pass.set_pipeline(&sim.emit);
                 pass.dispatch_workgroups(1, 1, 1);
                 pass.set_pipeline(&sim.step);
-                pass.dispatch_workgroups(PARTICLES.div_ceil(64), 1, 1);
+                // the ones past a count just lowered are stepped once more: that ends them
+                let alive = node.alive[0].load(Relaxed);
+                let was = node.alive[1].swap(alive, Relaxed);
+                pass.dispatch_workgroups(if alive < was { PARTICLES } else { alive }.div_ceil(64), 1, 1);
             }
             // the node's cost: from its first pass's start to its last pass's end
             let stamps = |first: bool, last: bool| {
@@ -564,7 +576,7 @@ impl Runner {
             match (&node.sim, mesh) {
                 (Some((buffer, ..)), _) => {
                     pass.set_vertex_buffer(0, buffer.slice(EMITTER..));
-                    pass.draw(0..4, 0..PARTICLES);
+                    pass.draw(0..4, 0..node.alive[0].load(Relaxed));
                 }
                 (None, Some(m)) => {
                     if let Some((buffer, count)) = &m.vertices {
@@ -765,7 +777,9 @@ fn multisampled(device: &wgpu::Device, [width, height]: [u32; 2], format: wgpu::
             sample_count: MSAA,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // cleared and discarded every pass (only the resolve is kept): on Apple GPUs it
+            // never takes memory, ~100 MB a Mesh node at 1080p otherwise
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TRANSIENT_ATTACHMENT,
             view_formats: &[],
         })
         .create_view(&wgpu::TextureViewDescriptor::default())

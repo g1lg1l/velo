@@ -41,6 +41,16 @@ impl Track {
         self.samples.len() / self.channels
     }
 
+    /// `out` filled with its frames from `at` on, as left and right (a mono file on both): what
+    /// a recording takes.
+    pub fn stereo(&self, at: usize, out: &mut [[f32; 2]]) {
+        let (frames, right) = (self.frames(), usize::from(self.channels > 1));
+        for (i, o) in out.iter_mut().enumerate() {
+            let f = (at + i) % frames * self.channels;
+            *o = [f32::from(self.samples[f]), f32::from(self.samples[f + right])].map(|s| s / 32_768.0);
+        }
+    }
+
     /// `out` filled with its frames from `at` on, the channels mixed to one: what the analysis hears.
     pub fn mono(&self, at: usize, out: &mut [f32]) {
         let (frames, scale) = (self.frames(), 1.0 / (32_768.0 * self.channels as f32));

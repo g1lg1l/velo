@@ -593,6 +593,13 @@ impl Live {
         self.engine.send(Command::Share(kind));
     }
 
+    /// The program recorded to `path` at `size` and `fps`, with what's heard (`sound`), or the recording
+    /// stopped (`None`); the engine says how it went in its status's `recorded`.
+    pub fn record(&mut self, to: Option<(std::path::PathBuf, [u32; 2], u32, bool)>) {
+        let spec = to.map(|(path, size, fps, sound)| velo_engine::record::Spec { path, size, fps, audio: sound.then(|| self.audio.links.tap.clone()) });
+        self.engine.send(Command::Record(spec));
+    }
+
     /// The engine can't go on: its GPU was lost, or its render thread hasn't finished a frame
     /// in 2 s (stuck, or gone).
     pub fn broken(&self) -> bool {
@@ -1107,12 +1114,23 @@ struct Links {
     meter: Arc<Meter>,
     /// How late the speakers play what the computer plays, in ms ([`Audio::set_lag`]).
     lag: Arc<AtomicU32>,
+    /// What's heard, handed to a recording while one takes it.
+    tap: Arc<velo_engine::record::Tap>,
 }
 
 impl Links {
     /// The speakers' lag in samples at `rate`.
     fn lag(&self, rate: f32) -> usize {
         (self.lag.load(Relaxed) as f32 / 1000.0 * rate) as usize
+    }
+
+    /// `frames` to a recording, when one takes them; `played`: heard from the computer (it
+    /// reaches the room as late as the speakers lag), not a microphone.
+    fn record(&self, rate: f32, played: bool, frames: &[[f32; 2]]) {
+        if !frames.is_empty() && self.tap.wanted() {
+            let lag = if played { self.lag.load(Relaxed) as f32 / 1000.0 } else { 0.0 };
+            self.tap.push(rate, lag, frames);
+        }
     }
 }
 
@@ -1173,7 +1191,7 @@ const GATE_HOLD_S: f64 = 1.0;
 
 impl Audio {
     fn new(features: Arc<SharedFeatures>, wave: Arc<SharedWave>) -> Self {
-        let links = Links { features, wave, tuning: Arc::default(), meter: Arc::default(), lag: Arc::default() };
+        let links = Links { features, wave, tuning: Arc::default(), meter: Arc::default(), lag: Arc::default(), tap: Arc::default() };
         Self { links, stop: Arc::new(AtomicBool::new(true)), state: Arc::default(), input: None, settings: Settings::default(), graphs: Default::default(), gated: false, loud: f64::NEG_INFINITY }
     }
 
@@ -1371,6 +1389,13 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
                 return;
             }
         }
+        // the same audio in stereo: to a recording, else let go
+        if let Ok(chunk) = cap.stereo.read_chunk(cap.stereo.slots()) {
+            let (a, b) = chunk.as_slices();
+            links.record(cap.rate, played, a);
+            links.record(cap.rate, played, b);
+            chunk.commit_all();
+        }
         let take = cap.samples.slots().min(buffer.len());
         if take == 0 {
             if !heard && opened.elapsed() > NOTHING_AFTER {
@@ -1433,6 +1458,10 @@ fn test_loop(links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>) {
             let at = played % take.samples.len();
             let n = (due - played).min(take.samples.len() - at);
             links.wave.push_samples(&take.samples[at..at + n]);
+            if links.tap.wanted() {
+                let both: Vec<[f32; 2]> = take.samples[at..at + n].iter().map(|&s| [s, s]).collect();
+                links.record(RATE, false, &both);
+            }
             analyzer.push(&take.samples[at..at + n], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
             links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
             played += n;
@@ -1473,6 +1502,7 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
     let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(track.rate), tracker(links), Tempo::new(track.rate));
     let dt = HOP as f32 / track.rate;
     let (mut heard, mut looked, mut chunk, mut late) = (player.position(), None, vec![0.0f32; 1024], Late::new(track.rate));
+    let mut both = vec![[0.0f32; 2]; chunk.len()];
     links.tuning.changed.store(true, Release);
     while !stop.load(Relaxed) {
         if let Some(s) = links.tuning.take() {
@@ -1495,6 +1525,10 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
         while heard < due {
             let n = (due - heard).min(chunk.len());
             track.mono(heard, &mut chunk[..n]);
+            if links.tap.wanted() {
+                track.stereo(heard, &mut both[..n]);
+                links.record(track.rate, true, &both[..n]);
+            }
             late.pass(&mut chunk[..n], links.lag(track.rate));
             links.wave.push_samples(&chunk[..n]);
             analyzer.push(&chunk[..n], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
@@ -1765,9 +1799,14 @@ mod tests {
                     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                     let ticks: Vec<u64> = back.slice(..).get_mapped_range().unwrap().as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect();
                     back.unmap();
+                    // a GPU that runs passes side by side (Apple's) gives spans that overlap:
+                    // scaled to the time it was busy, as the live timing does
+                    let period = queue.get_timestamp_period();
+                    let spans: Vec<(u64, u64)> = (0..best.len()).map(|i| (ticks[2 * i], ticks[2 * i + 1])).collect();
+                    let scale = velo_engine::runtime::overlap(&spans, (1e8 / period.max(1e-6)) as u64);
                     for (i, b) in best.iter_mut().enumerate() {
                         let asleep = awake.as_ref().is_some_and(|a| !a[i]);
-                        *b = if asleep { 0.0 } else { b.min(ticks[2 * i + 1].saturating_sub(ticks[2 * i]) as f32 * queue.get_timestamp_period() / 1e6) };
+                        *b = if asleep { 0.0 } else { b.min(spans[i].1.saturating_sub(spans[i].0) as f32 * period / 1e6 * scale) };
                     }
                 }
             }

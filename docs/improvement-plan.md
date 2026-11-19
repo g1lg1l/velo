@@ -77,6 +77,12 @@ holes were).
 
 ## Phase 2: GPU quick wins (each small, rerun the GPU tests)
 
+Done on `perf/engine`, except item 6 (the Output node's identity pass): it costs ~0.05 ms at
+1024x768 here, and skipping it would need its thumbnail and `picture()` rerouted. Item 8: the
+frame drops in the first ~12 s are the start-up building and picturing every scene's card (the
+render thread waits on the GPU); a normal start does that behind the loading screen, and the rate
+holds at 60 after it. `scene_costs` now scales overlapping spans as the live timing does.
+
 1. **Bypassed effects still cost their full shader**: `velo_fs` always runs `main_image`, then mixes
    by `amount` / multiplies by `opacity` (`velo-engine/src/shader.rs:373-376`). Return early at 0.
 2. **Media List / AI Image render all 3 slot images every frame** though only the shown one (and the

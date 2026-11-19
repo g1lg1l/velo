@@ -27,6 +27,8 @@ pub enum Source {
 pub struct Capture {
     pub stream: cpal::Stream,
     pub samples: rtrb::Consumer<f32>,
+    /// The same audio as left and right (the first two channels), for a recording to take.
+    pub stereo: rtrb::Consumer<[f32; 2]>,
     pub rate: f32,
     pub channels: u16,
     pub name: String,
@@ -88,18 +90,19 @@ pub fn open(source: &Source) -> Result<Capture, String> {
     let open = |buffer: cpal::BufferSize| {
         // a second of audio: if analysis stalls, the newest audio is dropped, nothing waits
         let (tx, samples) = rtrb::RingBuffer::new(rate as usize);
+        let (both, stereo) = rtrb::RingBuffer::new(rate as usize);
         let stream_config = cpal::StreamConfig { buffer_size: buffer, ..config.into() };
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build::<f32>(&device, stream_config, tx, broken.clone()),
-            SampleFormat::I16 => build::<i16>(&device, stream_config, tx, broken.clone()),
-            SampleFormat::I32 => build::<i32>(&device, stream_config, tx, broken.clone()),
+            SampleFormat::F32 => build::<f32>(&device, stream_config, (tx, both), broken.clone()),
+            SampleFormat::I16 => build::<i16>(&device, stream_config, (tx, both), broken.clone()),
+            SampleFormat::I32 => build::<i32>(&device, stream_config, (tx, both), broken.clone()),
             other => Err(format!("{other} samples aren't supported yet")),
         }?;
-        Ok::<_, String>((stream, samples))
+        Ok::<_, String>((stream, samples, stereo))
     };
-    let (stream, samples) = short.map_or_else(|| open(cpal::BufferSize::Default), |b| open(b).or_else(|_| open(cpal::BufferSize::Default)))?;
+    let (stream, samples, stereo) = short.map_or_else(|| open(cpal::BufferSize::Default), |b| open(b).or_else(|_| open(cpal::BufferSize::Default)))?;
     stream.play().map_err(|e| e.to_string())?;
-    Ok(Capture { stream, samples, rate, channels, name, tap, broken })
+    Ok(Capture { stream, samples, stereo, rate, channels, name, tap, broken })
 }
 
 /// A device just made (an app's tap) shows among the devices a moment later: up to a second.
@@ -112,7 +115,7 @@ fn appears(find: impl Fn() -> Option<cpal::Device>) -> Option<cpal::Device> {
     })
 }
 
-fn build<T: SizedSample>(device: &cpal::Device, config: cpal::StreamConfig, mut tx: rtrb::Producer<f32>, broken: Arc<AtomicBool>) -> Result<cpal::Stream, String>
+fn build<T: SizedSample>(device: &cpal::Device, config: cpal::StreamConfig, (mut tx, mut both): (rtrb::Producer<f32>, rtrb::Producer<[f32; 2]>), broken: Arc<AtomicBool>) -> Result<cpal::Stream, String>
 where
     f32: FromSample<T>,
 {
@@ -132,6 +135,8 @@ where
                     let mono = if mono.is_finite() { mono } else { 0.0 };
                     // full: analysis is behind; drop rather than wait
                     let _ = tx.push(mono);
+                    let [l, r] = [frame[0], frame[used - 1]].map(|s| f32::from_sample(s)).map(|s| if s.is_finite() { s } else { 0.0 });
+                    let _ = both.push([l, r]);
                 }
             },
             move |e| {

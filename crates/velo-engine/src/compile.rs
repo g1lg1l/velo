@@ -223,6 +223,9 @@ impl Compiler {
             // built-in programs by name; each Shader node's last code that compiled, by node id;
             // Image nodes' files
             let (mut cache, mut good, mut library) = (HashMap::new(), HashMap::new(), crate::media::Library::default());
+            // Shader nodes' programs by their code: a preset in ten scenes, or a scene built
+            // again after an edit elsewhere, is compiled once
+            let mut by_code = HashMap::new();
             while let Ok(job) = rx.recv() {
                 let mut todo = vec![job];
                 for newer in rx.try_iter() {
@@ -233,7 +236,7 @@ impl Compiler {
                 }
                 for (key, scene, size) in todo {
                     // a build that panics is that scene's error: the worker goes on with the next
-                    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build((&device, &queue, &wave), &mut cache, &mut good, &mut library, &scene, size)));
+                    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build((&device, &queue, &wave), &mut cache, &mut by_code, &mut good, &mut library, &scene, size)));
                     if tx.send((key, built.unwrap_or_else(|_| Err("this scene couldn't be built".into())))).is_err() {
                         return;
                     }
@@ -265,6 +268,7 @@ fn cached(device: &wgpu::Device, cache: &mut HashMap<&'static str, Program>, nam
 fn build(
     (device, queue, wave): (&wgpu::Device, &wgpu::Queue, &wgpu::TextureView),
     cache: &mut HashMap<&'static str, Program>,
+    by_code: &mut HashMap<String, Program>,
     good: &mut HashMap<String, Program>,
     library: &mut crate::media::Library,
     scene: &Scene,
@@ -312,8 +316,15 @@ fn build(
                 cached(device, cache, shader, source)?
             }
             // a broken Shader node never stops the scene: it keeps its last good code
-            Code::Own(code) => match own(code).and_then(|node| Program::new(device, node)) {
+            Code::Own(code) => match by_code.get(code).cloned().map_or_else(|| own(code).and_then(|node| Program::new(device, node)), Ok) {
                 Ok(program) => {
+                    // shortcut: forgotten all at once past this many (code typed key by key), not least used first
+                    if !by_code.contains_key(code) {
+                        if by_code.len() >= 512 {
+                            by_code.clear();
+                        }
+                        by_code.insert(code.clone(), program.clone());
+                    }
                     good.insert(id.clone(), program.clone());
                     program
                 }

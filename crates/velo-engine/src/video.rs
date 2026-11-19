@@ -146,8 +146,14 @@ pub struct Decoder {
 impl Decoder {
     /// Reading from `start` seconds on.
     pub fn new(clip: &Clip, start: f64) -> Result<Self, String> {
+        // a movie that jumps (cued on every kick) reads from its asset again, not the file:
+        // each reader thread plays one movie, so its last asset is kept on the thread
+        thread_local!(static OPEN: std::cell::RefCell<Option<(PathBuf, Retained<AVURLAsset>)>> = const { std::cell::RefCell::new(None) });
         autoreleasepool(|_| {
-            let asset = asset(&clip.path);
+            let asset = OPEN.with_borrow_mut(|open| match open {
+                Some((path, asset)) if *path == clip.path => asset.clone(),
+                _ => open.insert((clip.path.clone(), asset(&clip.path))).1.clone(),
+            });
             let track = track(&asset).ok_or("no video track")?;
             let reader = unsafe { AVAssetReader::assetReaderWithAsset_error(&asset) }.map_err(|e| e.localizedDescription().to_string())?;
             // BGRA, as the texture takes it; the system converts while it decodes

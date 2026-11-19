@@ -39,6 +39,14 @@ Under **SHARE** in the Output menu:
 
 The share sends the program at full size, whatever the display does.
 
+## Recording
+
+**Record the output** in the Output menu (<kbd>Ctrl</kbd> <kbd>Shift</kbd> <kbd>R</kbd>, <kbd>Cmd</kbd> on a Mac) records what the outputs show to an MP4 in your Movies folder (Videos on Windows and Linux), under `Velo`, at the canvas's size and frame rate. The chip says **REC** and how long it's been; the same command stops it. Blackout, Freeze and the test pattern are recorded as the outputs show them.
+
+The sound Velo hears goes in too: the computer's, an app's, a microphone's or the audio file's, put as late as **Speaker lag** says, so it lines up with the pictures as it did in the room. Untick **With the sound Velo hears** for a silent movie.
+
+Recording needs [ffmpeg](https://ffmpeg.org): `brew install ffmpeg` on a Mac, `winget install ffmpeg` on Windows, your package manager on Linux. On a Mac it encodes on the GPU. Quitting Velo while it records finishes the movie first.
+
 ## On stage
 
 | Key | What it does |

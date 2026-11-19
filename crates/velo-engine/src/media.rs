@@ -744,6 +744,9 @@ pub struct Reel {
     /// The turn it's on, and where its movie was (seconds played) when the turn began.
     began: (i64, f64),
     shows: [usize; 2],
+    /// The slots its shader samples this frame: the one showing, and the one before while it
+    /// fades out. The others' passes sleep.
+    reading: [bool; SLOTS],
     /// Its slots' engine nodes, and what each shows: the turn, its file, whether that was in.
     slots: [usize; SLOTS],
     bound: [Option<(i64, usize, bool)>; SLOTS],
@@ -758,6 +761,11 @@ pub struct Reel {
 }
 
 impl Reel {
+    /// Whether its shader samples input `slot` this frame (as of the last [`Self::step`]).
+    pub fn reads(&self, slot: usize) -> bool {
+        self.reading.get(slot).copied().unwrap_or(true)
+    }
+
     /// The list `id`, engine node `node` running `shader` (medialist.wgsl, none without its
     /// parameters). Movies in HAP only with `bc` (BC textures on this GPU).
     #[allow(clippy::too_many_arguments)]
@@ -788,7 +796,7 @@ impl Reel {
             }
         });
         let n = files.len();
-        Some(Self { id, node, params, hits: Hits::default(), ahead: 0.0, began: (-1, 0.0), shows, slots, bound: [None; SLOTS], files, movie, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done })
+        Some(Self { id, node, params, hits: Hits::default(), ahead: 0.0, began: (-1, 0.0), shows, reading: [true; SLOTS], slots, bound: [None; SLOTS], files, movie, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done })
     }
 
     /// This frame, at `beats` and `time` (seconds): the turn, told to the shader with how much
@@ -825,8 +833,11 @@ impl Reel {
         } else {
             0.0
         };
-        runner.write_param(queue, self.node, self.shows[0], [turn.rem_euclid(SLOTS as i64) as f32, 0.0, 0.0, 0.0]);
+        let now = turn.rem_euclid(SLOTS as i64) as usize;
+        runner.write_param(queue, self.node, self.shows[0], [now as f32, 0.0, 0.0, 0.0]);
         runner.write_param(queue, self.node, self.shows[1], [before, 0.0, 0.0, 0.0]);
+        // medialist-draw.wgsl: the slot showing, and two on while the one before fades
+        self.reading = std::array::from_fn(|k| k == now || (before > 0.0 && k == (now + 2) % SLOTS));
         let file = |at: i64| pick(at, n, order);
         // the files due, the most pressing first: this turn's, the next, the one fading out,
         // then (in memory) every other

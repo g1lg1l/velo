@@ -159,6 +159,8 @@ struct Settings {
     /// How late the speakers play what the computer plays, in ms (Bluetooth): what Velo hears
     /// of it waits that long. This computer's too, not the show's.
     speaker_ms: f32,
+    /// A recording of the output has no sound (it has what Velo hears unless this is on).
+    record_mute: bool,
     /// Each output's corner pin and masks, by where it goes (a display's name, "" for the
     /// window): the venue's cloth and projector, not the show's.
     projections: std::collections::BTreeMap<String, velo_engine::Projection>,
@@ -433,6 +435,8 @@ struct App {
     quitting: Option<bool>,
     /// The restore dialog closed without an answer: offered again next time.
     recovery: Option<Project>,
+    /// The output being recorded: to which file, since when.
+    recording: Option<(PathBuf, std::time::Instant)>,
 }
 
 impl App {
@@ -501,6 +505,7 @@ impl App {
             pending: None,
             quitting: None,
             recovery: files::take_recovery(),
+            recording: None,
         };
         // opened by itself, Velo always starts on the start screen, unsaved work from last time
         // offered there (a project loading below, the first run's demo too, closes it); a
@@ -596,6 +601,10 @@ impl App {
         if let Ok(files) = std::env::var("VELO_DEMO_ATTACH") {
             app.settings.panels.chat = true;
             app.chat_attach_files(&files.split(';').map(PathBuf::from).collect::<Vec<_>>());
+        }
+        // VELO_DEMO_RECORD: the output recorded from the start (end-to-end tests)
+        if std::env::var_os("VELO_DEMO_RECORD").is_some() {
+            app.toggle_record();
         }
         // VELO_DEMO_OSC=port: OSC on (end-to-end tests)
         if let Some(port) = std::env::var("VELO_DEMO_OSC").ok().and_then(|p| p.parse().ok()) {
@@ -942,6 +951,7 @@ impl App {
                     live.set_pattern(!live.pattern);
                 }
             }
+            "stage.record" => self.toggle_record(),
             "stage.adjust" => {
                 let open = self.live.as_ref().map(|live| {
                     let mut s = live.shared.borrow_mut();
@@ -2277,6 +2287,8 @@ impl App {
         if unshared.is_some() {
             live.sharing = None;
         }
+        // a recording finished (stopped here, or failed on its own)
+        let recorded = live.engine.status.recorded.lock().ok().and_then(|mut r| r.take());
         // what the GPU refused that no build caught: said, never a crash
         if let Some(e) = live.engine.status.gpu_error.lock().ok().and_then(|mut e| e.take()) {
             error.get_or_insert(e);
@@ -2305,6 +2317,36 @@ impl App {
         if let Some(e) = unshared {
             self.say(Tone::Error, tr!("Sharing stopped: {}", e));
         }
+        match recorded {
+            Some(Ok(path)) => self.say(Tone::Done, tr!("Recorded {}", path.display())),
+            Some(Err(e)) => {
+                self.recording = None;
+                self.say(Tone::Error, tr!("The recording stopped: {}", e));
+            }
+            None => {}
+        }
+    }
+
+    /// Records the output to a new movie in the Movies folder (Videos elsewhere), or stops it.
+    fn toggle_record(&mut self) {
+        let name = self.file_name();
+        let Some(live) = &mut self.live else { return };
+        if self.recording.take().is_some() {
+            live.record(None);
+            self.say(Tone::Action, tr!("Finishing the recording…"));
+            return;
+        }
+        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+        let dir = home.map(|h| h.join(if cfg!(target_os = "macos") { "Movies" } else { "Videos" }).join("Velo"));
+        let Some(dir) = dir.filter(|d| std::fs::create_dir_all(d).is_ok()) else {
+            self.say(Tone::Error, tr!("No folder to record into"));
+            return;
+        };
+        let Some(path) = (1..10_000).map(|n| dir.join(format!("{name} {n}.mp4"))).find(|p| !p.exists()) else { return };
+        let canvas = &self.session.project.canvas;
+        live.record(Some((path.clone(), [canvas.width, canvas.height], canvas.fps.max(1), !self.settings.record_mute)));
+        self.recording = Some((path, std::time::Instant::now()));
+        self.say(Tone::Action, if self.settings.record_mute { tr!("Recording the output, without sound") } else { tr!("Recording the output and its sound") });
     }
 
     /// Where the output is, if anywhere.
@@ -3990,6 +4032,7 @@ impl App {
             pending: None,
             quitting: None,
             recovery: None,
+            recording: None,
         }
     }
 }
@@ -4155,6 +4198,16 @@ impl eframe::App for App {
     fn on_exit(&mut self) {
         if let Some(reel) = &mut self.reel {
             reel.finish();
+        }
+        // a movie being recorded is finished before Velo goes (half-written, it wouldn't play)
+        if self.recording.take().is_some()
+            && let Some(live) = &mut self.live
+        {
+            live.record(None);
+            let asked = std::time::Instant::now();
+            while live.engine.status.recorded.lock().is_ok_and(|r| r.is_none()) && asked.elapsed() < std::time::Duration::from_secs(60) {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         }
         self.exit_cleanup();
         self.finish_update();

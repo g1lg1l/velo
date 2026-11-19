@@ -312,6 +312,9 @@ pub enum Command {
     Occluded(bool),
     /// The program shared with other apps (Spout) or over the network (NDI) too, or no longer.
     Share(Option<crate::share::Share>),
+    /// The program recorded to a movie, or the recording stopped (its file finished on a
+    /// thread of its own: [`Status::recorded`] says when, and how it went).
+    Record(Option<crate::record::Spec>),
     Quit,
 }
 
@@ -360,6 +363,8 @@ pub struct Status {
     pub asleep: AtomicU64,
     /// Why sharing stopped (no NDI runtime, no DirectX 11), for the UI to say.
     pub share_error: Mutex<Option<String>>,
+    /// A recording finished: its movie, or why it failed.
+    pub recorded: Arc<Mutex<Option<Result<std::path::PathBuf, String>>>>,
 }
 
 /// Node costs, published (arrays past 32 have no Default).
@@ -620,6 +625,12 @@ impl Preview {
 /// What a shared program is read back in: what Spout and NDI take.
 const SHARE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
+/// Where the program read back full size goes.
+enum Taker {
+    Share(crate::share::Share),
+    Record(crate::record::Spec),
+}
+
 /// The program read back full size for a sender's thread.
 struct Sharing {
     preview: Arc<Preview>,
@@ -627,18 +638,21 @@ struct Sharing {
     blit: Blit,
     /// A new picture size for the sender's thread, and its stop.
     swap: mpsc::Sender<Arc<Preview>>,
+    /// A recording keeps the size it started at (the program drawn to it), a share follows the live graph's.
+    fixed: bool,
     stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Sharing {
-    fn start(device: &wgpu::Device, kind: crate::share::Share, size: [u32; 2], status: Arc<Status>) -> Self {
+    fn start(device: &wgpu::Device, taker: Taker, size: [u32; 2], status: Arc<Status>) -> Self {
+        let fixed = matches!(taker, Taker::Record(_));
         let preview = Arc::new(Preview::new(device, size, SHARE_FORMAT));
         let view = preview.texture.create_view(&Default::default());
         let (swap, swaps) = mpsc::channel();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (first, quit) = (preview.clone(), stop.clone());
-        let _ = std::thread::Builder::new().name("velo share".into()).spawn(move || send_shared(kind, first, &swaps, &quit, &status));
-        Self { preview, view, blit: Blit::new(device, SHARE_FORMAT), swap, stop }
+        let _ = std::thread::Builder::new().name("velo share".into()).spawn(move || send_shared(taker, first, &swaps, &quit, &status));
+        Self { preview, view, blit: Blit::new(device, SHARE_FORMAT), swap, fixed, stop }
     }
 }
 
@@ -649,13 +663,22 @@ impl Drop for Sharing {
 }
 
 /// The sender's thread: each picture read back goes out as it comes; a failure is told and ends it.
-fn send_shared(kind: crate::share::Share, mut preview: Arc<Preview>, swaps: &mpsc::Receiver<Arc<Preview>>, stop: &std::sync::atomic::AtomicBool, status: &Status) {
+fn send_shared(taker: Taker, mut preview: Arc<Preview>, swaps: &mpsc::Receiver<Arc<Preview>>, stop: &std::sync::atomic::AtomicBool, status: &Status) {
+    let recording = matches!(taker, Taker::Record(_));
     let fail = |e: String| {
-        if let Ok(mut last) = status.share_error.lock() {
+        if recording {
+            if let Ok(mut told) = status.recorded.lock() {
+                *told = Some(Err(e));
+            }
+        } else if let Ok(mut last) = status.share_error.lock() {
             *last = Some(e);
         }
     };
-    let mut sender = match crate::share::open(kind, "Velo") {
+    let opened = match taker {
+        Taker::Share(kind) => crate::share::open(kind, "Velo"),
+        Taker::Record(spec) => crate::record::Recorder::new(spec, status.recorded.clone()).map(|r| Box::new(r) as Box<dyn crate::share::Sender>),
+    };
+    let mut sender = match opened {
         Ok(s) => s,
         Err(e) => return fail(e),
     };
@@ -714,7 +737,7 @@ impl Timing {
                 if let Ok(view) = buffer.slice(..).get_mapped_range() {
                     let at = |k: usize| view.get(k * 8..k * 8 + 8).and_then(|b| <[u8; 8]>::try_from(b).ok()).map_or(0, u64::from_le_bytes);
                     let spans: Vec<(u64, u64)> = (0..nodes).map(|n| (at(2 * n), at(2 * n + 1))).collect();
-                    let scale = shared(&spans, (1e8 / period.max(1e-6)) as u64);
+                    let scale = overlap(&spans, (1e8 / period.max(1e-6)) as u64);
                     for (slot, (from, to)) in status.costs.0.iter().zip(&spans) {
                         let ms = to.saturating_sub(*from) as f32 * period / 1e6 * scale;
                         slot.store(ms.to_bits(), Relaxed);
@@ -732,7 +755,7 @@ impl Timing {
 /// runs passes side by side (Apple's do), so the spans overlap and add up to several frames.
 /// `spans` are each node's first tick and last; one that ended more than `stale` ticks before
 /// the latest wasn't drawn this frame (asleep) and isn't counted. 1 when nothing overlaps.
-fn shared(spans: &[(u64, u64)], stale: u64) -> f32 {
+pub fn overlap(spans: &[(u64, u64)], stale: u64) -> f32 {
     let latest = spans.iter().map(|s| s.1).max().unwrap_or(0);
     let mut fresh: Vec<(u64, u64)> = spans.iter().copied().filter(|&(from, to)| to > from && to + stale >= latest).collect();
     fresh.sort_unstable();
@@ -867,7 +890,7 @@ impl Thread {
         let timed = self.device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let period = self.queue.get_timestamp_period();
         let (mut timing, mut last_timing): (Option<Timing>, Instant) = (None, start);
-        let mut sharing: Option<Sharing> = None;
+        let (mut sharing, mut recording): (Option<Sharing>, Option<Sharing>) = (None, None);
         let mut aside = Aside::default();
         loop {
             for command in self.commands.try_iter() {
@@ -999,8 +1022,9 @@ impl Thread {
                     }
                     Command::Share(kind) => {
                         let size = graphs.iter().find(|g| g.0 == show.live).map_or([1920, 1080], |(_, g)| g.runner.size());
-                        sharing = kind.map(|k| Sharing::start(&self.device, k, size, self.status.clone()));
+                        sharing = kind.map(|k| Sharing::start(&self.device, Taker::Share(k), size, self.status.clone()));
                     }
+                    Command::Record(spec) => recording = spec.map(|s| Sharing::start(&self.device, Taker::Record(s.clone()), s.size, self.status.clone())),
                     Command::Quit => return,
                 }
             }
@@ -1174,7 +1198,11 @@ impl Thread {
                 // their cards, unless it's going out: a heavy one waking must never drop a frame
                 // of the show.
                 let awake = g.output.map(|out| {
-                    let reads = |n: usize, i: usize| g.lazy.iter().find(|l| l.0 == n).is_none_or(|(_, l)| l.reads(|p| g.mods.get(n).map_or(0.0, |m| m.value(p)), i));
+                    let reads = |n: usize, i: usize| {
+                        g.lazy.iter().find(|l| l.0 == n).is_none_or(|(_, l)| l.reads(|p| g.mods.get(n).map_or(0.0, |m| m.value(p)), i))
+                            // a Media List's slots that aren't showing or fading
+                            && g.lists.iter().find(|r| r.node == n).is_none_or(|r| r.reads(i))
+                    };
                     let mut awake = g.runner.needed(std::iter::once(out).chain(g.probes.iter().map(|p| p.node)), reads);
                     if *key == edit {
                         self.status.asleep.store(awake.iter().take(64).enumerate().filter(|(_, a)| !**a).fold(0, |bits, (n, _)| bits | 1 << n), Relaxed);
@@ -1298,11 +1326,13 @@ impl Thread {
                     w.draw(&self.device, &self.queue, &mut encoder, projection, *guides, &view);
                 }
             }
-            // shared: the program full size, read back for the sender (black in a blackout), at the
-            // live graph's size as it is
-            let mut share_into = None;
-            if let Some(s) = &mut sharing {
-                if let Some(size) = graphs.iter().find(|g| g.0 == show.live).map(|(_, g)| g.runner.size())
+            // shared and recorded: the program full size, read back for the sender (black in a
+            // blackout), at the live graph's size as it is
+            let mut share_into = [None; 2];
+            for (s, into) in [&mut sharing, &mut recording].into_iter().zip(&mut share_into) {
+                let Some(s) = s else { continue };
+                if !s.fixed
+                    && let Some(size) = graphs.iter().find(|g| g.0 == show.live).map(|(_, g)| g.runner.size())
                     && size != s.preview.size
                 {
                     let fresh = Arc::new(Preview::new(&self.device, size, SHARE_FORMAT));
@@ -1310,8 +1340,8 @@ impl Thread {
                     let _ = s.swap.send(fresh.clone());
                     s.preview = fresh;
                 }
-                share_into = s.preview.free();
-                if let Some(i) = share_into {
+                *into = s.preview.free();
+                if let Some(i) = *into {
                     match program {
                         _ if pattern && !blackout => s.blit.draw(&self.device, &self.queue, &mut encoder, [&black, &black], (0.0, PATTERN), &s.view, None),
                         Some((a, b, p)) if !blackout => s.blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), &s.view, None),
@@ -1378,8 +1408,10 @@ impl Thread {
             for p in graphs.iter().flat_map(|(_, g)| &g.probes) {
                 p.read();
             }
-            if let (Some(i), Some(s)) = (share_into, &sharing) {
-                s.preview.mapped(i);
+            for (s, into) in [&sharing, &recording].into_iter().zip(share_into) {
+                if let (Some(i), Some(s)) = (into, s) {
+                    s.preview.mapped(i);
+                }
             }
             if time_now && let Some(x) = &timing {
                 x.read(self.status.clone(), period);
@@ -1927,12 +1959,12 @@ mod tests {
     #[test]
     fn overlapping_node_spans_add_up_to_the_busy_time() {
         // apart: as measured
-        assert_eq!(shared(&[(0, 10), (10, 30)], 1000), 1.0);
+        assert_eq!(overlap(&[(0, 10), (10, 30)], 1000), 1.0);
         // three side by side over the same 10 ticks, and one alone for 10: 40 ticks of spans, 20 busy
-        assert_eq!(shared(&[(100, 110), (100, 110), (100, 110), (110, 120)], 1000), 0.5);
+        assert_eq!(overlap(&[(100, 110), (100, 110), (100, 110), (110, 120)], 1000), 0.5);
         // one asleep, its ticks from long ago, isn't counted
-        assert_eq!(shared(&[(5000, 5010), (5000, 5010), (0, 900)], 1000), 0.5);
-        assert_eq!(shared(&[], 1000), 1.0);
+        assert_eq!(overlap(&[(5000, 5010), (5000, 5010), (0, 900)], 1000), 0.5);
+        assert_eq!(overlap(&[], 1000), 1.0);
     }
 
     #[test]
