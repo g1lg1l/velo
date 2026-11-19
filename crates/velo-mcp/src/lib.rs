@@ -12,10 +12,12 @@ pub const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
 pub const INSTRUCTIONS: &str = "Velo is a live-visuals app: each scene is a graph of GPU nodes (generators, effects, a Shader node running \
 your own WGSL) wired into an Output, moved by the music through mappings (a source like kick or bass moves a parameter) and macros. \
-Every edit is an operator: find them with search_operators, run them with run_operator. Start with list_nodes (every node kind, its \
-parameters, the audio sources, how to write a shader) and query_project. To make something new: scene.add (it becomes the selected \
-scene, which the preview shows), node.add, edge.connect into an Output, node.set_param, mapping.add. Use the existing nodes \
-whenever they can do the job; write a Shader node's WGSL only when none does. For a picture of something (a creature, an object, a \
+Every edit is an operator: find them with search_operators, run them with run_operator. Start with list_nodes (every node kind in a \
+line, recipes, shader and effect presets, the audio sources) and query_project; describe_node gives the parameters of the kinds you \
+pick. To make something new: use_recipe when one is close, or scene.add (it becomes the selected scene, which the preview shows), \
+node.add, edge.connect into an Output, node.set_param, mapping.add. Motion and reacting to the music are signal nodes (LFO, Envelope, \
+Spring, Counter…) and mappings, not shader code. A preset is a ready Shader node: node.add with its preset name. Write a Shader \
+node's own WGSL only when no node, recipe or preset does it. For a picture of something (a creature, an object, a \
 place, a texture from life) use an AI Image node: set its prompt and call generate_image; it plays the pictures a model on the user's \
 computer makes, and feeds effects like any picture. Look at the result with snapshot. \
 The project's shared signals are signal nodes every scene reads (a composite kick, an energy follower): node and edge operators \
@@ -42,8 +44,12 @@ pub fn tools() -> Value {
     let object = |props: Value, required: &[&str]| json!({ "type": "object", "properties": props, "required": required });
     let none = || object(json!({}), &[]);
     json!([
-        { "name": "list_nodes", "description": "Every node kind Velo has: inputs, parameters (id, type, range, default), what it does; the audio sources mappings can use; how to write a Shader node's WGSL, with an example.",
+        { "name": "list_nodes", "description": "Read first: every node kind Velo has in a line (what it does, its ports), recipes that build common looks from them, the shader and effect presets by name, the audio sources mappings can use.",
           "inputSchema": none() },
+        { "name": "describe_node", "description": "The node kinds you'll use, whole: parameters (id, type, range, default, an int's named choices), and for velo.shader or velo.shader_fx its presets and how to write its WGSL.",
+          "inputSchema": object(json!({ "kinds": { "type": "array", "items": { "type": "string" }, "description": "node kinds from list_nodes, e.g. [\"velo.polar\", \"velo.lfo\"]" } }), &["kinds"]) },
+        { "name": "use_recipe", "description": "Build one of list_nodes' recipes as a new scene, selected: a look made of Velo's own nodes, already moved by the music, to tune from. Answers the scene and its nodes' ids.",
+          "inputSchema": object(json!({ "name": { "type": "string", "description": "the recipe's name, e.g. \"Ring Tunnel\"" } }), &["name"]) },
         { "name": "query_project", "description": "Read the project: a summary (scenes, which is live, the selected one in detail: nodes, params, mappings, wires, macros; the shared signals every scene can map), one scene with everything including shader code, or all of it.",
           "inputSchema": object(json!({ "what": { "type": "string", "enum": ["summary", "scene", "full"] }, "scene": { "type": "string", "description": "a scene id for what=scene (default: the selected one; \"shared\": the shared signals)" } }), &[]) },
         { "name": "search_operators", "description": "Find Velo operators (every edit is one) by words in their id, label or description. Returns ids, descriptions and example props.",

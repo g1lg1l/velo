@@ -16,9 +16,13 @@ use eframe::egui::{self, RichText, Ui};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use velo_core::{NODE_KINDS, OPERATORS, SOURCES, is_shader};
+use velo_engine::effects::EFFECT_PRESETS;
+use velo_engine::presets::PRESETS;
+use velo_engine::shader::ParamType;
 use velo_engine::{BUILTINS, GLOBALS, PREVIEW, ShaderNode};
 
 use crate::shell::Tone;
+use crate::templates::{RECIPES, TEMPLATES};
 use crate::theme::Theme;
 use crate::{App, icons, kit, live};
 
@@ -333,7 +337,20 @@ impl App {
                     return Err(read_only());
                 }
                 let id = p["id"].as_str().ok_or("run_operator needs the operator's id")?;
-                let props = p.get("props").filter(|v| !v.is_null()).cloned().unwrap_or(json!({}));
+                let mut props = p.get("props").filter(|v| !v.is_null()).cloned().unwrap_or(json!({}));
+                // a preset by name: its code, and its name for the node
+                if id == "node.add"
+                    && let Some(slug) = props.as_object_mut().and_then(|o| o.remove("preset"))
+                {
+                    let slug = slug.as_str().unwrap_or_default();
+                    let kind = props["kind"].as_str().unwrap_or(velo_core::SHADER).to_string();
+                    let (code, name) = preset(&kind, slug).ok_or_else(|| format!("no {kind} preset {slug}: list_nodes names them"))?;
+                    props["kind"] = json!(if is_shader(&kind) { kind } else { velo_core::SHADER.to_string() });
+                    props["code"] = json!(code);
+                    if props["name"].is_null() {
+                        props["name"] = json!(name);
+                    }
+                }
                 // the live scene is the audience's: outside agents work on the others unless
                 // allowed; Velo's own AI panel may (the user is asking, in Velo)
                 let target = props["scene"].as_str().map(String::from).or_else(|| self.session.active_scene.clone());
@@ -399,6 +416,22 @@ impl App {
             }
             "query_project" => Ok(self.query_project(p)),
             "list_nodes" => Ok(list_nodes()),
+            "describe_node" => describe_node(p),
+            "use_recipe" => {
+                if !prefs.edit {
+                    return Err(read_only());
+                }
+                let name = p["name"].as_str().ok_or("use_recipe needs a recipe's name from list_nodes")?;
+                let recipe = TEMPLATES.iter().chain(&RECIPES).find(|r| r.name.eq_ignore_ascii_case(name)).ok_or_else(|| format!("no recipe {name}: list_nodes has them"))?;
+                crate::templates::add(&mut self.session, recipe, Some(MERGE))?;
+                let scene = self.session.active().ok_or("no scene")?;
+                Ok(json!({
+                    "ok": true,
+                    "scene": scene.id,
+                    "nodes": scene.nodes.iter().map(|n| json!({ "id": n.id, "kind": n.kind })).collect::<Vec<_>>(),
+                    "next": "a new scene, selected: tune it (node.set_param, mapping.add, more nodes) and look with snapshot",
+                }))
+            }
             "shader_errors" => Ok(json!(self.live.as_ref().map(|l| l.errors.iter().map(|(node, e)| json!({ "node": node, "error": e.to_string(), "line": e.line })).collect::<Vec<_>>()).unwrap_or_default())),
             "snapshot" => self.snapshot(),
             "listen" => {
@@ -561,25 +594,92 @@ impl App {
     }
 }
 
-/// Every node kind with its inputs and parameters (id, type, range, default), the audio
-/// sources a mapping can use, and how a Shader node's code is written.
+/// What an agent reads first: every node kind in a line, the recipes built from them, the
+/// shader presets by name, the audio sources. A node's parameters come from [`describe_node`],
+/// for the kinds it picks: the whole catalog at once is some 15k tokens.
 pub(crate) fn list_nodes() -> Value {
     let kinds: Vec<Value> = NODE_KINDS
         .iter()
         .map(|k| {
-            let description = velo_engine::builtin(k.id).and_then(|b| BUILTINS.iter().find(|s| s.0 == b)).and_then(|s| ShaderNode::parse(s.1).ok()).map(|n| n.description);
-            let params: Vec<Value> =
-                live::shader(k.id, None).map(|s| s.controls.iter().map(|(p, _)| json!({ "id": p.id, "type": format!("{:?}", p.ty).to_lowercase(), "min": p.min, "max": p.max, "default": p.default })).collect()).unwrap_or_default();
-            let renders = velo_engine::builtin(k.id).is_some() || is_shader(k.id);
-            json!({ "kind": k.id, "label": k.label, "category": k.category.label(), "inputs": k.inputs, "params": params, "description": description, "renders": renders })
+            let mut v = json!({ "kind": k.id, "label": k.label, "group": k.group(), "about": crate::canvas::node_about(k.id).unwrap_or_default() });
+            if !k.inputs.is_empty() {
+                v["inputs"] = json!(k.inputs);
+            }
+            if k.outputs != ["out"] {
+                v["outputs"] = json!(k.outputs);
+            }
+            v
         })
         .collect();
+    let recipes: Vec<Value> = TEMPLATES.iter().chain(&RECIPES).map(|r| json!({ "name": r.name, "about": r.description, "patch": r.outline() })).collect();
+    let names = |presets: &[(&str, &str)]| presets.iter().map(|p| p.0).collect::<Vec<_>>().join(", ");
     json!({
         "kinds": kinds,
+        "recipes": recipes,
+        "shader_presets": names(&PRESETS),
+        "effect_presets": names(&EFFECT_PRESETS),
         "sources": SOURCES,
-        "wiring": "edge.connect { from: [node, 0], to: [node, input port index] }. A scene shows what feeds its Output node.",
-        "shader": shader_format(),
+        "wiring": "Pictures: edge.connect { from: [node, 0], to: [node, input port index] }; a scene shows what feeds its Output node. Signals (numbers): a signal node's output moves a parameter through mapping.add with source \"<node id>/<output index>\" (or a source name: kick, bass…); signal nodes feed each other with edge.connect.",
+        "how": "Build from these nodes: a look is usually a generator, a few effects and signal nodes moving them. use_recipe starts from a recipe as a new scene. A preset is a ready Shader node: node.add with kind velo.shader (effect presets: velo.shader_fx) and preset, its name. describe_node gives the parameters, ranges and named choices of the kinds you'll use. Write a Shader node's own WGSL only when no node, recipe or preset does it (describe_node velo.shader has the format).",
     })
+}
+
+/// The kinds an agent picked, whole: their parameters (id, type, range, default and the names
+/// of an int's choices), a built-in shader's longer description, and for a Shader node how its
+/// code is written and the presets it can run.
+fn describe_node(p: &Value) -> Result<Value, String> {
+    let asked: Vec<&str> = match (&p["kinds"], &p["kind"]) {
+        (Value::Array(a), _) => a.iter().filter_map(Value::as_str).collect(),
+        (Value::String(s), _) | (_, Value::String(s)) => vec![s.as_str()],
+        _ => Vec::new(),
+    };
+    if asked.is_empty() {
+        return Err("describe_node needs kinds: node kinds from list_nodes, e.g. [\"velo.polar\", \"velo.lfo\"]".into());
+    }
+    let round = |x: f32| ((x as f64) * 1000.0).round() / 1000.0;
+    let kinds = asked
+        .iter()
+        .map(|id| {
+            let k = NODE_KINDS.iter().find(|k| k.id == *id).ok_or_else(|| format!("no node kind {id}: list_nodes has them"))?;
+            let params: Vec<Value> = live::shader(k.id, None)
+                .map(|s| {
+                    s.controls
+                        .iter()
+                        .map(|(p, _)| {
+                            let default = match p.ty {
+                                ParamType::Color | ParamType::Vec4 => json!(p.default.map(round)),
+                                ParamType::Vec2 => json!([round(p.default[0]), round(p.default[1])]),
+                                _ => json!(round(p.default[0])),
+                            };
+                            let mut v = json!({ "id": p.id, "type": format!("{:?}", p.ty).to_lowercase(), "min": round(p.min), "max": round(p.max), "default": default });
+                            if !p.names.is_empty() {
+                                v["choices"] = json!(p.names);
+                            }
+                            v
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut v = json!({ "kind": k.id, "label": k.label, "about": crate::canvas::node_about(k.id).unwrap_or_default(), "inputs": k.inputs, "outputs": k.outputs, "params": params });
+            if let Some(d) = velo_engine::builtin(k.id).and_then(|b| BUILTINS.iter().find(|s| s.0 == b)).and_then(|s| ShaderNode::parse(s.1).ok()).map(|n| n.description) {
+                v["description"] = json!(d);
+            }
+            if is_shader(k.id) {
+                let presets = if k.id == velo_core::SHADER_FX { &EFFECT_PRESETS[..] } else { &PRESETS[..] };
+                v["presets"] = presets.iter().filter_map(|(slug, code)| ShaderNode::parse(code).ok().map(|n| json!({ "preset": slug, "about": n.description }))).collect();
+                v["shader"] = shader_format();
+            }
+            Ok(v)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(json!({ "kinds": kinds }))
+}
+
+/// A preset's code and name, by its slug: a Shader node's (`velo.shader`) or a Shader FX's.
+fn preset(kind: &str, slug: &str) -> Option<(&'static str, String)> {
+    let presets = if kind == velo_core::SHADER_FX { &EFFECT_PRESETS[..] } else { &PRESETS[..] };
+    let code = presets.iter().find(|p| p.0.eq_ignore_ascii_case(slug) || p.0.replace('_', "-") == slug.replace('_', "-"))?.1;
+    Some((code, ShaderNode::parse(code).map_or_else(|_| slug.to_string(), |n| n.name)))
 }
 
 #[cfg(test)]
@@ -610,12 +710,30 @@ mod tests {
 
     #[test]
     fn agents_learn_every_node_and_the_shader_format() {
+        // the index: every kind in a line, each with what it does, and small enough to read first
         let nodes = list_nodes();
         let kinds = nodes["kinds"].as_array().unwrap();
         assert_eq!(kinds.len(), NODE_KINDS.len());
-        let kaleido = kinds.iter().find(|k| k["kind"] == "velo.kaleido").unwrap();
+        assert!(kinds.iter().all(|k| k["about"].as_str().is_some_and(|a| !a.is_empty())), "every kind says what it does");
+        assert!(nodes.to_string().len() < 16_000, "the index stays small: {} bytes", nodes.to_string().len());
+        assert!(nodes["shader_presets"].as_str().unwrap().contains("tunnel") && nodes["effect_presets"].as_str().unwrap().contains("glitch"));
+        let recipes = nodes["recipes"].as_array().unwrap();
+        assert_eq!(recipes.len(), TEMPLATES.len() + RECIPES.len());
+        let tunnel = recipes.iter().find(|r| r["name"] == "Ring Tunnel").unwrap();
+        assert_eq!(tunnel["patch"], "Gradient → Polar; Polar → Feedback; Feedback → Output; kick moves Polar zoom; LFO moves Polar turn");
+        // the kinds asked for, whole
+        let asked = describe_node(&json!({ "kinds": ["velo.kaleido", "velo.lfo", "velo.shader"] })).unwrap();
+        let [kaleido, lfo, shader] = &asked["kinds"].as_array().unwrap()[..] else { panic!() };
         assert!(kaleido["params"].as_array().unwrap().iter().any(|p| p["id"] == "segments" && p["type"] == "int"));
         assert!(kaleido["description"].as_str().is_some_and(|d| !d.is_empty()));
-        assert!(nodes["shader"]["available"].as_str().unwrap().contains("kick"));
+        assert!(lfo["params"].as_array().unwrap().iter().any(|p| p["id"] == "shape" && p["choices"][0] == "Sine"));
+        assert!(shader["shader"]["available"].as_str().unwrap().contains("kick"));
+        assert!(shader["presets"].as_array().unwrap().iter().any(|p| p["preset"] == "tunnel"));
+        assert!(describe_node(&json!({ "kind": "velo.nope" })).is_err());
+        assert!(describe_node(&json!({})).is_err());
+        // a preset by name, for either shader kind
+        assert!(preset(velo_core::SHADER, "starfield").is_some());
+        assert!(preset(velo_core::SHADER_FX, "chromatic_aberration").is_some(), "its slug's - or _");
+        assert!(preset(velo_core::SHADER, "glitch").is_none(), "an effect isn't a Shader node's");
     }
 }

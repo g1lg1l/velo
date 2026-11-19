@@ -70,7 +70,7 @@ impl Bridge {
                         content.push(json!({ "type": "text", "text": format!("{}: {}×{}, {}s long; frames at {}", v["path"].as_str().unwrap_or("the video"), v["width"], v["height"], v["length"], times.join(", ")) }));
                         json!({ "content": content, "isError": false })
                     }
-                    Ok(v) => json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() }], "isError": false }),
+                    Ok(v) => json!({ "content": [{ "type": "text", "text": v.to_string() }], "isError": false }),
                     Err(e) => json!({ "content": [{ "type": "text", "text": e }], "isError": true }),
                 })
             }
@@ -146,7 +146,7 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2025-03-26");
         assert!(b.handle(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })).is_none(), "no reply to a notification");
         let list = b.handle(&json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" })).unwrap();
-        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 13);
+        assert_eq!(list["result"]["tools"].as_array().unwrap().len(), 15);
         let call = b.handle(&json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": { "name": "run_operator", "arguments": { "id": "scene.add" } } })).unwrap();
         assert_eq!(call["result"]["isError"], false);
         let text: Value = serde_json::from_str(call["result"]["content"][0]["text"].as_str().unwrap()).unwrap();

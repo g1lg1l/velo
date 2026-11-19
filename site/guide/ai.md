@@ -22,6 +22,7 @@ Press <kbd>Ctrl</kbd> <kbd>I</kbd> (<kbd>Cmd</kbd> <kbd>I</kbd> on a Mac) to ope
 - **Videos as references**: attach, drop or paste (copied in the file manager) an `.mp4`, `.mov` or `.m4v` and its path goes into your message. The AI decides which frames to look at. HAP movies can't be looked at yet: give it an H.264 or ProRes copy.
 - **The model and how long it thinks**: under the box, from faster to smarter.
 - **Replies** read like a modern AI chat: Markdown with code you can copy, each command it ran folded into one row, and problems as cards with a retry.
+- **What a reply used**: under each reply, next to how long it took, the tokens the model read and wrote, and the price where the provider says it (Claude Code does).
 
 ### Which AI
 
@@ -83,7 +84,8 @@ The bridge is inside the app: `/Applications/Velo.app/Contents/MacOS/velo-mcp` w
 
 Through `velo-mcp` an agent sees what you see and works the way you do:
 
-- **list_nodes** tells it every node kind, its parameters, the audio sources and how to write a shader;
+- **list_nodes** tells it every node kind in a line, the recipes built from them, the shader and effect presets and the audio sources, and **describe_node** the parameters of the kinds it picks;
+- **use_recipe** starts it from a recipe (a look made of Velo's own nodes, already moving with the music), and **run_operator** adds a preset by its name: it writes its own shader only when nothing in Velo does the job;
 - **query_project** reads the project, **search_operators** and **run_operator** find and run any command;
 - **snapshot** shows it the picture, **video_frames** the frames of a reference video, and **shader_errors** what a shader got wrong;
 - **checkpoint** closes its work as one step, and **undo** takes a step back.

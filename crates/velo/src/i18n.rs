@@ -149,6 +149,7 @@ mod tests {
         let fixed = crate::keymap::FIXED.iter().flat_map(|(group, keys)| std::iter::once(*group).chain(keys.iter().map(|k| k.1)));
         let params = velo_core::CANVAS.iter().map(|p| p.name).chain([velo_core::LAUNCH_BEATS.name, "On", "Off"]);
         let nodes = velo_core::NODE_KINDS.iter().flat_map(|k| [k.label, k.group()]).chain(velo_core::Category::ALL.map(velo_core::Category::label));
+        let nodes = nodes.chain(velo_core::NODE_KINDS.iter().filter_map(|k| crate::canvas::node_about(k.id)));
         let tables = ops.chain(commands).chain(fixed).chain(params).chain(nodes);
         missing.extend(tables.filter(|s| !seen.contains_key(s)).map(|s| format!("table: {s:?}")));
         assert!(missing.is_empty(), "missing Italian for:\n{}", missing.join("\n"));

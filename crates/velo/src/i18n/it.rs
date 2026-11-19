@@ -995,6 +995,7 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Open Terminal", "Apri il Terminale"),
     ("{} s · {} steps", "{} s · {} passi"),
     ("{} s", "{} s"),
+    ("{} tokens in, {} out", "{} token letti, {} scritti"),
     ("Take back everything this reply changed", "Annulla tutto quello che ha cambiato questa risposta"),
     ("Copy the reply", "Copia la risposta"),
     ("Retry", "Riprova"),

@@ -18,11 +18,12 @@ use serde_json::{Value, json};
 
 /// What the AI is told besides the user's words.
 pub const BRIEF: &str = "You are the AI inside Velo, the live-visuals app the user is looking at. Use the velo tools to build what the user \
-describes: start with list_nodes (every node, its parameters, how to write a Shader node) and query_project. Make something new in a new \
-scene (scene.add: it becomes the selected scene, which the preview shows) unless the user asks to change one. Build with Velo's existing \
-nodes whenever they can do the job: its generators, effects and signals, found with search_operators and list_nodes, wired together and \
-tuned. Write a Shader node's own WGSL only when nothing existing does it. Make it react to the music: mappings from kick, bass, hat and \
-the others, or the audio fields in a shader (g.kick, g.bass). Pictures the user attaches are references: take their colors, shapes, \
+describes: start with list_nodes (every node in a line, recipes, presets) and query_project, then describe_node for the kinds you'll use. \
+Make something new in a new scene unless the user asks to change one: use_recipe when a recipe is close, else scene.add (it becomes the \
+selected scene, which the preview shows). Build with Velo's existing nodes: generators and effects wired together, presets for ready \
+pictures and effects, signal nodes (LFO, Envelope, Spring, Counter, Smooth…) mapped onto parameters for motion. Write a Shader node's own \
+WGSL only when no node, recipe or preset does it, and say why in your answer. Make it react to the music: mappings from kick, bass, hat \
+and the others, or signal nodes fed by them. Pictures the user attaches are references: take their colors, shapes, \
 motion and mood; a video the user names by its path is one too: look at it with video_frames. Look at your work with snapshot before you answer. Don't call checkpoint: each of your replies undoes in one step. Use \
 only the velo tools. Answer briefly, in the user's language: a sentence or two, short Markdown (bold, lists, `code`) when it helps. \
 Never write em dashes.";
@@ -212,6 +213,42 @@ pub enum Event {
     Problem(String),
     /// The local model's conversation so far: what it remembers next time.
     History(Vec<Value>),
+    /// What the reply used so far, to add up.
+    Usage(Tokens),
+}
+
+/// What a reply used: tokens the model read (cached ones too) and wrote, and its price where
+/// the provider says it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Tokens {
+    pub read: u64,
+    pub written: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dollars: Option<f64>,
+}
+
+impl std::ops::AddAssign for Tokens {
+    fn add_assign(&mut self, more: Tokens) {
+        self.read += more.read;
+        self.written += more.written;
+        self.dollars = match (self.dollars, more.dollars) {
+            (None, None) => None,
+            (a, b) => Some(a.unwrap_or(0.0) + b.unwrap_or(0.0)),
+        };
+    }
+}
+
+/// A token count, short: 820, 12.4k, 1.2M.
+pub fn short(n: u64) -> String {
+    match n {
+        0..1_000 => n.to_string(),
+        1_000..1_000_000 => format!("{:.1}k", n as f64 / 1e3),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
+}
+
+fn count(v: &Value) -> u64 {
+    v.as_u64().unwrap_or(0)
 }
 
 /// One reply on its way.
@@ -352,7 +389,17 @@ pub fn claude_line(line: &str) -> Vec<Event> {
                 out.push(Event::ToolDone(block["tool_use_id"].as_str().unwrap_or_default().into(), (block["is_error"] == true).then(said)));
             }
         }
-        Some("result") if v["is_error"] == true => out.push(Event::Problem(v["result"].as_str().unwrap_or("Claude Code stopped").trim().into())),
+        Some("result") => {
+            // the whole run's use: what it read fresh, wrote to the cache and read from it
+            let u = &v["usage"];
+            let read = count(&u["input_tokens"]) + count(&u["cache_creation_input_tokens"]) + count(&u["cache_read_input_tokens"]);
+            if read > 0 {
+                out.push(Event::Usage(Tokens { read, written: count(&u["output_tokens"]), dollars: v["total_cost_usd"].as_f64() }));
+            }
+            if v["is_error"] == true {
+                out.push(Event::Problem(v["result"].as_str().unwrap_or("Claude Code stopped").trim().into()));
+            }
+        }
         _ => {}
     }
     out
@@ -373,6 +420,8 @@ pub fn codex_line(line: &str) -> Vec<Event> {
         }
         (Some("item.completed"), Some("agent_message")) => item["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| vec![Event::Text(s.into())]).unwrap_or_default(),
         (Some("item.completed"), Some("error")) | (Some("error"), _) => vec![Event::Problem(item["message"].as_str().or(v["message"].as_str()).unwrap_or("Codex stopped").into())],
+        // input_tokens counts the cached ones too
+        (Some("turn.completed"), _) => vec![Event::Usage(Tokens { read: count(&v["usage"]["input_tokens"]), written: count(&v["usage"]["output_tokens"]), dollars: None })],
         (Some("turn.failed"), _) => vec![Event::Problem(v["error"]["message"].as_str().unwrap_or("Codex stopped").into())],
         _ => Vec::new(),
     }
@@ -687,6 +736,11 @@ fn local(prefs: &Prefs, prompt: &str, pictures: &[PathBuf], mut history: Vec<Val
             Ok(v) => v,
             Err(e) => return say(Event::Problem(tr!("The local model didn't answer ({}): {}", prefs.endpoint, e))),
         };
+        // each step reads the whole conversation again: that's what it uses
+        let u = &reply["usage"];
+        if !u.is_null() {
+            say(Event::Usage(Tokens { read: count(&u["prompt_tokens"]), written: count(&u["completion_tokens"]), dollars: None }));
+        }
         let message = &reply["choices"][0]["message"];
         let content = message["content"].as_str().unwrap_or("");
         let calls = message["tool_calls"].as_array().cloned().unwrap_or_default();
@@ -809,6 +863,18 @@ mod tests {
     }
 
     #[test]
+    fn what_a_reply_used_is_counted() {
+        let claude = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.031,"usage":{"input_tokens":12,"cache_creation_input_tokens":3000,"cache_read_input_tokens":9000,"output_tokens":820}}"#;
+        assert_eq!(claude_line(claude), [Event::Usage(Tokens { read: 12_012, written: 820, dollars: Some(0.031) })]);
+        let codex = r#"{"type":"turn.completed","usage":{"input_tokens":5000,"cached_input_tokens":4000,"output_tokens":300}}"#;
+        assert_eq!(codex_line(codex), [Event::Usage(Tokens { read: 5000, written: 300, dollars: None })]);
+        let mut sum = Tokens { read: 1, written: 2, dollars: None };
+        sum += Tokens { read: 10, written: 20, dollars: Some(0.5) };
+        assert_eq!(sum, Tokens { read: 11, written: 22, dollars: Some(0.5) });
+        assert_eq!([short(820), short(12_400), short(1_250_000)], ["820", "12.4k", "1.2M"]);
+    }
+
+    #[test]
     fn keys_are_filed_by_host() {
         assert_eq!(host("https://api.openai.com/v1"), "api.openai.com");
         assert_eq!(host(" http://localhost:11434/v1/ "), "localhost:11434");
@@ -858,7 +924,7 @@ mod tests {
     #[test]
     fn velos_tools_are_offered_as_functions() {
         let f = functions();
-        assert_eq!(f.len(), 13);
+        assert_eq!(f.len(), 15);
         assert!(f.iter().all(|t| t["type"] == "function" && t["function"]["parameters"]["type"] == "object"));
     }
 }

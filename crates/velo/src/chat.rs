@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use velo_core::Project;
 
-use crate::ai::{self, Event, Provider, Run};
+use crate::ai::{self, Event, Provider, Run, Tokens};
 use crate::orb::{self, State};
 use crate::shell::Tone;
 use crate::theme::Theme;
@@ -99,10 +99,12 @@ pub enum Item {
     Problem(String),
     /// Something about the conversation itself (another AI took over, it was stopped).
     Note(String),
-    /// The end of a reply: how long it took, how many commands.
+    /// The end of a reply: how long it took, how many commands, how many tokens.
     End {
         seconds: u32,
         steps: usize,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<Tokens>,
     },
 }
 
@@ -122,6 +124,9 @@ pub struct Conversation {
     run: Option<Run>,
     #[serde(skip)]
     started: Option<Instant>,
+    /// What the reply on its way used so far.
+    #[serde(skip)]
+    tokens: Option<Tokens>,
     /// The project before the last reply, and after it while nothing else changed it.
     #[serde(skip)]
     before: Option<Project>,
@@ -331,6 +336,7 @@ impl Conversation {
             match event {
                 Event::Session(id) => self.session = Some(id),
                 Event::History(h) => self.history = h,
+                Event::Usage(more) => *self.tokens.get_or_insert_default() += more,
                 Event::Text(text) => self.items.push(Item::Text { text, shown: 0 }),
                 Event::Tool(id, label) => {
                     let step = Step { id, label, state: StepState::Running, error: None };
@@ -491,7 +497,7 @@ impl App {
             }
             Err(e) => {
                 c.items.push(Item::Problem(e));
-                c.items.push(Item::End { seconds: 0, steps: 0 });
+                c.items.push(Item::End { seconds: 0, steps: 0, tokens: None });
             }
         }
         // the newest conversation first
@@ -525,7 +531,7 @@ impl App {
         if !reply.iter().any(|i| matches!(i, Item::Text { .. } | Item::Problem(_))) {
             c.items.push(Item::Problem(tr!("{} stopped without an answer.", c.provider.name())));
         }
-        c.items.push(Item::End { seconds: c.started.take().map_or(0, |s| s.elapsed().as_secs() as u32), steps });
+        c.items.push(Item::End { seconds: c.started.take().map_or(0, |s| s.elapsed().as_secs() as u32), steps, tokens: c.tokens.take() });
         c.updated = now();
         // what the reply changed, undoable as a whole while nothing else changes
         if c.before.as_ref().is_some_and(|b| *b != project) {
@@ -922,9 +928,15 @@ impl App {
                 Item::Note(text) => {
                     ui.vertical_centered(|ui| ui.add(Label::new(small(t, text.as_str()).italics().color(t.fg_muted)).wrap()));
                 }
-                Item::End { seconds, steps } => {
+                Item::End { seconds, steps, tokens } => {
                     ui.horizontal(|ui| {
-                        let done = if *steps > 0 { tr!("{} s · {} steps", seconds, steps) } else { tr!("{} s", seconds) };
+                        let mut done = if *steps > 0 { tr!("{} s · {} steps", seconds, steps) } else { tr!("{} s", seconds) };
+                        if let Some(t) = tokens {
+                            done = format!("{done} · {}", tr!("{} tokens in, {} out", ai::short(t.read), ai::short(t.written)));
+                            if let Some(d) = t.dollars {
+                                done = format!("{done} · ${d:.2}");
+                            }
+                        }
                         ui.label(RichText::new(done).font(Theme::mono(t.text_xs)).color(t.fg_muted));
                         kit::right(ui, |ui| {
                             if said && kit::icon_button(ui, t, icons::COPY, tr!("Copy the reply"), false).clicked() {
@@ -1326,7 +1338,7 @@ impl App {
             if let Some(c) = self.chat.chats.iter_mut().find(|c| c.run.is_some()) {
                 c.run = None;
                 c.items.push(Item::Note(tr!("Stopped").into()));
-                c.items.push(Item::End { seconds: c.started.take().map_or(0, |s| s.elapsed().as_secs() as u32), steps: 0 });
+                c.items.push(Item::End { seconds: c.started.take().map_or(0, |s| s.elapsed().as_secs() as u32), steps: 0, tokens: c.tokens.take() });
             }
             self.session.close_merge();
             self.save_chats();
@@ -2054,7 +2066,7 @@ mod tests {
     #[test]
     fn a_reply_that_went_wrong_can_be_sent_again() {
         let step = |state| Item::Steps(vec![Step { id: "1".into(), label: "node.add".into(), state, error: None }]);
-        let end = Item::End { seconds: 1, steps: 1 };
+        let end = Item::End { seconds: 1, steps: 1, tokens: None };
         let chat = |reply: Vec<Item>| Conversation { items: [vec![said("first"), Item::Text { text: "Done.".into(), shown: 5 }, end.clone(), said("rings")], reply].concat(), ..Default::default() };
         let again = |c: &Conversation| c.retry().map(|m| m.text.clone());
         assert_eq!(again(&chat(vec![Item::Problem("Failed to authenticate".into()), end.clone()])).as_deref(), Some("rings"));
@@ -2068,7 +2080,7 @@ mod tests {
     #[test]
     fn conversations_are_kept_without_their_run() {
         let rings = Item::User(Message { text: "rings like this".into(), pictures: vec![PathBuf::from("a.jpg")] });
-        let c = Conversation { title: "Rings".into(), items: vec![rings, Item::Text { text: "Done.".into(), shown: 2 }, Item::End { seconds: 3, steps: 1 }], ..Default::default() };
+        let c = Conversation { title: "Rings".into(), items: vec![rings, Item::Text { text: "Done.".into(), shown: 2 }, Item::End { seconds: 3, steps: 1, tokens: None }], ..Default::default() };
         let back: Vec<Conversation> = serde_json::from_str(&serde_json::to_string(&vec![c]).unwrap()).unwrap();
         assert_eq!(back[0].title, "Rings");
         assert!(matches!(&back[0].items[0], Item::User(m) if m.pictures == [PathBuf::from("a.jpg")]));
