@@ -324,8 +324,11 @@ pub fn write_bundle(dir: &Path, project: &Project) -> Result<(), String> {
 
 /// Writes a single-file project (the autosave; a project opened from one).
 pub fn write_ron(path: &Path, project: &Project) -> Result<(), String> {
-    let text = ron::ser::to_string_pretty(project, ron::ser::PrettyConfig::default().compact_arrays(true)).map_err(|e| e.to_string())?;
-    write_file(path, text.as_bytes())
+    write_file(path, to_ron(project)?.as_bytes())
+}
+
+fn to_ron(project: &Project) -> Result<String, String> {
+    ron::ser::to_string_pretty(project, ron::ser::PrettyConfig::default().compact_arrays(true)).map_err(|e| e.to_string())
 }
 
 /// Writes to a temp file first and syncs it, so a crash mid-save never corrupts a file.
@@ -561,6 +564,7 @@ impl App {
             Ok(()) => {
                 self.saved = self.session.project.clone();
                 // nothing unsaved now: a crash from here offers nothing older than this
+                self.autosave_wait();
                 if let Some(snapshot) = data_file(&own_autosave()) {
                     let _ = std::fs::remove_file(snapshot);
                 }
@@ -661,22 +665,49 @@ impl App {
 
     /// Every 60 s, snapshot unsaved work for crash recovery (nothing unsaved, nothing to snapshot).
     /// Work still waiting for "restore?" has a file of its own, so this never waits for the answer.
+    /// Written (and synced) on a thread of its own, one at a time: a slow disk never stalls a frame.
     pub fn autosave(&mut self, now: f64) {
-        if now - self.last_autosave < AUTOSAVE_SECONDS {
+        if let Some(Ok(written)) = self.autosaving.as_ref().map(std::sync::mpsc::Receiver::try_recv) {
+            self.autosaving = None;
+            self.autosaved_with(written);
+        }
+        if now - self.last_autosave < AUTOSAVE_SECONDS || self.autosaving.is_some() {
             return;
         }
         self.last_autosave = now;
         if self.dirty() && self.session.project != self.autosaved {
-            match data_file(&own_autosave()).ok_or_else(|| tr!("no folder for Velo's data").to_string()).and_then(|path| write_ron(&path, &self.session.project)) {
-                Ok(()) => self.autosaved = self.session.project.clone(),
-                Err(e) => self.say(Tone::Error, tr!("Couldn't keep a copy of your unsaved work: {}", e)),
+            let project = self.session.project.clone();
+            match data_file(&own_autosave()).ok_or_else(|| tr!("no folder for Velo's data").to_string()).and_then(|path| Ok((path, to_ron(&project)?))) {
+                Ok((path, text)) => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send((project, write_file(&path, text.as_bytes())));
+                    });
+                    self.autosaving = Some(rx);
+                }
+                Err(e) => self.autosaved_with((project, Err(e))),
             }
+        }
+    }
+
+    fn autosaved_with(&mut self, (project, written): (Project, Result<(), String>)) {
+        match written {
+            Ok(()) => self.autosaved = project,
+            Err(e) => self.say(Tone::Error, tr!("Couldn't keep a copy of your unsaved work: {}", e)),
+        }
+    }
+
+    /// The autosave being written, done: nothing else may write or remove its file meanwhile.
+    fn autosave_wait(&mut self) {
+        if let Some(written) = self.autosaving.take().and_then(|rx| rx.recv().ok()) {
+            self.autosaved_with(written);
         }
     }
 
     /// On a clean exit with nothing unsaved, drop the lock; otherwise keep the work for next time.
     /// Work still waiting for "restore?" stays in its own file and is offered again.
     pub fn exit_cleanup(&mut self) {
+        self.autosave_wait();
         if self.dirty() {
             if let Some(path) = data_file(&own_autosave()) {
                 let _ = write_ron(&path, &self.session.project);

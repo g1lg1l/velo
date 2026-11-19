@@ -428,6 +428,8 @@ struct App {
     saved: Project,
     autosaved: Project,
     last_autosave: f64,
+    /// The autosave being written on a thread of its own: the copy, and how it went.
+    autosaving: Option<std::sync::mpsc::Receiver<(Project, Result<(), String>)>>,
     pending: Option<files::Pending>,
     /// Quitting with the answer given: Some(false) until the close is asked for, then Some(true).
     quitting: Option<bool>,
@@ -498,6 +500,7 @@ impl App {
             saved: Project::default(),
             autosaved: Project::default(),
             last_autosave: 0.0,
+            autosaving: None,
             pending: None,
             quitting: None,
             recovery: files::take_recovery(),
@@ -3991,6 +3994,7 @@ impl App {
             saved: Project::default(),
             autosaved: Project::default(),
             last_autosave: 0.0,
+            autosaving: None,
             pending: None,
             quitting: None,
             recovery: None,
