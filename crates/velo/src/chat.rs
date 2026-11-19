@@ -930,13 +930,7 @@ impl App {
                 }
                 Item::End { seconds, steps, tokens } => {
                     ui.horizontal(|ui| {
-                        let mut done = if *steps > 0 { tr!("{} s · {} steps", seconds, steps) } else { tr!("{} s", seconds) };
-                        if let Some(t) = tokens {
-                            done = format!("{done} · {}", tr!("{} tokens in, {} out", ai::short(t.read), ai::short(t.written)));
-                            if let Some(d) = t.dollars {
-                                done = format!("{done} · ${d:.2}");
-                            }
-                        }
+                        let done = if *steps > 0 { tr!("{} s · {} steps", seconds, steps) } else { tr!("{} s", seconds) };
                         ui.label(RichText::new(done).font(Theme::mono(t.text_xs)).color(t.fg_muted));
                         kit::right(ui, |ui| {
                             if said && kit::icon_button(ui, t, icons::COPY, tr!("Copy the reply"), false).clicked() {
@@ -953,6 +947,14 @@ impl App {
                             }
                         });
                     });
+                    // what it used, on a line of its own: the buttons above take the row's right
+                    if let Some(used) = tokens {
+                        let mut line = tr!("{} tokens in, {} out", ai::short(used.read), ai::short(used.written));
+                        if let Some(d) = used.dollars {
+                            line = format!("{line} · ${d:.2}");
+                        }
+                        ui.label(RichText::new(line).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+                    }
                 }
             }
         }
