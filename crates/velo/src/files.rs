@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use eframe::egui::{self, RichText};
@@ -171,7 +172,7 @@ pub fn read(path: &Path) -> Result<(Project, Vec<String>), String> {
     let Some(dir) = bundle(path) else { return Ok((read_ron(path)?, Vec::new())) };
     let mut project = read_ron(&dir.join(PROJECT))?;
     let mut missing = Vec::new();
-    for node in project.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in project.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         let Some(file) = node.file.clone() else { continue };
         match plain(&file).then(|| std::fs::read_to_string(dir.join(SHADERS).join(&file)).ok()).flatten() {
             Some(code) => node.code = Some(code),
@@ -216,7 +217,7 @@ fn read_package(path: &Path, media: Option<&Path>) -> Result<(Project, Vec<Strin
     };
     let mut project = parse(&text(&mut zip, PROJECT).ok_or_else(|| tr!("{} is not a valid project: {}", path.display(), PROJECT))?, path)?;
     let mut missing = Vec::new();
-    for node in project.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in project.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         let Some(file) = node.file.clone() else { continue };
         match plain(&file).then(|| text(&mut zip, &format!("{SHADERS}/{file}"))).flatten() {
             Some(code) => node.code = Some(code),
@@ -232,7 +233,7 @@ fn read_package(path: &Path, media: Option<&Path>) -> Result<(Project, Vec<Strin
         let written = to.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::File::create(&to)).and_then(|mut out| std::io::copy(&mut entry, &mut out));
         written.map_err(|e| format!("{}: {e}", to.display()))?;
     }
-    for node in project.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in project.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         if let Some(own) = node.media.as_deref().map(Path::new).filter(|m| m.starts_with(MEDIA) && m.components().all(|c| matches!(c, std::path::Component::Normal(_)))) {
             node.media = Some(media.join(own).to_string_lossy().into_owned());
         }
@@ -253,7 +254,7 @@ pub fn write_package(path: &Path, project: &Project, media: bool) -> Result<(), 
     let text = SimpleFileOptions::default();
     let mut stored = project.clone();
     let mut written = std::collections::HashSet::new();
-    for node in stored.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in stored.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         let Some(code) = node.code.take() else { continue };
         let file = file_of(node);
         if written.insert(file.clone()) {
@@ -266,7 +267,7 @@ pub fn write_package(path: &Path, project: &Project, media: bool) -> Result<(), 
         // each file (or folder of frames) once, under a name of its own; pictures and movies are
         // packed already, so they go in as they are
         let mut names: HashMap<PathBuf, String> = HashMap::new();
-        for node in stored.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+        for node in stored.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
             let Some(from) = node.media.as_deref().map(PathBuf::from).filter(|m| m.exists()) else { continue };
             if let Some(name) = names.get(&from) {
                 node.media = Some(name.clone());
@@ -314,7 +315,7 @@ pub fn write_bundle(dir: &Path, project: &Project) -> Result<(), String> {
     let shaders = dir.join(SHADERS);
     std::fs::create_dir_all(&shaders).map_err(|e| format!("{}: {e}", shaders.display()))?;
     let mut stored = project.clone();
-    for node in stored.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in stored.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         let Some(code) = node.code.take() else { continue };
         store(dir, node, &code)?;
         node.file = Some(file_of(node));
@@ -324,8 +325,32 @@ pub fn write_bundle(dir: &Path, project: &Project) -> Result<(), String> {
 
 /// Writes a single-file project (the autosave; a project opened from one).
 pub fn write_ron(path: &Path, project: &Project) -> Result<(), String> {
-    let text = ron::ser::to_string_pretty(project, ron::ser::PrettyConfig::default().compact_arrays(true)).map_err(|e| e.to_string())?;
-    write_file(path, text.as_bytes())
+    write_file(path, to_ron(project)?.as_bytes())
+}
+
+fn to_ron(project: &Project) -> Result<String, String> {
+    ron::ser::to_string_pretty(project, ron::ser::PrettyConfig::default().compact_arrays(true)).map_err(|e| e.to_string())
+}
+
+/// Runs `job` on Velo's one writing thread, after the jobs given before it: files written there
+/// never stall a frame, and never pass each other.
+pub fn background(job: impl FnOnce() + Send + 'static) {
+    type Job = Box<dyn FnOnce() + Send>;
+    static WRITER: std::sync::LazyLock<std::sync::mpsc::Sender<Job>> = std::sync::LazyLock::new(|| {
+        let (tx, jobs) = std::sync::mpsc::channel::<Job>();
+        let _ = std::thread::Builder::new().name("velo writer".into()).spawn(move || jobs.into_iter().for_each(|job| job()));
+        tx
+    });
+    let _ = WRITER.send(Box::new(job));
+}
+
+/// Waits for what was given to [`background`] so far (quitting).
+pub fn written() {
+    let (tx, done) = std::sync::mpsc::channel();
+    background(move || {
+        let _ = tx.send(());
+    });
+    let _ = done.recv();
 }
 
 /// Writes to a temp file first and syncs it, so a crash mid-save never corrupts a file.
@@ -561,6 +586,7 @@ impl App {
             Ok(()) => {
                 self.saved = self.session.project.clone();
                 // nothing unsaved now: a crash from here offers nothing older than this
+                self.autosave_wait();
                 if let Some(snapshot) = data_file(&own_autosave()) {
                     let _ = std::fs::remove_file(snapshot);
                 }
@@ -661,22 +687,50 @@ impl App {
 
     /// Every 60 s, snapshot unsaved work for crash recovery (nothing unsaved, nothing to snapshot).
     /// Work still waiting for "restore?" has a file of its own, so this never waits for the answer.
+    /// Written (and synced) on a thread of its own, one at a time: a slow disk never stalls a frame.
     pub fn autosave(&mut self, now: f64) {
-        if now - self.last_autosave < AUTOSAVE_SECONDS {
+        if let Some(Ok(written)) = self.autosaving.as_ref().map(std::sync::mpsc::Receiver::try_recv) {
+            self.autosaving = None;
+            self.autosaved_with(written);
+        }
+        if now - self.last_autosave < AUTOSAVE_SECONDS || self.autosaving.is_some() {
             return;
         }
         self.last_autosave = now;
         if self.dirty() && self.session.project != self.autosaved {
-            match data_file(&own_autosave()).ok_or_else(|| tr!("no folder for Velo's data").to_string()).and_then(|path| write_ron(&path, &self.session.project)) {
-                Ok(()) => self.autosaved = self.session.project.clone(),
-                Err(e) => self.say(Tone::Error, tr!("Couldn't keep a copy of your unsaved work: {}", e)),
+            let project = self.session.project.clone();
+            match data_file(&own_autosave()).ok_or_else(|| tr!("no folder for Velo's data").to_string()).and_then(|path| Ok((path, to_ron(&project)?))) {
+                Ok((path, text)) => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send((project, write_file(&path, text.as_bytes())));
+                    });
+                    self.autosaving = Some(rx);
+                }
+                Err(e) => self.autosaved_with((project, Err(e))),
             }
+        }
+    }
+
+    fn autosaved_with(&mut self, (project, written): (Project, Result<(), String>)) {
+        match written {
+            Ok(()) => self.autosaved = project,
+            Err(e) => self.say(Tone::Error, tr!("Couldn't keep a copy of your unsaved work: {}", e)),
+        }
+    }
+
+    /// The autosave being written, done: nothing else may write or remove its file meanwhile.
+    fn autosave_wait(&mut self) {
+        if let Some(written) = self.autosaving.take().and_then(|rx| rx.recv().ok()) {
+            self.autosaved_with(written);
         }
     }
 
     /// On a clean exit with nothing unsaved, drop the lock; otherwise keep the work for next time.
     /// Work still waiting for "restore?" stays in its own file and is offered again.
     pub fn exit_cleanup(&mut self) {
+        self.autosave_wait();
+        written(); // the chats, the cards' pictures
         if self.dirty() {
             if let Some(path) = data_file(&own_autosave()) {
                 let _ = write_ron(&path, &self.session.project);
@@ -763,6 +817,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_writing_thread_keeps_the_order_and_quitting_waits_for_it() {
+        let done = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        for i in 0..20 {
+            let done = done.clone();
+            background(move || done.lock().unwrap().push(i));
+        }
+        written();
+        assert_eq!(*done.lock().unwrap(), (0..20).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn a_crashed_sessions_work_is_set_aside_and_a_running_ones_is_left_alone() {
         let dir = std::env::temp_dir().join(format!("velo-recover-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -816,7 +881,7 @@ mod tests {
         session.run("node.add", json!({ "kind": velo_core::SHADER, "name": "Tunnel", "code": velo_engine::TEMPLATE })).unwrap();
         for media in [&picture, &picture, &frames] {
             session.run("node.add", json!({ "kind": velo_core::IMAGE })).unwrap();
-            session.project.scenes[0].nodes.last_mut().unwrap().media = Some(media.to_string_lossy().into_owned());
+            Arc::make_mut(&mut session.project.scenes[0]).nodes.last_mut().unwrap().media = Some(media.to_string_lossy().into_owned());
         }
         let project = session.project.clone();
         // saved: one file, the code in it, the media where they are
@@ -854,7 +919,7 @@ mod tests {
         // a node from a single-file project: code, no file
         let scene = session.project.scenes[0].id.clone();
         let mut project = session.project.clone();
-        project.scenes[0].nodes.push(Node {
+        Arc::make_mut(&mut project.scenes[0]).nodes.push(Node {
             id: "n_old".into(),
             kind: velo_core::SHADER.into(),
             name: "Old".into(),
@@ -897,8 +962,8 @@ mod tests {
         // a missing file is reported; a name leaving shaders/ is never read
         std::fs::remove_file(dir.join("shaders/n_old.wgsl")).unwrap();
         let mut evil = back.clone();
-        evil.scenes[0].nodes[0].file = Some("../project.ron".into());
-        evil.scenes[0].nodes[0].code = None;
+        let node = &mut Arc::make_mut(&mut evil.scenes[0]).nodes[0];
+        (node.file, node.code) = (Some("../project.ron".into()), None);
         write_ron(&dir.join(PROJECT), &evil).unwrap();
         let (opened, missing) = read(&dir).unwrap();
         assert_eq!(missing, ["../project.ron", "n_old.wgsl"]);

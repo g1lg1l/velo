@@ -43,6 +43,7 @@ use shell::Tone;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
@@ -90,8 +91,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// The autopilot's next scene among those that take turns (not a layer, not left out, not the
 /// silence scene): the one after `now`, or with `random` (0..1) any but `now`. None with fewer
 /// than two.
-fn next_turn(scenes: &[Scene], now: Option<&str>, random: Option<f64>) -> Option<String> {
-    let turns: Vec<&Scene> = scenes.iter().filter(|s| s.layer == Layer::Scene && !s.manual && !s.silence).collect();
+fn next_turn(scenes: &[Arc<Scene>], now: Option<&str>, random: Option<f64>) -> Option<String> {
+    let turns: Vec<&Arc<Scene>> = scenes.iter().filter(|s| s.layer == Layer::Scene && !s.manual && !s.silence).collect();
     if turns.len() < 2 {
         return None;
     }
@@ -430,6 +431,8 @@ struct App {
     saved: Project,
     autosaved: Project,
     last_autosave: f64,
+    /// The autosave being written on a thread of its own: the copy, and how it went.
+    autosaving: Option<std::sync::mpsc::Receiver<(Project, Result<(), String>)>>,
     pending: Option<files::Pending>,
     /// Quitting with the answer given: Some(false) until the close is asked for, then Some(true).
     quitting: Option<bool>,
@@ -437,6 +440,8 @@ struct App {
     recovery: Option<Project>,
     /// The output being recorded: to which file, since when.
     recording: Option<(PathBuf, std::time::Instant)>,
+    /// When the ui last ran with the window hidden.
+    hidden_pass: Option<std::time::Instant>,
 }
 
 impl App {
@@ -502,10 +507,12 @@ impl App {
             saved: Project::default(),
             autosaved: Project::default(),
             last_autosave: 0.0,
+            autosaving: None,
             pending: None,
             quitting: None,
             recovery: files::take_recovery(),
             recording: None,
+            hidden_pass: None,
         };
         // opened by itself, Velo always starts on the start screen, unsaved work from last time
         // offered there (a project loading below, the first run's demo too, closes it); a
@@ -1186,7 +1193,7 @@ impl App {
     }
 
     /// A scene card dragged over the list: a line where it would land, the move on release.
-    fn scene_drop(&mut self, ui: &egui::Ui, t: &Theme, scenes: &[Scene], cards: &[egui::Rect]) {
+    fn scene_drop(&mut self, ui: &egui::Ui, t: &Theme, scenes: &[Arc<Scene>], cards: &[egui::Rect]) {
         let Some(drag) = egui::DragAndDrop::payload::<widgets::SceneDrag>(ui.ctx()) else { return };
         let Some(from) = scenes.iter().position(|s| s.id == drag.0) else { return };
         let Some(p) = ui.ctx().pointer_interact_pos().filter(|p| ui.clip_rect().contains(*p)) else { return };
@@ -1797,7 +1804,7 @@ impl App {
             i += 1;
         }
         // the scenes that read any of it, through a Shared node or a mapping
-        let reads = |s: &&Scene| s.nodes.iter().flat_map(|n| n.link.iter().chain(n.mappings.iter().map(|m| &m.source))).filter_map(|source| velo_core::shared_output(source)).any(|(id, _)| chain.iter().any(|c| c == id));
+        let reads = |s: &&Arc<Scene>| s.nodes.iter().flat_map(|n| n.link.iter().chain(n.mappings.iter().map(|m| &m.source))).filter_map(|source| velo_core::shared_output(source)).any(|(id, _)| chain.iter().any(|c| c == id));
         let scenes = project.scenes.iter().filter(reads).count();
         // by its group's name where it's the group's output, as the node menu and the deck call it
         let name = shared_sources(project).into_iter().find(|(key, _)| *key == velo_core::shared_key(&to, port)).map_or_else(|| output_name(&project.shared, &to, port), |(_, name)| name);
@@ -2270,18 +2277,14 @@ impl App {
         self.watch_engine(ctx.input(|i| i.time));
         self.autopilot(ctx.input(|i| i.stable_dt).min(0.1), ctx.input(|i| i.time));
         self.usage.sample(self.live.as_ref().map(|l| l.fps));
+        let wanted = self.preview_wanted();
         let Some(live) = &mut self.live else { return };
         live.budget = self.usage.vram_budget;
         if let Some((scene, beats)) = self.session.morph.take() {
             live.morph(scene, beats);
         }
         let scene = self.session.active();
-        // wanted where it shows: the floating card, behind the canvas, the split canvas' picture
-        // (it hides the card: without it here, the picture beside or under the nodes froze while
-        // an output window kept going), or an Output node's viewer
-        let output_node = scene.is_some_and(|s| s.nodes.iter().any(|n| node_kind(&n.kind).is_some_and(|k| k.category == Category::Output)));
-        let wanted = !self.settings.hide_preview || self.settings.preview_background || self.settings.split != Split::Off || output_node;
-        let mut error = live.sync(ctx, &self.session.project, scene, wanted);
+        let mut error = live.sync(ctx, &self.session.project, self.session.revision(), scene, wanted);
         // sharing that stopped (no NDI runtime, no DirectX 11): said, and off
         let unshared = live.engine.status.share_error.lock().ok().and_then(|mut e| e.take());
         if unshared.is_some() {
@@ -2347,6 +2350,14 @@ impl App {
         live.record(Some((path.clone(), [canvas.width, canvas.height], canvas.fps.max(1), !self.settings.record_mute)));
         self.recording = Some((path, std::time::Instant::now()));
         self.say(Tone::Action, if self.settings.record_mute { tr!("Recording the output, without sound") } else { tr!("Recording the output and its sound") });
+    }
+
+    /// The preview is wanted where it shows: the floating card, behind the canvas, the split
+    /// canvas' picture (it hides the card: without it here, the picture beside or under the nodes
+    /// froze while an output window kept going), or an Output node's viewer.
+    fn preview_wanted(&self) -> bool {
+        let output_node = self.session.active().is_some_and(|s| s.nodes.iter().any(|n| node_kind(&n.kind).is_some_and(|k| k.category == Category::Output)));
+        !self.settings.hide_preview || self.settings.preview_background || self.settings.split != Split::Off || output_node
     }
 
     /// Where the output is, if anywhere.
@@ -3027,7 +3038,7 @@ impl App {
         let Some(outputs) = scene.node(node).and_then(|n| node_kind(&n.kind)).map(|k| k.outputs) else { return };
         // what it moves: in its scene; a shared signal's, in every scene (named with its scene)
         let shared = scene.id == velo_core::SHARED;
-        let graphs: Vec<velo_core::Scene> = if shared { self.session.project.scenes.clone() } else { vec![scene.clone()] };
+        let graphs: Vec<Arc<Scene>> = self.session.project.scenes.iter().filter(|s| shared || s.id == scene.id).cloned().collect();
         let links: Vec<(&str, String, &velo_core::Node, &Mapping, u8)> = graphs
             .iter()
             .flat_map(|g| g.nodes.iter().flat_map(move |n| n.mappings.iter().map(move |m| (g, n, m))))
@@ -3825,12 +3836,12 @@ mod projection_tests {
 
 #[cfg(test)]
 mod pilot_tests {
-    use super::{Hush, Layer, Pilot, Scene, next_turn};
+    use super::{Arc, Hush, Layer, Pilot, Scene, next_turn};
 
     #[test]
     fn the_autopilot_takes_turns_among_the_scenes_left_in() {
         let scene = |id: &str, layer: Layer, manual: bool| Scene { id: id.into(), layer, manual, ..Default::default() };
-        let scenes = [scene("a", Layer::Scene, false), scene("t", Layer::Top, false), scene("b", Layer::Scene, false), scene("m", Layer::Scene, true), scene("c", Layer::Scene, false)];
+        let scenes = [scene("a", Layer::Scene, false), scene("t", Layer::Top, false), scene("b", Layer::Scene, false), scene("m", Layer::Scene, true), scene("c", Layer::Scene, false)].map(Arc::new);
         assert_eq!(next_turn(&scenes, Some("a"), None).as_deref(), Some("b"), "past the layer");
         assert_eq!(next_turn(&scenes, Some("c"), None).as_deref(), Some("a"), "past the one left out, round to the first");
         assert_eq!(next_turn(&scenes, Some("m"), None).as_deref(), Some("a"), "from a scene out of the turns: the first");
@@ -3839,7 +3850,7 @@ mod pilot_tests {
             assert!(next != "b" && ["a", "c"].contains(&next.as_str()), "{r}: {next}");
         }
         assert_eq!(next_turn(&scenes[..2], Some("a"), None), None, "one scene and a layer: nothing to turn to");
-        let quiet = [scene("a", Layer::Scene, false), Scene { silence: true, ..scene("q", Layer::Scene, false) }, scene("b", Layer::Scene, false)];
+        let quiet = [scene("a", Layer::Scene, false), Scene { silence: true, ..scene("q", Layer::Scene, false) }, scene("b", Layer::Scene, false)].map(Arc::new);
         assert_eq!(next_turn(&quiet, Some("a"), None).as_deref(), Some("b"), "the silence scene takes no turn");
     }
 
@@ -4029,10 +4040,12 @@ impl App {
             saved: Project::default(),
             autosaved: Project::default(),
             last_autosave: 0.0,
+            autosaving: None,
             pending: None,
             quitting: None,
             recovery: None,
             recording: None,
+            hidden_pass: None,
         }
     }
 }
@@ -4044,6 +4057,17 @@ impl eframe::App for App {
             self.theme.apply(ctx);
         }
         let now = ctx.input(|i| i.time);
+        // minimized or covered with the engine running: eframe would run only this, and MIDI,
+        // the autopilot and the engine's sync live in the ui, so the show would stop. The ui
+        // goes on, unpainted
+        if self.live.is_some() && !ctx.input(|i| i.viewport().visible().unwrap_or(true)) {
+            // at the engine's pace: each command brings a pass at once
+            if self.hidden_pass.is_none_or(|at| at.elapsed() >= Duration::from_millis(16)) {
+                self.hidden_pass = Some(std::time::Instant::now());
+                ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+            }
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
         self.autosave(now);
         self.watch_shaders(now);
         self.poll_agent(ctx, now);
@@ -4142,9 +4166,17 @@ impl eframe::App for App {
         if let Some(reel) = &mut self.reel {
             reel.frame(&ctx, picture, output);
         }
-        // live: at the preview's rate (it comes at most every 16 ms); else a frame a second at
-        // rest, for the autosave check
-        ctx.request_repaint_after(if self.live.is_some() { Duration::from_millis(16) } else { Duration::from_secs(1) });
+        // live: at the preview's rate (it comes at most every 16 ms) while it shows, always while the
+        // autopilot hears every frame for drops or Link leads the beat; else a few frames a second
+        // (the cards' pictures, the beat dot), fewer behind another app. At rest a frame a second,
+        // for the autosave check. MIDI, OSC and the agent wake it at once.
+        let focused = ctx.input(|i| i.focused);
+        match &self.live {
+            Some(live) if self.settings.autopilot.on || live.link_peers().is_some() => ctx.request_repaint_after(Duration::from_millis(16)),
+            Some(live) if live.picture().is_some() && self.preview_wanted() => kit::animate(&ctx),
+            Some(_) => ctx.request_repaint_after(Duration::from_millis(if focused { 100 } else { 250 })),
+            None => ctx.request_repaint_after(Duration::from_secs(1)),
+        }
         self.cpu.last_layout = started.elapsed().as_secs_f32();
     }
 

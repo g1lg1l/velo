@@ -142,6 +142,8 @@ enum News {
     Models(String, Result<Vec<String>, String>),
     /// The local servers answering, and their models.
     Found(Vec<(usize, Vec<String>)>),
+    /// A picture read, as a texture (None: it can't be read).
+    Thumb(PathBuf, Option<TextureHandle>),
 }
 
 #[derive(Default)]
@@ -166,6 +168,8 @@ pub struct Chat {
     bar_h: f32,
     /// Scroll to the newest message next frame.
     jump: bool,
+    /// Each item's height as last drawn, for the conversation and width they were drawn at.
+    heights: ((usize, f32), Vec<f32>),
     /// Pictures as textures, by file (None: it can't be read).
     thumbs: HashMap<PathBuf, Option<TextureHandle>>,
     /// What the workers found, as it comes.
@@ -412,19 +416,26 @@ impl App {
             return;
         }
         let keep: Vec<&Conversation> = self.chat.chats.iter().filter(|c| !c.items.is_empty()).take(KEEP).collect();
-        if let (Some(file), Ok(text)) = (Self::chats_file(), serde_json::to_string(&keep)) {
-            let _ = crate::files::write_file(&file, text.as_bytes());
-        }
+        let (file, text) = (Self::chats_file(), serde_json::to_string(&keep));
         // the pictures nothing shows any more go: no conversation, not the draft, not the chat
         // an Undo can bring back
         let chats = self.chat.chats.iter().chain(self.chat.deleted.as_ref().map(|d| &d.1));
         let sent = chats.flat_map(|c| &c.items).filter_map(|i| if let Item::User(m) = i { Some(&m.pictures) } else { None }).flatten();
-        let kept: HashSet<&PathBuf> = sent.chain(&self.chat.pictures).collect();
-        for file in std::fs::read_dir(ai::pictures_dir()).into_iter().flatten().flatten() {
-            if !kept.contains(&file.path()) {
-                let _ = std::fs::remove_file(file.path());
+        let kept: HashSet<PathBuf> = sent.chain(&self.chat.pictures).cloned().collect();
+        let now = std::time::SystemTime::now();
+        // written and pruned on the writing thread (a long history fsynced in a frame)
+        crate::files::background(move || {
+            if let (Some(file), Ok(text)) = (file, text) {
+                let _ = crate::files::write_file(&file, text.as_bytes());
             }
-        }
+            for file in std::fs::read_dir(ai::pictures_dir()).into_iter().flatten().flatten() {
+                // (one kept since this was asked is a picture just attached)
+                let older = file.metadata().and_then(|m| m.modified()).is_ok_and(|at| at < now);
+                if older && !kept.contains(&file.path()) {
+                    let _ = std::fs::remove_file(file.path());
+                }
+            }
+        });
     }
 
     /// The conversation on screen (there's always one).
@@ -600,17 +611,22 @@ impl App {
         rest
     }
 
-    /// A picture as a texture, made once (None: it can't be read, gone or broken).
+    /// A picture as a texture, made once on a worker (None: not read yet, gone or broken).
     fn thumb(&mut self, ctx: &egui::Context, path: &Path) -> Option<TextureHandle> {
-        self.chat
-            .thumbs
-            .entry(path.to_path_buf())
-            .or_insert_with(|| {
-                let picture = image::open(path).ok()?.thumbnail(320, 320).to_rgba8();
+        if let Some(thumb) = self.chat.thumbs.get(path) {
+            return thumb.clone();
+        }
+        self.chat.thumbs.insert(path.to_path_buf(), None);
+        let (path, loader) = (path.to_path_buf(), ctx.clone());
+        self.chat_work(ctx, move || {
+            let thumb = image::open(&path).ok().map(|picture| {
+                let picture = picture.thumbnail(320, 320).to_rgba8();
                 let image = egui::ColorImage::from_rgba_unmultiplied([picture.width() as usize, picture.height() as usize], &picture);
-                Some(ctx.load_texture(path.to_string_lossy(), image, egui::TextureOptions::LINEAR))
-            })
-            .clone()
+                loader.load_texture(path.to_string_lossy(), image, egui::TextureOptions::LINEAR)
+            });
+            News::Thumb(path, thumb)
+        });
+        None
     }
 
     // ---- what workers find out ---------------------------------------------------------------
@@ -670,6 +686,9 @@ impl App {
                 }
                 News::Models(..) => {}
                 News::Found(found) => self.chat.found = Some(found),
+                News::Thumb(path, texture) => {
+                    self.chat.thumbs.insert(path, texture);
+                }
             }
         }
     }
@@ -829,7 +848,7 @@ impl App {
                 }
             }
         });
-        ui.ctx().request_repaint(); // the big orb breathes
+        kit::animate(ui.ctx()); // the big orb breathes
     }
 
     /// The messages, the guide or the empty state, and the status of a reply on its way.
@@ -859,11 +878,23 @@ impl App {
         let retry_on_card = c.last_reply().iter().any(|i| matches!(i, Item::Problem(_)));
         let provider = c.provider;
         let (mut typing, mut said) = (false, false);
+        // an item out of view isn't laid out: its height as last drawn stands in (the newest
+        // ones, still changing, always are)
+        let (view, count) = (ui.clip_rect(), c.items.len());
+        let heights = &mut self.chat.heights;
+        if heights.0 != (current, width) || heights.1.len() > count {
+            *heights = ((current, width), Vec::new());
+        }
         for (n, item) in c.items.iter_mut().enumerate() {
-            said |= matches!(item, Item::Text { .. });
+            said = !matches!(item, Item::User(_)) && (said || matches!(item, Item::Text { .. }));
+            let top = ui.cursor().top();
+            let settled = n + 3 < count && !matches!(item, Item::Text { text, shown } if *shown < text.len() && *shown < text.chars().count());
+            if let Some(&h) = heights.1.get(n).filter(|&&h| settled && (top > view.bottom() || top + h < view.top())) {
+                ui.add_space(h);
+                continue;
+            }
             match item {
                 Item::User(message) => {
-                    said = false;
                     // a new exchange: room above it (AI Elements' Message, py-4)
                     ui.add_space(if n == 0 { 4.0 } else { 18.0 });
                     if !message.pictures.is_empty() {
@@ -971,6 +1002,8 @@ impl App {
                     }
                 }
             }
+            heights.1.resize(heights.1.len().max(n + 1), 0.0);
+            heights.1[n] = ui.cursor().top() - top;
         }
         // a reply on its way: the orb, what it's doing, for how long (RareUI's AI Status)
         if c.run.is_some() {
@@ -1332,7 +1365,7 @@ impl App {
             };
             ui.data_mut(|d| d.insert_temp(key, turn));
             beam(ui.painter(), box_rect, 16.0, strength, turn);
-            ui.ctx().request_repaint();
+            kit::animate(ui.ctx());
         }
         if let Some(i) = remove {
             self.chat.pictures.remove(i);

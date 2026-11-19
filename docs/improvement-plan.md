@@ -98,6 +98,12 @@ holds at 60 after it. `scene_costs` now scales overlapping spans as the live tim
 
 ## Phase 3: UI cost (grows with project size)
 
+Done (merged into `perf/engine`): `ui()` went from 1.4-1.8 ms to about 0.95 ms a frame on
+cumple-ta-fe's 73-node scene, the whole UI frame from 3.6-5.8 ms to about 3.2 ms. The biggest cost
+wasn't in this list: every Shader FX card parsed its JSON header several times a frame. Left: the
+inspector panels' one-scene clone (~4 µs). With the window minimized or covered and the engine
+running, the ui now keeps running unpainted (MIDI, the autopilot and the engine's sync live in it).
+
 1. **Repaint policy**: the UI rebuilds every 16 ms while the engine exists, even when nothing moves
    (`velo/src/main.rs:4099`); the chat's prompt beam and empty-chat orb ask for an immediate repaint
    every frame (`chat.rs:826,1329`, also `widgets.rs:1768`), so the UI runs at 120 Hz on ProMotion

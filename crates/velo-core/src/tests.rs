@@ -33,6 +33,27 @@ fn undo_redo_round_trip() {
 }
 
 #[test]
+fn a_step_copies_only_the_scene_it_changes_and_says_it_changed() {
+    let mut s = session();
+    ok(&mut s, "scene.add", json!({}));
+    let (before, rev) = (s.project.clone(), s.revision());
+    ok(&mut s, "scene.rename", json!({"name": "Intro"}));
+    // the step kept shares the scene it didn't touch; the renamed one is a copy
+    assert!(Arc::ptr_eq(&before.scenes[0], &s.project.scenes[0]) && !Arc::ptr_eq(&before.scenes[1], &s.project.scenes[1]));
+    assert_ne!(s.revision(), rev, "an edit");
+    let rev = s.revision();
+    ok(&mut s, "scene.rename", json!({"name": "Intro"}));
+    assert_eq!(s.revision(), rev, "the same name: no change");
+    ok(&mut s, "edit.undo", json!({}));
+    assert!(s.project == before && s.revision() != rev, "undo");
+    let rev = s.revision();
+    ok(&mut s, "edit.redo", json!({}));
+    assert_ne!(s.revision(), rev, "redo");
+    // a project opened in a new session never passes for one seen before
+    assert_ne!(Session::with_project(s.project.clone()).revision(), s.revision());
+}
+
+#[test]
 fn drags_merge_into_one_step() {
     let mut s = Session::default();
     for fps in [30.0, 40.0, 50.0] {
@@ -1085,7 +1106,7 @@ fn a_duplicated_scene_is_its_own_copy_right_after_it() {
     // a Shader node's code gets a file of its own; the original is untouched
     let file = |scene: &Scene, id: &str| scene.node(id).and_then(|n| n.file.clone());
     assert_ne!(file(copy, &id_of(&original.node(&shader).unwrap().name)), file(&original, &shader));
-    assert_eq!(p.scenes[0], original);
+    assert_eq!(*p.scenes[0], original);
     ok(&mut s, "edit.undo", json!({}));
     assert_eq!(s.project.scenes.len(), 1);
 }
@@ -1262,7 +1283,7 @@ fn importing_scenes_brings_the_shared_signals_they_read_once() {
     ok(&mut other, "mapping.add", json!({ "node": kaleido, "param": "zoom", "source": format!("shared:{smooth}") }));
     // one mapping of a node this show doesn't have: it stays as it is
     let gone = Mapping { source: "shared:n_gone/0".into(), param: "spin".into(), ..other.project.scenes[0].nodes[0].mappings[0].clone() };
-    other.project.scenes[0].nodes[0].mappings.push(gone);
+    Arc::make_mut(&mut other.project.scenes[0]).nodes[0].mappings.push(gone);
     ok(&mut other, "scene.duplicate", json!({}));
     // into a show with a shared signal of its own
     let mut s = session();
@@ -1377,7 +1398,7 @@ fn a_shared_node_is_made_local_and_mappings_of_shared_signals_are_shown_as_nodes
     ok(&mut s, "mapping.add", json!({ "node": kaleido, "param": "angle", "source": format!("shared:{audio}/4") }));
     let k = s.project.scenes[0].nodes.iter().position(|n| n.id == kaleido).unwrap();
     let gone = Mapping { source: "shared:n_gone/0".into(), param: "segments".into(), ..s.project.scenes[0].nodes[k].mappings[0].clone() };
-    s.project.scenes[0].nodes[k].mappings.push(gone);
+    Arc::make_mut(&mut s.project.scenes[0]).nodes[k].mappings.push(gone);
     let count = s.project.scenes[0].nodes.len();
     ok(&mut s, "scene.link_shared", json!({}));
     let scene = &s.project.scenes[0];

@@ -11,6 +11,7 @@ mod tests;
 pub use ops::{OPERATORS, Operator, find};
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -116,13 +117,16 @@ pub const FORMAT: u32 = 7;
 pub const SHARED: &str = "shared";
 
 /// Everything that is saved and undoable.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
     pub format: u32,
     pub name: String,
     pub canvas: Canvas,
-    pub scenes: Vec<Scene>,
+    /// Shared between copies (an undo step, the saved project, a frame's snapshot): an operator
+    /// copies only the scene it changes ([`Arc::make_mut`]), so a copy costs pointers and
+    /// comparing copies looks inside only the scenes that differ. Saved as plain scenes.
+    pub scenes: Vec<Arc<Scene>>,
     /// What controllers do (docs/control.md §2): the same for every scene.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<Binding>,
@@ -131,6 +135,16 @@ pub struct Project {
     /// so its canvas, groups and notes work as a scene's do; only its signal nodes run.
     #[serde(skip_serializing_if = "Scene::bare")]
     pub shared: Scene,
+}
+
+impl PartialEq for Project {
+    fn eq(&self, other: &Self) -> bool {
+        // every field (a new one fails to compile here until it's compared)
+        let Project { format, name, canvas, scenes, bindings, shared } = self;
+        let same = |(a, b): (&Arc<Scene>, &Arc<Scene>)| Arc::ptr_eq(a, b) || a == b;
+        let scenes_same = scenes.len() == other.scenes.len() && scenes.iter().zip(&other.scenes).all(same);
+        *format == other.format && *name == other.name && *canvas == other.canvas && scenes_same && *bindings == other.bindings && *shared == other.shared
+    }
 }
 
 impl Default for Project {
@@ -169,7 +183,7 @@ impl Project {
                     for m in 0..self.scenes[c].nodes[n].mappings.len() {
                         let source = self.scenes[c].nodes[n].mappings[m].source.clone();
                         if let Some(key) = ops::signal_source(self, c, &source) {
-                            self.scenes[c].nodes[n].mappings[m].source = key;
+                            Arc::make_mut(&mut self.scenes[c]).nodes[n].mappings[m].source = key;
                         }
                     }
                 }
@@ -177,12 +191,12 @@ impl Project {
         }
         if self.format < 3 {
             for scene in &mut self.scenes {
-                ops::grid_out(scene);
+                ops::grid_out(Arc::make_mut(scene));
             }
         }
         if self.format < 4 {
             for scene in &mut self.scenes {
-                ops::shader_fx(scene);
+                ops::shader_fx(Arc::make_mut(scene));
             }
         }
         self.format = self.format.max(FORMAT);
@@ -193,13 +207,13 @@ impl Project {
         if id == SHARED {
             return Some(&self.shared);
         }
-        self.scenes.iter().find(|s| s.id == id)
+        self.scenes.iter().find(|s| s.id == id).map(Arc::as_ref)
     }
 
     /// Every graph of the project: the scenes, then the shared signal graph (node ids are unique
     /// across all of them).
     pub fn graphs(&self) -> impl Iterator<Item = &Scene> {
-        self.scenes.iter().chain(std::iter::once(&self.shared))
+        self.scenes.iter().map(Arc::as_ref).chain(std::iter::once(&self.shared))
     }
 
     /// The binding that moves or fires `target`, if any.
@@ -745,9 +759,20 @@ pub fn inputs_shown(scene: &Scene, n: &Node) -> usize {
 }
 
 /// How many inputs a shader's /*{ JSON }*/ header declares (0 if it has no header to read).
+/// Read once per header: the canvas asks for every card several times a frame.
 fn code_inputs(code: Option<&str>) -> usize {
+    // shortcut: one entry per distinct header, kept (a few bytes each, more only while a header
+    // is being edited); a bounded cache if anyone ever edits headers for hours
+    static READ: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> = std::sync::LazyLock::new(Default::default);
     let header = code.and_then(|c| c.trim_start().strip_prefix("/*")).and_then(|c| c.split_once("*/")).map_or("", |(h, _)| h);
-    serde_json::from_str::<serde_json::Value>(header).ok().and_then(|h| h.get("inputs").and_then(|i| i.as_array()).map(Vec::len)).unwrap_or(0)
+    let read = |header: &str| serde_json::from_str::<serde_json::Value>(header).ok().and_then(|h| h.get("inputs").and_then(|i| i.as_array()).map(Vec::len)).unwrap_or(0);
+    let Ok(mut known) = READ.lock() else { return read(header) };
+    if let Some(&n) = known.get(header) {
+        return n;
+    }
+    let n = read(header);
+    known.insert(header.to_string(), n);
+    n
 }
 
 /// A parameter as the engine runs it: as set, but a Blend's `inputs` counts every wired one
@@ -1273,6 +1298,16 @@ pub struct Session {
     redo: Vec<Entry>,
     /// The top undo entry may still absorb edits with the same merge key (drags).
     merge_open: bool,
+    /// Changes with every change of the project made here (an operator, undo, redo) and with
+    /// every session: whoever keeps something made from the project (the engine's copy) skips
+    /// the work while it's the same. Nothing else may change `project`.
+    revision: u64,
+}
+
+/// A revision no session has had yet.
+fn next_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 struct Entry {
@@ -1287,7 +1322,12 @@ impl Session {
     /// Starts fresh from a loaded project (history cleared).
     pub fn with_project(project: Project) -> Self {
         let active_scene = project.scenes.first().map(|s| s.id.clone());
-        Self { project, active_scene, ..Default::default() }
+        Self { project, active_scene, revision: next_revision(), ..Default::default() }
+    }
+
+    /// See [`Self::revision`](#structfield.revision).
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// The scene being edited, if it (still) exists.
@@ -1316,7 +1356,11 @@ impl Session {
             return Err(format!("{} isn't possible right now", op.label));
         }
         let before = op.undo.then(|| self.project.clone());
-        if let Err(e) = (op.exec)(self, props) {
+        let done = (op.exec)(self, props);
+        if before.is_none() {
+            self.revision = next_revision(); // nothing to tell: as if it changed
+        }
+        if let Err(e) = done {
             if let Some(b) = before {
                 self.project = b;
             }
@@ -1326,6 +1370,7 @@ impl Session {
         if before == self.project {
             return Ok(()); // no-op edits don't pollute history
         }
+        self.revision = next_revision();
         let merging = merge_key.is_some() && self.merge_open && self.undo.last().is_some_and(|e| e.merge_key == merge_key);
         self.merge_open = merge_key.is_some();
         if !merging {
@@ -1352,6 +1397,7 @@ impl Session {
             std::mem::swap(&mut e.project, &mut self.project);
             e.merge_key = None;
             to.push(e);
+            self.revision = next_revision();
         }
         self.merge_open = false;
         // the selected scene may be gone (undone add) or back (undone remove)
@@ -1372,7 +1418,7 @@ impl Session {
 
     fn scene_mut(&mut self, id: Option<&str>) -> Result<&mut Scene, String> {
         let i = self.scene_index(id)?;
-        Ok(&mut self.project.scenes[i])
+        Ok(Arc::make_mut(&mut self.project.scenes[i]))
     }
 
     /// The graph named in props (a scene, or [`SHARED`]), or the active one: what node, wire,

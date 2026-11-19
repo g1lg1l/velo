@@ -115,18 +115,30 @@ impl App {
                 });
                 let broken = error.and_then(|e| e.line);
                 let font = Theme::mono(t.text_mono);
-                // colors by token, the line that broke tinted; long lines scroll, never wrap
+                // colors by token, the line that broke tinted; long lines scroll, never wrap. Lexed
+                // again only when the code, the line that broke or the colors changed
                 let mut layouter = |ui: &Ui, text: &dyn egui::TextBuffer, _wrap: f32| -> Arc<egui::Galley> {
-                    let mut job = LayoutJob::default();
-                    let mut state = Lex::Code;
-                    for (i, line) in text.as_str().split_inclusive('\n').enumerate() {
-                        let background = if broken == Some(i + 1) { t.error.gamma_multiply(0.25) } else { egui::Color32::TRANSPARENT };
-                        for (range, syntax) in lex_line(line, &mut state) {
-                            let format = egui::TextFormat { background, ..egui::TextFormat::simple(font.clone(), color(&t, syntax)) };
-                            job.append(&line[range], 0.0, format);
+                    let inks = [t.fg_text, t.fg_muted, t.accent, t.cat_generator, t.cat_composite, t.cat_effect, t.error];
+                    let (key, hash) = (Id::unique("code-job"), egui::util::hash((text.as_str(), broken, inks, t.text_mono.to_bits())));
+                    let job = match ui.data(|d| d.get_temp::<(u64, Arc<LayoutJob>)>(key)) {
+                        Some((h, job)) if h == hash => job,
+                        _ => {
+                            let mut job = LayoutJob::default();
+                            let mut state = Lex::Code;
+                            for (i, line) in text.as_str().split_inclusive('\n').enumerate() {
+                                let background = if broken == Some(i + 1) { t.error.gamma_multiply(0.25) } else { egui::Color32::TRANSPARENT };
+                                for (range, syntax) in lex_line(line, &mut state) {
+                                    let format = egui::TextFormat { background, ..egui::TextFormat::simple(font.clone(), color(&t, syntax)) };
+                                    job.append(&line[range], 0.0, format);
+                                }
+                            }
+                            let job = Arc::new(job);
+                            ui.data_mut(|d| d.insert_temp(key, (hash, job.clone())));
+                            job
                         }
-                    }
-                    ui.fonts_mut(|f| f.layout_job(job))
+                    };
+                    // (the galley from egui's own cache: it knows when the fonts change)
+                    ui.fonts_mut(|f| f.layout_job(LayoutJob::clone(&job)))
                 };
                 egui::ScrollArea::both().id_salt("code").auto_shrink(false).show(ui, |ui| {
                     ui.horizontal_top(|ui| {
@@ -151,11 +163,15 @@ impl App {
                         }
                         let mut line = 1;
                         let mut starts = true;
+                        let view = ui.clip_rect().y_range();
                         for row in &out.galley.rows {
                             if starts {
                                 let ink = if broken == Some(line) { t.error } else { t.fg_muted.gamma_multiply(0.7) };
                                 let at = pos2(gutter.right() - t.pad / 2.0, out.galley_pos.y + row.rect().min.y);
-                                ui.painter().text(at, egui::Align2::RIGHT_TOP, line, font.clone(), ink);
+                                // only the numbers in view
+                                if view.intersects(egui::Rangef::new(at.y, at.y + row.rect().height())) {
+                                    ui.painter().text(at, egui::Align2::RIGHT_TOP, line, font.clone(), ink);
+                                }
                                 line += 1;
                             }
                             starts = row.ends_with_newline;

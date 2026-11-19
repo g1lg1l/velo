@@ -1079,6 +1079,11 @@ fn font(size: f32) -> FontId {
     FontId::proportional((size * 2.0).round() / 2.0)
 }
 
+/// The same for numbers and the like.
+fn mono(size: f32) -> FontId {
+    Theme::mono((size * 2.0).round() / 2.0)
+}
+
 /// Each node's tint: its first input's, a little further round the wheel, so a chain reads as
 /// one image flowing through (until the engine draws real viewers). Chains start from their
 /// generator's kind (two Noises look alike, a Gradient differs), nudged by its id.
@@ -1289,7 +1294,7 @@ fn paint_grid(painter: &Painter, t: &Theme, area: Rect, zoom: f32) {
         painter.vline(area.left() + area.width() * k as f32 / columns as f32, area.y_range(), inner);
     }
     if zoom >= TEXT_ZOOM {
-        let (font, color, x) = (Theme::mono(7.0 * zoom), t.fg_muted.gamma_multiply(0.75), area.right() - 7.0 * zoom);
+        let (font, color, x) = (mono(7.0 * zoom), t.fg_muted.gamma_multiply(0.75), area.right() - 7.0 * zoom);
         painter.text(pos2(x, area.top() + 1.0 * zoom), Align2::RIGHT_TOP, "1", font.clone(), color);
         painter.text(pos2(x, area.bottom() - 1.0 * zoom), Align2::RIGHT_BOTTOM, "0", font, color);
     }
@@ -1361,12 +1366,12 @@ fn paint_rows(painter: &Painter, t: &Theme, r: Rect, zoom: f32, deck: f32, rows:
         // its name inside, at the top left
         if zoom >= TEXT_ZOOM {
             // on a pill of the panel's color, readable over the curve
-            let galley = painter.layout_no_wrap(row.name.to_string(), FontId::proportional(10.5 * zoom), Theme::mix(t.fg_muted, t.fg_text, 0.4 + 0.6 * v));
+            let galley = painter.layout_no_wrap(row.name.to_string(), font(10.5 * zoom), Theme::mix(t.fg_muted, t.fg_text, 0.4 + 0.6 * v));
             let name = Rect::from_min_size(band.left_top() + vec2(8.0, 5.0) * zoom, galley.size());
             painter.rect_filled(name.expand2(vec2(3.0, 1.0) * zoom), CornerRadius::same((3.0 * zoom) as u8), t.bg_field.gamma_multiply(0.85));
             painter.galley(name.min, galley, t.fg_text);
             if row.model {
-                let text = painter.text(pos2(name.right() + 4.0 * zoom, name.center().y), Align2::LEFT_CENTER, widgets::MODEL_BADGE, Theme::mono(7.0 * zoom), t.fg_muted);
+                let text = painter.text(pos2(name.right() + 4.0 * zoom, name.center().y), Align2::LEFT_CENTER, widgets::MODEL_BADGE, mono(7.0 * zoom), t.fg_muted);
                 let badge = text.expand2(vec2(2.0, 1.0) * zoom);
                 painter.rect_stroke(badge, CornerRadius::same((2.0 * zoom) as u8), Stroke::new(1.0, t.line), StrokeKind::Inside);
                 badges.push(badge);
@@ -1376,8 +1381,8 @@ fn paint_rows(painter: &Painter, t: &Theme, r: Rect, zoom: f32, deck: f32, rows:
     if let Some(why) = silence.filter(|_| zoom >= TEXT_ZOOM && !rows.is_empty()) {
         // under the names, over the flat curves: what's wrong and where to fix it
         let width = panel.width() - 32.0 * zoom;
-        let title = painter.layout(why.to_string(), FontId::proportional(13.0 * zoom), t.fg_text, width);
-        let hint = painter.layout(tr!("Pick what to hear in the audio menu, top left").to_string(), FontId::proportional(11.0 * zoom), t.fg_muted, width);
+        let title = painter.layout(why.to_string(), font(13.0 * zoom), t.fg_text, width);
+        let hint = painter.layout(tr!("Pick what to hear in the audio menu, top left").to_string(), font(11.0 * zoom), t.fg_muted, width);
         let gap = 4.0 * zoom;
         let size = vec2(title.size().x.max(hint.size().x), title.size().y + gap + hint.size().y);
         let block = Rect::from_center_size(panel.center() + vec2(0.0, 8.0 * zoom), size);
@@ -1536,7 +1541,7 @@ fn paint_jacks(painter: &Painter, t: &Theme, strip: Rect, zoom: f32, lines: &[Ja
         if zoom >= TEXT_ZOOM {
             let left = socket.x + 12.0 * zoom;
             let ink = Theme::mix(Theme::mix(t.fg_muted, t.fg_text, 0.3 + 0.7 * v), t.fg_text, jack.hot);
-            kit::fit_text(painter, pos2(left, socket.y), Align2::LEFT_CENTER, &jack.label, FontId::proportional(10.5 * zoom), ink, strip.right() - 8.0 * zoom - left);
+            kit::fit_text(painter, pos2(left, socket.y), Align2::LEFT_CENTER, &jack.label, font(10.5 * zoom), ink, strip.right() - 8.0 * zoom - left);
         }
     }
     // the open slot: a ring waiting for the plug, a line saying what it does
@@ -1549,7 +1554,7 @@ fn paint_jacks(painter: &Painter, t: &Theme, strip: Rect, zoom: f32, lines: &[Ja
         painter.circle_stroke(socket, r, Stroke::new(1.5, t.cat_signal.gamma_multiply(slot)));
         if zoom >= TEXT_ZOOM {
             let left = socket.x + 12.0 * zoom;
-            kit::fit_text(painter, pos2(left, socket.y), Align2::LEFT_CENTER, tr!("Plug in to move one of its values"), FontId::proportional(10.5 * zoom), t.fg_muted.gamma_multiply(slot), strip.right() - 8.0 * zoom - left);
+            kit::fit_text(painter, pos2(left, socket.y), Align2::LEFT_CENTER, tr!("Plug in to move one of its values"), font(10.5 * zoom), t.fg_muted.gamma_multiply(slot), strip.right() - 8.0 * zoom - left);
         }
     }
 }
@@ -1624,7 +1629,7 @@ fn paint_signal(painter: &Painter, t: &Theme, r: Rect, zoom: f32, scope: &Scope)
         return;
     }
     // what it does, on two lines at most
-    let mut caption = egui::text::LayoutJob::simple(scope.caption.clone(), FontId::proportional(10.5 * zoom), t.fg_muted, viewer.width() - 2.0 * pad);
+    let mut caption = egui::text::LayoutJob::simple(scope.caption.clone(), font(10.5 * zoom), t.fg_muted, viewer.width() - 2.0 * pad);
     caption.wrap.max_rows = 2;
     caption.wrap.overflow_character = Some('…');
     painter.galley(viewer.left_top() + vec2(pad, 5.0 * zoom), painter.layout_job(caption), t.fg_muted);
@@ -1632,7 +1637,7 @@ fn paint_signal(painter: &Painter, t: &Theme, r: Rect, zoom: f32, scope: &Scope)
     painter.hline(viewer.x_range(), viewer.bottom() - foot, Stroke::new(1.0, t.line));
     let y = viewer.bottom() - foot / 2.0;
     let number = |v: f32| format!("{v:.2}");
-    let (names, digits) = (FontId::proportional(10.0 * zoom), Theme::mono(10.0 * zoom));
+    let (names, digits) = (font(10.0 * zoom), mono(10.0 * zoom));
     let wide = |text: &str, font: &FontId| painter.layout_no_wrap(text.to_string(), font.clone(), t.fg_muted).size().x;
     // two inputs with long names don't fit beside the output: their names are cut to three
     // letters then, and the output is its number alone (green, by its port)
@@ -1645,7 +1650,7 @@ fn paint_signal(painter: &Painter, t: &Theme, r: Rect, zoom: f32, scope: &Scope)
         let value = painter.text(pos2(label.right() + 4.0 * zoom, y), Align2::LEFT_CENTER, input.map_or("–".to_string(), |(now, _)| number(now)), digits.clone(), if input.is_some() { t.fg_text } else { t.fg_muted });
         x = value.right() + if tight { 6.0 } else { 10.0 } * zoom;
     }
-    let out = painter.text(pos2(viewer.right() - pad, y), Align2::RIGHT_CENTER, number(scope.out), Theme::mono(11.0 * zoom), t.cat_signal);
+    let out = painter.text(pos2(viewer.right() - pad, y), Align2::RIGHT_CENTER, number(scope.out), mono(11.0 * zoom), t.cat_signal);
     if !tight {
         painter.text(pos2(out.left() - 4.0 * zoom, y), Align2::RIGHT_CENTER, tr!("out"), names, t.fg_muted);
     }
@@ -1797,7 +1802,7 @@ fn paint_node(ui: &Ui, painter: &Painter, t: &Theme, r: Rect, zoom: f32, look: L
     let mark = pos2(header.left() + 13.0 * zoom, header.center().y);
     let emoji = !look.icon.is_empty() && zoom >= TEXT_ZOOM;
     if emoji {
-        painter.text(mark, Align2::CENTER_CENTER, look.icon, FontId::proportional(13.0 * zoom), t.fg_text);
+        painter.text(mark, Align2::CENTER_CENTER, look.icon, font(13.0 * zoom), t.fg_text);
     } else {
         painter.circle_filled(mark, 3.5 * zoom, cat);
     }
@@ -1815,7 +1820,7 @@ fn paint_node(ui: &Ui, painter: &Painter, t: &Theme, r: Rect, zoom: f32, look: L
         }
         if look.maps > 0 {
             let text = format!("{} {}", icons::WAVE_SINE, look.maps);
-            let at = painter.text(pos2(right, footer.center().y), Align2::RIGHT_CENTER, text, FontId::proportional(10.5 * zoom), Theme::mix(t.fg_muted, t.cat_signal, 0.5 + 0.5 * glow));
+            let at = painter.text(pos2(right, footer.center().y), Align2::RIGHT_CENTER, text, font(10.5 * zoom), Theme::mix(t.fg_muted, t.cat_signal, 0.5 + 0.5 * glow));
             right = at.left() - 6.0 * zoom;
         }
         // what it costs the GPU: quiet while it's light, amber past 1 ms, red past 4
@@ -1827,12 +1832,12 @@ fn paint_node(ui: &Ui, painter: &Painter, t: &Theme, r: Rect, zoom: f32, look: L
             } else {
                 t.fg_muted.gamma_multiply(0.7)
             };
-            let at = painter.text(pos2(right, footer.center().y), Align2::RIGHT_CENTER, format!("{ms:.1} ms"), FontId::monospace(t.text_xs * zoom), color);
+            let at = painter.text(pos2(right, footer.center().y), Align2::RIGHT_CENTER, format!("{ms:.1} ms"), mono(t.text_xs * zoom), color);
             right = at.left() - 6.0 * zoom;
         }
         let kind = kind.map_or("?", |k| if name == k.label || name == i18n::t(k.label) { i18n::t(crate::role_of(k)) } else { i18n::t(k.label) }).to_uppercase();
         let left = footer.left() + 10.0 * zoom;
-        kit::fit_text(painter, pos2(left, footer.center().y), Align2::LEFT_CENTER, &kind, FontId::monospace(t.text_xs * zoom), t.fg_muted, right - left);
+        kit::fit_text(painter, pos2(left, footer.center().y), Align2::LEFT_CENTER, &kind, mono(t.text_xs * zoom), t.fg_muted, right - left);
     } else {
         // zoomed far out the name stays at reading size over the card, as a design tool names
         // its frames: the graph is still told apart node by node
@@ -2031,7 +2036,11 @@ impl App {
         // a signal's wire dragged over a card, or its value there being picked: a new jack slides
         // out of the card's foot for it (the jack plugged in takes its place at once)
         let signal = |i: usize| kinds[i].is_some_and(|k| k.category == velo_core::Category::Signal);
-        let signal_drag = matches!(&st.drag, Some(Drag::Wire { from, .. } | Drag::Signal { from, .. }) if index.get(from.0.as_str()).is_some_and(|&a| signal(a)));
+        // a signal card's meter and its wires' glow move with the music: at the preview's rate
+        if self.live.is_some() && (0..nodes.len()).any(|i| signal(i) && rects[i].intersects(rect)) {
+            kit::animate(ui.ctx());
+        }
+        let signal_drag =matches!(&st.drag, Some(Drag::Wire { from, .. } | Drag::Signal { from, .. }) if index.get(from.0.as_str()).is_some_and(|&a| signal(a)));
         let opening = match (&st.pick, pointer.filter(|_| signal_drag)) {
             (Some((_, node, _)), _) => index.get(node.as_str()).copied(),
             (None, Some(p)) => (0..nodes.len()).rev().find(|&i| !signal(i) && Rect::from_min_max(rects[i].min, rects[i].max + vec2(0.0, (jacks(&nodes[i]).len() + 1) as f32 * JACK_H * cam.zoom)).contains(p)),
@@ -2251,7 +2260,7 @@ impl App {
             .iter()
             .enumerate()
             .map(|(k, note)| {
-                let font = FontId::proportional((NOTE_SIZE * note.size * cam.zoom).clamp(5.0, 240.0));
+                let font = font((NOTE_SIZE * note.size * cam.zoom).clamp(5.0, 240.0));
                 let (words, ink) = if note.text.is_empty() { (tr!("Note").to_string(), t.fg_muted.gamma_multiply(0.6)) } else { (note.text.clone(), t.fg_text.gamma_multiply(0.92)) };
                 (k, cam.screen(center, pos2(note.pos[0], note.pos[1])), ui.painter().layout_no_wrap(words, font, ink))
             })
@@ -2716,9 +2725,9 @@ impl App {
             let group = frames.iter().find(|(g, ..)| scene.groups[*g].id == typing.id);
             let note = noted.iter().find(|(k, ..)| scene.notes[*k].id == typing.id);
             let field = match (group, note) {
-                (Some((_, _, title)), _) => Some((title.shrink2(vec2(6.0, 2.0)), FontId::proportional((13.0 * cam.zoom).max(10.0)), false)),
+                (Some((_, _, title)), _) => Some((title.shrink2(vec2(6.0, 2.0)), font((13.0 * cam.zoom).max(10.0)), false)),
                 (None, Some((k, at, galley))) => {
-                    let font = FontId::proportional((NOTE_SIZE * scene.notes[*k].size * cam.zoom).clamp(5.0, 240.0));
+                    let font = font((NOTE_SIZE * scene.notes[*k].size * cam.zoom).clamp(5.0, 240.0));
                     Some((Rect::from_min_size(*at, vec2(galley.size().x.max(220.0) + 40.0, galley.size().y.max(font.size * 1.3))), font, true))
                 }
                 (None, None) => None,
@@ -3082,7 +3091,7 @@ impl App {
             }
             let cat = kinds[i].map_or(t.fg_muted, |k| t.category(k.category));
             if let Some(b) = power(i) {
-                painter.text(b.center(), Align2::CENTER_CENTER, icons::POWER, FontId::proportional(13.0 * cam.zoom), if n.off { t.fg_muted } else { cat });
+                painter.text(b.center(), Align2::CENTER_CENTER, icons::POWER, font(13.0 * cam.zoom), if n.off { t.fg_muted } else { cat });
             }
             for output in [false, true] {
                 for j in (0..count(i, output) as u8).filter(|&j| listed(i, j, output)) {
@@ -3556,7 +3565,7 @@ impl App {
             let lit = if lit_groups.contains(g) { 0.1 } else { 0.0 };
             let corner = (10.0 * cam.zoom.max(0.5)) as u8;
             painter.rect_filled(*title, CornerRadius { nw: corner, ne: corner, sw: 0, se: 0 }, Theme::mix(t.bg_base, tint, 0.3 + lit));
-            let font = FontId::proportional((13.0 * cam.zoom).max(10.0));
+            let font = font((13.0 * cam.zoom).max(10.0));
             let inset = 10.0 * cam.zoom.max(0.5);
             kit::fit_text(&painter, title.left_center() + vec2(inset, 0.0), Align2::LEFT_CENTER, group.name.as_str(), font, Theme::mix(tint, t.fg_text, 0.8), title.width() - 2.0 * inset);
         }
