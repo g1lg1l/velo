@@ -12,16 +12,16 @@ use std::time::Duration;
 use dispatch2::DispatchQueue;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
-use objc2_core_foundation::CFRetained;
 use objc2::{AllocAnyThread, DefinedClass, define_class, msg_send};
 use objc2_av_foundation::{
     AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput, AVCaptureOutput, AVCaptureSession, AVCaptureVideoDataOutput,
     AVCaptureVideoDataOutputSampleBufferDelegate, AVMediaTypeVideo, AVURLAsset,
 };
+use objc2_core_foundation::CFRetained;
 use objc2_core_media::{CMSampleBuffer, CMTime, CMTimeRange};
 use objc2_core_video::{
-    CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress, kCVPixelBufferPixelFormatTypeKey,
-    kCVPixelFormatType_32BGRA,
+    CVPixelBuffer, CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress, CVPixelBufferLockFlags, CVPixelBufferUnlockBaseAddress,
+    kCVPixelBufferPixelFormatTypeKey, kCVPixelFormatType_32BGRA,
 };
 use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 

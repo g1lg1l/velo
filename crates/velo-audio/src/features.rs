@@ -92,7 +92,11 @@ impl Tracker {
             // The model's melody is already 0..1, how much of the sound is tune
             let target = match hop.melody {
                 Some(m) if i == 4 => {
-                    if hop.level_db > SILENCE_DB { m } else { 0.0 }
+                    if hop.level_db > SILENCE_DB {
+                        m
+                    } else {
+                        0.0
+                    }
                 }
                 _ if *peak <= SILENCE_DB + 1.0 => 0.0,
                 _ => 10f32.powf((level - *peak) / 20.0),

@@ -359,11 +359,39 @@ impl ShaderNode {
         let load: String = params.iter().enumerate().map(|(slot, p)| format!("    {} = {};\n", p.id, p.ty.read(slot))).collect();
         if header.mesh {
             let wgsl = format!("{pre}{source}\n// Velo: the parameters\nfn velo_load() {{\n{load}}}\n");
-            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: false, mesh: true, wgsl, preamble_lines });
+            return Ok(ShaderNode {
+                name: header.name,
+                category: header.category,
+                description: header.description,
+                params,
+                inputs,
+                feedback: false,
+                audio: false,
+                history: false,
+                buffers: Vec::new(),
+                particles: false,
+                mesh: true,
+                wgsl,
+                preamble_lines,
+            });
         }
         if header.particles {
             let wgsl = format!("{pre}{source}\n// Velo: the parameters\nfn velo_load() {{\n{load}}}\n");
-            return Ok(ShaderNode { name: header.name, category: header.category, description: header.description, params, inputs, feedback: false, audio: false, history: false, buffers: Vec::new(), particles: true, mesh: false, wgsl, preamble_lines });
+            return Ok(ShaderNode {
+                name: header.name,
+                category: header.category,
+                description: header.description,
+                params,
+                inputs,
+                feedback: false,
+                audio: false,
+                history: false,
+                buffers: Vec::new(),
+                particles: true,
+                mesh: false,
+                wgsl,
+                preamble_lines,
+            });
         }
 
         let mut post = String::from("\n// Velo: entry points\nstruct VeloVertex {\n    @builtin(position) pos: vec4<f32>,\n    @location(0) uv: vec2<f32>,\n}\n");

@@ -164,6 +164,9 @@ profile with symbols (`CARGO_PROFILE_RELEASE_STRIP=false`).
 
 ## Upkeep
 
+Done: the workspace is formatted and CI checks `cargo fmt`; a tag on a commit whose CI failed is
+no longer released. The long functions stay as they are (a split is a refactor of its own).
+
 - `cargo fmt --check` differs in 30 files and CI doesn't run it.
 - Very long functions: `node_canvas` 1,832 lines (`canvas.rs:1873`), `Thread::run` 595 lines
   (`runtime.rs:822`), `main.rs` 4,192 lines. Splitting them helps compile time and makes the AI read

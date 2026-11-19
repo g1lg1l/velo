@@ -31,8 +31,12 @@ jobs:
   draft:
     runs-on: ubuntu-latest
     steps:
-      # "v0.9.1-beta" is "Velo 0.9.1 beta", its notes the commits since the last release
+      # "v0.9.1-beta" is "Velo 0.9.1 beta", its notes the commits since the last release. A tag
+      # on a commit whose CI failed isn't released (one still running doesn't hold it up)
       - run: |
+          sha=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          ci=$(gh run list --workflow CI --commit "$sha" --json conclusion --jq '.[0].conclusion // ""')
+          if [ "$ci" = "failure" ]; then echo "::error::CI failed on $sha: fix it before releasing"; exit 1; fi
           version="${TAG#v}"
           gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --draft --verify-tag --generate-notes --title "Velo ${version//-/ }"
 

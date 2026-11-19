@@ -826,7 +826,24 @@ impl Reel {
             }
         });
         let n = files.len();
-        Some(Self { id, node, params, hits: Hits::default(), ahead: 0.0, began: (-1, 0.0), shows, reading: [true; SLOTS], slots, bound: [None; SLOTS], files, movie, cache: (0..n).map(|_| None).collect(), broken: vec![false; n], loader, done })
+        Some(Self {
+            id,
+            node,
+            params,
+            hits: Hits::default(),
+            ahead: 0.0,
+            began: (-1, 0.0),
+            shows,
+            reading: [true; SLOTS],
+            slots,
+            bound: [None; SLOTS],
+            files,
+            movie,
+            cache: (0..n).map(|_| None).collect(),
+            broken: vec![false; n],
+            loader,
+            done,
+        })
     }
 
     /// This frame, at `beats` and `time` (seconds): the turn, told to the shader with how much
@@ -1128,11 +1145,7 @@ fn deck(round: usize, n: usize) -> Vec<usize> {
 /// rebuilt mid-show carries on where it was. `VELO_SHUFFLE_SEED` pins it (tests, screenshots).
 fn shuffle_seed() -> u64 {
     static SEED: OnceLock<u64> = OnceLock::new();
-    *SEED.get_or_init(|| {
-        std::env::var("VELO_SHUFFLE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| {
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)
-        })
-    })
+    *SEED.get_or_init(|| std::env::var("VELO_SHUFFLE_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos() as u64)))
 }
 
 /// splitmix64's finalizer: a well mixed hash of x.

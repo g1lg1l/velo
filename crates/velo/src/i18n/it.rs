@@ -474,7 +474,10 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Turbo models: 1 to 8. Others: 20 or more.", "Modelli Turbo: da 1 a 8. Gli altri: 20 o più."),
     ("Asking…", "Chiedo…"),
     ("It answers.", "Risponde."),
-    ("{} new, held while this scene is on the output: adding them rebuilds it, and its movies and trails start over.", "{} nuove, tenute da parte finché questa scena è in uscita: aggiungerle la ricostruisce, e i suoi video e le scie ripartono da capo."),
+    (
+        "{} new, held while this scene is on the output: adding them rebuilds it, and its movies and trails start over.",
+        "{} nuove, tenute da parte finché questa scena è in uscita: aggiungerle la ricostruisce, e i suoi video e le scie ripartono da capo.",
+    ),
     ("Add them now", "Aggiungile ora"),
     ("The canvas' shape", "La forma del canvas"),
     ("Asking for pictures", "Chiedo le immagini"),

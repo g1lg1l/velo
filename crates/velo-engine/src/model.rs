@@ -356,7 +356,14 @@ fn ply(bytes: &[u8]) -> Result<Raw, String> {
         }
         if let Some(face) = face {
             let rest = &body[count * stride..];
-            let least: usize = face.props.iter().map(|p| match p { Prop::One(_, k) => k.size(), Prop::List(c, _) => c.size() }).sum();
+            let least: usize = face
+                .props
+                .iter()
+                .map(|p| match p {
+                    Prop::One(_, k) => k.size(),
+                    Prop::List(c, _) => c.size(),
+                })
+                .sum();
             if least == 0 || face.count > rest.len() / least {
                 return Err(format!("truncated: the header says {} faces, the file holds {}", face.count, rest.len().checked_div(least).unwrap_or(0)));
             }

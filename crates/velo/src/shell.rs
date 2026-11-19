@@ -1177,11 +1177,8 @@ impl App {
                 });
                 ui.add_space(t.pad * 2.5);
                 // what to start from, side by side
-                let starts = [
-                    (icons::FILE_PLUS, tr!("New project"), tr!("Start from an empty canvas")),
-                    (icons::FOLDER_OPEN, tr!("Open…"), tr!("A project on this computer")),
-                    (icons::PLAY, tr!("Open the demo"), tr!("See what Velo does, live")),
-                ];
+                let starts =
+                    [(icons::FILE_PLUS, tr!("New project"), tr!("Start from an empty canvas")), (icons::FOLDER_OPEN, tr!("Open…"), tr!("A project on this computer")), (icons::PLAY, tr!("Open the demo"), tr!("See what Velo does, live"))];
                 let gap = t.pad;
                 let tile = vec2((width - 2.0 * gap) / 3.0, 84.0);
                 ui.horizontal(|ui| {
@@ -1439,13 +1436,7 @@ impl App {
             return;
         }
         let t = self.theme.clone();
-        let pages = [
-            (icons::GEAR_SIX, tr!("General")),
-            (icons::SPEAKER_HIGH, tr!("Audio")),
-            (icons::ROBOT, tr!("AI and agents")),
-            (icons::BROADCAST, tr!("Control")),
-            (icons::INFO, tr!("About")),
-        ];
+        let pages = [(icons::GEAR_SIX, tr!("General")), (icons::SPEAKER_HIGH, tr!("Audio")), (icons::ROBOT, tr!("AI and agents")), (icons::BROADCAST, tr!("Control")), (icons::INFO, tr!("About"))];
         let key = Id::unique("preferences page");
         // (VELO_DEMO_PREFS=n: opened on page n, for screenshots)
         let first = std::env::var("VELO_DEMO_PREFS").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -1684,10 +1675,16 @@ impl App {
         let t = self.theme.clone();
         // the keys the project binds (they win over the keymap's: docs/control.md §3), the
         // keymap's commands, then the keys that never change
-        let mut bound: Vec<(String, String)> = self.session.project.bindings.iter().filter_map(|b| match &b.control {
-            Control::Key(k) => Some((k.clone(), self.target_name(&b.target))),
-            _ => None,
-        }).collect();
+        let mut bound: Vec<(String, String)> = self
+            .session
+            .project
+            .bindings
+            .iter()
+            .filter_map(|b| match &b.control {
+                Control::Key(k) => Some((k.clone(), self.target_name(&b.target))),
+                _ => None,
+            })
+            .collect();
         bound.sort();
         let project = |k: &egui::KeyboardShortcut| k.modifiers.is_none() && bound.iter().any(|(name, _)| *name == k.logical_key.name());
         let map = &self.settings.keymap;

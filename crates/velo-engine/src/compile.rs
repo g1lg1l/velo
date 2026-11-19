@@ -439,7 +439,14 @@ fn build(
         })
         .collect();
     let shaders = specs.iter().map(|spec| programs[spec.program].node.clone()).collect();
-    Ok(Built { graph: Box::new(Graph { ids: plan.nodes.iter().map(|(id, _)| id.clone()).collect(), programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lists, lines, lazy, under }), plan, signals, shaders, errors, media })
+    Ok(Built {
+        graph: Box::new(Graph { ids: plan.nodes.iter().map(|(id, _)| id.clone()).collect(), programs, runner, output: plan.output, mods, macros, signals: run, probes, media: playing, lists, lines, lazy, under }),
+        plan,
+        signals,
+        shaders,
+        errors,
+        media,
+    })
 }
 
 #[cfg(test)]

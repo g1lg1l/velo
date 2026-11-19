@@ -989,16 +989,12 @@ impl App {
                         // what came from the cache costs about a tenth: apart, so the big number doesn't
                         // read as the bill
                         let fresh = used.read.saturating_sub(used.cached);
-                        let mut line = if used.cached > 0 {
-                            tr!("{} new · {} cached · {} out", ai::short(fresh), ai::short(used.cached), ai::short(used.written))
-                        } else {
-                            tr!("{} tokens in, {} out", ai::short(used.read), ai::short(used.written))
-                        };
+                        let mut line =
+                            if used.cached > 0 { tr!("{} new · {} cached · {} out", ai::short(fresh), ai::short(used.cached), ai::short(used.written)) } else { tr!("{} tokens in, {} out", ai::short(used.read), ai::short(used.written)) };
                         if let Some(d) = used.dollars {
                             line = format!("{line} · ${d:.2}");
                         }
-                        ui.label(RichText::new(line).font(Theme::mono(t.text_xs)).color(t.fg_muted))
-                            .on_hover_text(tr!("Tokens the model read anew, read again from the cache (about a tenth of the price) and wrote"));
+                        ui.label(RichText::new(line).font(Theme::mono(t.text_xs)).color(t.fg_muted)).on_hover_text(tr!("Tokens the model read anew, read again from the cache (about a tenth of the price) and wrote"));
                     }
                 }
             }
@@ -1619,7 +1615,11 @@ impl App {
             ui.label(RichText::new(tr!("No key needed: it runs on this computer.")).small().color(t.fg_muted));
             // a context too small is cut without a word: the model forgets the tools
             let wanted = ai::context_wanted() / 1024;
-            let how = if preset == Some(0) { tr!("Give the model {}K of context or more (OLLAMA_CONTEXT_LENGTH={}): Velo's instructions and tools alone take about {}K, and a smaller one is cut without a word.", wanted, wanted * 1024, ai::context_floor().div_ceil(1024)) } else { tr!("Load the model with {}K of context or more: Velo's instructions and tools alone take about {}K, and a smaller one is cut without a word.", wanted, ai::context_floor().div_ceil(1024)) };
+            let how = if preset == Some(0) {
+                tr!("Give the model {}K of context or more (OLLAMA_CONTEXT_LENGTH={}): Velo's instructions and tools alone take about {}K, and a smaller one is cut without a word.", wanted, wanted * 1024, ai::context_floor().div_ceil(1024))
+            } else {
+                tr!("Load the model with {}K of context or more: Velo's instructions and tools alone take about {}K, and a smaller one is cut without a word.", wanted, ai::context_floor().div_ceil(1024))
+            };
             ui.label(RichText::new(how).small().color(t.fg_muted));
             return;
         }
@@ -1991,35 +1991,30 @@ struct Card {
 fn problem_card(ui: &mut Ui, t: &Theme, provider: Provider, text: &str, retry: bool) -> Card {
     let help = help(provider, text);
     let mut card = Card { retry: false, terminal: false, copy: false };
-    Frame::new()
-        .fill(Theme::mix(t.bg_panel, t.error, 0.07))
-        .stroke(Stroke::new(1.0, t.error.gamma_multiply(0.35)))
-        .corner_radius(t.radius_md)
-        .inner_margin(egui::Margin::same(12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 6.0;
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                ui.label(RichText::new(icons::WARNING).size(15.0).color(t.error));
-                ui.label(RichText::new(tr!("{} couldn't answer", provider.name())).color(t.fg_text));
-            });
-            ui.add(Label::new(mono(t, text).color(t.fg_muted)).wrap().selectable(true));
-            if let Some(help) = &help {
-                ui.add(Label::new(small(t, help).color(t.fg_text)).wrap());
-            }
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = t.gap;
-                if retry {
-                    card.retry = kit::action(ui, t, kit::Variant::Secondary, Some(icons::ARROW_CLOCKWISE), tr!("Retry")).on_hover_text(tr!("Send the same message again")).clicked();
-                }
-                if TERMINAL && help.is_some() && provider != Provider::Local {
-                    card.terminal = kit::action(ui, t, kit::Variant::Outline, Some(icons::TERMINAL_WINDOW), tr!("Open Terminal")).clicked();
-                }
-                kit::right(ui, |ui| card.copy = kit::icon_button(ui, t, icons::COPY, tr!("Copy what it said"), false).clicked());
-            });
+    Frame::new().fill(Theme::mix(t.bg_panel, t.error, 0.07)).stroke(Stroke::new(1.0, t.error.gamma_multiply(0.35))).corner_radius(t.radius_md).inner_margin(egui::Margin::same(12)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.spacing_mut().item_spacing.y = 6.0;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            ui.label(RichText::new(icons::WARNING).size(15.0).color(t.error));
+            ui.label(RichText::new(tr!("{} couldn't answer", provider.name())).color(t.fg_text));
         });
+        ui.add(Label::new(mono(t, text).color(t.fg_muted)).wrap().selectable(true));
+        if let Some(help) = &help {
+            ui.add(Label::new(small(t, help).color(t.fg_text)).wrap());
+        }
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = t.gap;
+            if retry {
+                card.retry = kit::action(ui, t, kit::Variant::Secondary, Some(icons::ARROW_CLOCKWISE), tr!("Retry")).on_hover_text(tr!("Send the same message again")).clicked();
+            }
+            if TERMINAL && help.is_some() && provider != Provider::Local {
+                card.terminal = kit::action(ui, t, kit::Variant::Outline, Some(icons::TERMINAL_WINDOW), tr!("Open Terminal")).clicked();
+            }
+            kit::right(ui, |ui| card.copy = kit::icon_button(ui, t, icons::COPY, tr!("Copy what it said"), false).clicked());
+        });
+    });
     card
 }
 

@@ -91,15 +91,7 @@ pub struct Prefs {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self {
-            provider: Provider::ClaudeCode,
-            endpoint: "http://localhost:11434/v1".into(),
-            model: String::new(),
-            sees_images: false,
-            codex_model: String::new(),
-            claude_model: String::new(),
-            effort: "high".into(),
-        }
+        Self { provider: Provider::ClaudeCode, endpoint: "http://localhost:11434/v1".into(), model: String::new(), sees_images: false, codex_model: String::new(), claude_model: String::new(), effort: "high".into() }
     }
 }
 
@@ -386,8 +378,10 @@ pub fn claude_line(line: &str) -> Vec<Event> {
             for block in v["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "tool_result") {
                 let said = || match &block["content"] {
                     Value::String(s) => s.trim().to_string(),
-                    parts => parts.as_array().into_iter().flatten().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("
-"),
+                    parts => parts.as_array().into_iter().flatten().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join(
+                        "
+",
+                    ),
                 };
                 out.push(Event::ToolDone(block["tool_use_id"].as_str().unwrap_or_default().into(), (block["is_error"] == true).then(said)));
             }

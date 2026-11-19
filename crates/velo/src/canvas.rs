@@ -2040,7 +2040,7 @@ impl App {
         if self.live.is_some() && (0..nodes.len()).any(|i| signal(i) && rects[i].intersects(rect)) {
             kit::animate(ui.ctx());
         }
-        let signal_drag =matches!(&st.drag, Some(Drag::Wire { from, .. } | Drag::Signal { from, .. }) if index.get(from.0.as_str()).is_some_and(|&a| signal(a)));
+        let signal_drag = matches!(&st.drag, Some(Drag::Wire { from, .. } | Drag::Signal { from, .. }) if index.get(from.0.as_str()).is_some_and(|&a| signal(a)));
         let opening = match (&st.pick, pointer.filter(|_| signal_drag)) {
             (Some((_, node, _)), _) => index.get(node.as_str()).copied(),
             (None, Some(p)) => (0..nodes.len()).rev().find(|&i| !signal(i) && Rect::from_min_max(rects[i].min, rects[i].max + vec2(0.0, (jacks(&nodes[i]).len() + 1) as f32 * JACK_H * cam.zoom)).contains(p)),

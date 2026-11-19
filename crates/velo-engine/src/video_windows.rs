@@ -409,10 +409,14 @@ mod tests {
             return eprintln!("no camera here: skipped");
         };
         let (seen, start) = (std::cell::Cell::new(0), std::time::Instant::now());
-        camera(&first, || seen.get() >= 10 || start.elapsed().as_secs() > 5, |size, bytes, stride| {
-            assert_eq!(bytes.len(), stride * size[1] as usize);
-            seen.set(seen.get() + 1);
-        })
+        camera(
+            &first,
+            || seen.get() >= 10 || start.elapsed().as_secs() > 5,
+            |size, bytes, stride| {
+                assert_eq!(bytes.len(), stride * size[1] as usize);
+                seen.set(seen.get() + 1);
+            },
+        )
         .unwrap();
         assert!(seen.get() > 0, "{first}: no frames in 5 s");
     }

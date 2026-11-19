@@ -108,23 +108,36 @@ impl Program {
         // their light adds up; their alpha covers
         let add = |dst_factor| wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor, operation: wgpu::BlendOperation::Add };
         let blend = node.particles.then(|| wgpu::BlendState { color: add(wgpu::BlendFactor::One), alpha: add(wgpu::BlendFactor::OneMinusSrcAlpha) });
-        let render = |fragment: &str| device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some(&node.name),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState { module: &module, entry_point: Some("velo_vs"), compilation_options: Default::default(), buffers: if node.particles { &sprites } else if node.mesh { &corners } else { &[] } },
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some(fragment),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            primitive: wgpu::PrimitiveState { topology: if node.particles { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList }, ..Default::default() },
-            // a mesh is solid: the nearer triangle wins, whichever comes first; seen from either side
-            depth_stencil: node.mesh.then(|| wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(), bias: Default::default() }),
-            multisample: wgpu::MultisampleState { count: if node.mesh { MSAA } else { 1 }, ..Default::default() },
-            multiview_mask: None,
-            cache: None,
-        });
+        let render = |fragment: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(&node.name),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("velo_vs"),
+                    compilation_options: Default::default(),
+                    buffers: if node.particles {
+                        &sprites
+                    } else if node.mesh {
+                        &corners
+                    } else {
+                        &[]
+                    },
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some(fragment),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState { format: FORMAT, blend, write_mask: wgpu::ColorWrites::ALL })],
+                }),
+                primitive: wgpu::PrimitiveState { topology: if node.particles { wgpu::PrimitiveTopology::TriangleStrip } else { wgpu::PrimitiveTopology::TriangleList }, ..Default::default() },
+                // a mesh is solid: the nearer triangle wins, whichever comes first; seen from either side
+                depth_stencil: node.mesh.then(|| wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(true), depth_compare: Some(wgpu::CompareFunction::Less), stencil: Default::default(), bias: Default::default() }),
+                multisample: wgpu::MultisampleState { count: if node.mesh { MSAA } else { 1 }, ..Default::default() },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         let pipeline = render("velo_fs");
         let passes = node.buffers.iter().map(|b| render(&format!("velo_fs_{}", b.id))).collect();
         let sim = node.particles.then(|| {
@@ -518,7 +531,12 @@ impl Runner {
                 queue.write_buffer(&past.head, 0, &at);
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("history"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &past.frames[head], resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store }, depth_slice: None })],
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &past.frames[head],
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                        depth_slice: None,
+                    })],
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
@@ -541,13 +559,22 @@ impl Runner {
             }
             // the node's cost: from its first pass's start to its last pass's end
             let stamps = |first: bool, last: bool| {
-                timing.filter(|_| n < MAX_TIMED && (first || last)).map(|query_set| wgpu::RenderPassTimestampWrites { query_set, beginning_of_pass_write_index: first.then_some(2 * n as u32), end_of_pass_write_index: last.then_some(2 * n as u32 + 1) })
+                timing.filter(|_| n < MAX_TIMED && (first || last)).map(|query_set| wgpu::RenderPassTimestampWrites {
+                    query_set,
+                    beginning_of_pass_write_index: first.then_some(2 * n as u32),
+                    end_of_pass_write_index: last.then_some(2 * n as u32 + 1),
+                })
             };
             // each buffer is drawn into its own picture of the frame, in order, before the picture
             for (k, pipeline) in program.passes.iter().enumerate() {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(&program.node.name),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &node.buffers[k][parity], resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store }, depth_slice: None })],
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &node.buffers[k][parity],
+                        resolve_target: None,
+                        ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
+                        depth_slice: None,
+                    })],
                     depth_stencil_attachment: None,
                     timestamp_writes: stamps(k == 0, false),
                     occlusion_query_set: None,
@@ -565,7 +592,12 @@ impl Runner {
             let store = if mesh.is_some() { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some(&program.node.name),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: mesh.map_or(target, |m| &m.color), resolve_target: mesh.map(|_| target), ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store }, depth_slice: None })],
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: mesh.map_or(target, |m| &m.color),
+                    resolve_target: mesh.map(|_| target),
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store },
+                    depth_slice: None,
+                })],
                 depth_stencil_attachment: depth,
                 timestamp_writes: stamps(program.passes.is_empty(), true),
                 occlusion_query_set: None,
@@ -1003,7 +1035,12 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             return;
         };
         // a tenth more each frame, on its own last frame
-        let count = Program::new(&device, ShaderNode::parse("/*{ \"name\": \"Count\", \"category\": \"generator\", \"feedback\": true }*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f { return textureSampleLevel(prev, smp, uv, 0.0) + vec4f(0.1, 0.0, 0.0, 0.0); }").unwrap()).unwrap();
+        let count = Program::new(
+            &device,
+            ShaderNode::parse("/*{ \"name\": \"Count\", \"category\": \"generator\", \"feedback\": true }*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f { return textureSampleLevel(prev, smp, uv, 0.0) + vec4f(0.1, 0.0, 0.0, 0.0); }")
+                .unwrap(),
+        )
+        .unwrap();
         let programs = [count];
         let nodes = [NodeSpec { program: 0, inputs: vec![] }];
         let frames = |runner: &mut Runner, n: u32| {
@@ -1883,10 +1920,17 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         assert!(mesh_picture(&device, &queue, &[], &[]).iter().all(|p| *p == [0.0; 4]), "no mesh, nothing");
         // a triangle with no area, one with no normals, a stray pair of corners (no triangle), and a huge one
         let bad = [
-            [0.1, 0.1, 0.0, 0.0, 0.0, 1.0], [0.1, 0.1, 0.0, 0.0, 0.0, 1.0], [0.1, 0.1, 0.0, 0.0, 0.0, 1.0],
-            [-0.4, -0.4, 0.0, 0.0, 0.0, 0.0], [0.4, -0.4, 0.0, 0.0, 0.0, 0.0], [0.0, 0.4, 0.0, 0.0, 0.0, 0.0],
-            [9e3, 9e3, -9e3, 0.0, 1.0, 0.0], [-9e3, 9e3, 9e3, 1.0, 0.0, 0.0], [0.0, -9e3, 1e5, 0.0, 0.0, 1.0],
-            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0], [0.1, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [0.1, 0.1, 0.0, 0.0, 0.0, 1.0],
+            [0.1, 0.1, 0.0, 0.0, 0.0, 1.0],
+            [0.1, 0.1, 0.0, 0.0, 0.0, 1.0],
+            [-0.4, -0.4, 0.0, 0.0, 0.0, 0.0],
+            [0.4, -0.4, 0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.4, 0.0, 0.0, 0.0, 0.0],
+            [9e3, 9e3, -9e3, 0.0, 1.0, 0.0],
+            [-9e3, 9e3, 9e3, 1.0, 0.0, 0.0],
+            [0.0, -9e3, 1e5, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [0.1, 0.0, 0.0, 0.0, 0.0, 1.0],
         ];
         // every look at its most (the hardest light and shine, a mirror, a bulge, a facets)
         let loud = [("light", [3.0; 4]), ("shine", [2.0; 4]), ("mirror", [1.0; 4]), ("rim", [2.0; 4]), ("bulge", [1.0; 4]), ("facets", [1.0; 4]), ("audio", [2.0; 4])];
@@ -2049,7 +2093,8 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         // square `lit` (x0, x1, y0, y1, in 0..1) wired into emit, or nothing wired
         let burst = |lit: Option<[f32; 4]>| -> Vec<(usize, usize)> {
             let [x0, x1, y0, y1] = lit.unwrap_or_default();
-            let source = format!("/*{{ \"name\": \"Square\" }}*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f {{ let inside = step({x0:?}, uv.x) * step(uv.x, {x1:?}) * step({y0:?}, uv.y) * step(uv.y, {y1:?}); return vec4f(vec3f(inside), 1.0); }}");
+            let source =
+                format!("/*{{ \"name\": \"Square\" }}*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f {{ let inside = step({x0:?}, uv.x) * step(uv.x, {x1:?}) * step({y0:?}, uv.y) * step(uv.y, {y1:?}); return vec4f(vec3f(inside), 1.0); }}");
             let programs = [Program::new(&device, ShaderNode::parse(&source).unwrap()).unwrap(), program(&device, "particles")];
             let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![lit.map(|_| 0), None] }];
             let mut runner = Runner::new(&device, &programs, &nodes, &[], [64, 64], &wave_texture(&device)).unwrap();
@@ -2258,8 +2303,17 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             return;
         };
         let wave = wave_texture(&device);
-        let shader = |body: &str| Program::new(&device, ShaderNode::parse(&format!("/*{{ \"name\": \"T\" }}*/
-fn main_image(uv: vec2f, px: vec2f) -> vec4f {{ return {body}; }}")).unwrap()).unwrap();
+        let shader = |body: &str| {
+            Program::new(
+                &device,
+                ShaderNode::parse(&format!(
+                    "/*{{ \"name\": \"T\" }}*/
+fn main_image(uv: vec2f, px: vec2f) -> vec4f {{ return {body}; }}"
+                ))
+                .unwrap(),
+            )
+            .unwrap()
+        };
         // the last node's pixel at (x, y) of 32 × 32, its inputs the nodes before it, after a frame at
         // each time; `set` its parameters by id
         let pixel = |sources: &[&str], node: &str, set: &[(&str, [f32; 4])], times: &[f32], at: (u32, u32)| -> [f32; 4] {
@@ -2506,7 +2560,12 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             })
             .collect();
         let bytes: Vec<u8> = pixels.iter().flat_map(|v| v.to_ne_bytes()).collect();
-        queue.write_texture(wave.texture().as_image_copy(), &bytes, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(columns as u32 * 16), rows_per_image: None }, wgpu::Extent3d { width: columns as u32, height: 3, depth_or_array_layers: 1 });
+        queue.write_texture(
+            wave.texture().as_image_copy(),
+            &bytes,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(columns as u32 * 16), rows_per_image: None },
+            wgpu::Extent3d { width: columns as u32, height: 3, depth_or_array_layers: 1 },
+        );
         let skip = ["image", "text", "textlist", "medialist", "ai_image", "particles", "mesh"];
         let all = BUILTINS.iter().filter(|b| !skip.contains(&b.0)).chain(&crate::PRESETS).chain(&crate::EFFECT_PRESETS);
         for (slug, code) in all.filter(|(slug, _)| only.is_empty() || only.split(',').any(|o| o == *slug)) {
@@ -2586,8 +2645,11 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             return;
         };
         // a picture whose red is the time, into a Time Machine
-        let clock = ShaderNode::parse(r#"/*{ "name": "Clock" }*/
-fn main_image(uv: vec2f, px: vec2f) -> vec4f { return vec4f(g.time, 0.0, 0.0, 1.0); }"#).unwrap();
+        let clock = ShaderNode::parse(
+            r#"/*{ "name": "Clock" }*/
+fn main_image(uv: vec2f, px: vec2f) -> vec4f { return vec4f(g.time, 0.0, 0.0, 1.0); }"#,
+        )
+        .unwrap();
         let programs = [Program::new(&device, clock).unwrap(), program(&device, "timemachine")];
         let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![Some(0), None] }];
         let mut runner = Runner::new(&device, &programs, &nodes, &[], [64, 36], &wave_texture(&device)).unwrap();

@@ -2164,7 +2164,21 @@ mod tests {
         let mods = vec![Modulator::new(&programs[0].node, &[], Vec::new()), Modulator::new(kaleido, &kaleido.values(|_| None), crate::routes(kaleido, &[kick], &[], &[]))];
         engine.send(Command::Install {
             key: 1,
-            graph: Box::new(Graph { ids: Vec::new(), programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lines: Vec::new(), lazy: Vec::new(), under: None }),
+            graph: Box::new(Graph {
+                ids: Vec::new(),
+                programs,
+                runner,
+                output: Some(1),
+                mods,
+                macros: Macros::default(),
+                signals: Vec::new(),
+                probes: Vec::new(),
+                media: Vec::new(),
+                lists: Vec::new(),
+                lines: Vec::new(),
+                lazy: Vec::new(),
+                under: None,
+            }),
         });
         engine.send(Command::Launch { scene: 1, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
         engine.send(Command::Edit(1));
@@ -2215,7 +2229,21 @@ mod tests {
         let runner = Runner::new(device, std::slice::from_ref(&program), &[NodeSpec { program: 0, inputs: vec![] }], &[], [64, 36], engine.wave_texture()).unwrap();
         runner.set_params(engine.queue(), std::slice::from_ref(&program), 0, &values);
         let mods = vec![Modulator::new(&program.node, &values, Vec::new())];
-        Box::new(Graph { ids: Vec::new(), programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lines: Vec::new(), lazy: Vec::new(), under: None })
+        Box::new(Graph {
+            ids: Vec::new(),
+            programs: vec![program],
+            runner,
+            output: Some(0),
+            mods,
+            macros: Macros::default(),
+            signals: Vec::new(),
+            probes: Vec::new(),
+            media: Vec::new(),
+            lists: Vec::new(),
+            lines: Vec::new(),
+            lazy: Vec::new(),
+            under: None,
+        })
     }
 
     /// The newest preview's average red and blue (0..255), waiting up to 2 s for one.
