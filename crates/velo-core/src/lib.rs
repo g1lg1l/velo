@@ -759,9 +759,20 @@ pub fn inputs_shown(scene: &Scene, n: &Node) -> usize {
 }
 
 /// How many inputs a shader's /*{ JSON }*/ header declares (0 if it has no header to read).
+/// Read once per header: the canvas asks for every card several times a frame.
 fn code_inputs(code: Option<&str>) -> usize {
+    // shortcut: one entry per distinct header, kept (a few bytes each, more only while a header
+    // is being edited); a bounded cache if anyone ever edits headers for hours
+    static READ: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> = std::sync::LazyLock::new(Default::default);
     let header = code.and_then(|c| c.trim_start().strip_prefix("/*")).and_then(|c| c.split_once("*/")).map_or("", |(h, _)| h);
-    serde_json::from_str::<serde_json::Value>(header).ok().and_then(|h| h.get("inputs").and_then(|i| i.as_array()).map(Vec::len)).unwrap_or(0)
+    let read = |header: &str| serde_json::from_str::<serde_json::Value>(header).ok().and_then(|h| h.get("inputs").and_then(|i| i.as_array()).map(Vec::len)).unwrap_or(0);
+    let Ok(mut known) = READ.lock() else { return read(header) };
+    if let Some(&n) = known.get(header) {
+        return n;
+    }
+    let n = read(header);
+    known.insert(header.to_string(), n);
+    n
 }
 
 /// A parameter as the engine runs it: as set, but a Blend's `inputs` counts every wired one

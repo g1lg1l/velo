@@ -150,6 +150,8 @@ struct Slot {
     /// mappings last sent, and whether it has something to show.
     built: bool,
     installed: Vec<(String, ShaderNode)>,
+    /// Where each scene node is in `installed`: the canvas asks for every card each frame.
+    at: HashMap<String, usize>,
     /// The graph's signal outputs ("n_ab12/0"), and its signal nodes' settings as last sent.
     signals: Vec<String>,
     kinds: Option<Vec<velo_engine::signal::Kind>>,
@@ -385,6 +387,7 @@ impl Live {
                     self.errors.retain(|id, _| !b.plan.nodes.iter().any(|(n, _)| n == id));
                     self.errors.extend(b.errors);
                     slot.installed = b.plan.nodes.into_iter().map(|(id, _)| id).zip(b.shaders).collect();
+                    slot.at = slot.installed.iter().enumerate().map(|(n, (id, _))| (id.clone(), n)).collect();
                     (slot.signals, slot.kinds) = (b.signals, None);
                     slot.media = b.media;
                     // the build set the values it was asked with; anything newer goes below
@@ -581,6 +584,7 @@ impl Live {
                     asked: None,
                     built: false,
                     installed: Vec::new(),
+                    at: HashMap::new(),
                     signals: Vec::new(),
                     kinds: None,
                     sent: Vec::new(),
@@ -684,8 +688,7 @@ impl Live {
     /// node's cell in it (none for a node that isn't a program: an Output, an LFO).
     pub fn thumb(&self, node: &str) -> Option<(egui::TextureId, egui::Rect)> {
         use velo_engine::runtime::THUMBS;
-        let slot = self.slots.iter().find(|s| s.key == self.edit && s.built)?;
-        let n = slot.installed.iter().position(|(id, _)| id == node)? as u32;
+        let n = self.edited(node)? as u32;
         if n >= THUMBS[0] * THUMBS[1] {
             return None;
         }
@@ -700,36 +703,37 @@ impl Live {
         if status.costed.load(Relaxed) != self.edit {
             return None;
         }
-        let slot = self.slots.iter().find(|s| s.key == self.edit && s.built)?;
-        let n = slot.installed.iter().position(|(id, _)| id == node)?;
-        status.costs.0.get(n).map(|v| f32::from_bits(v.load(Relaxed)))
+        status.costs.0.get(self.edited(node)?).map(|v| f32::from_bits(v.load(Relaxed)))
+    }
+
+    /// Where a node of the edited scene is in the graph the engine runs, once it's built.
+    fn edited(&self, node: &str) -> Option<usize> {
+        self.slots.iter().find(|s| s.key == self.edit && s.built)?.at.get(node).copied()
     }
 
     /// Whether a node of the edited scene sleeps: nothing it feeds shows now (a Switch's other
     /// inputs, a Blend's at no opacity), so it keeps its last picture.
     pub fn asleep(&self, node: &str) -> bool {
-        let Some(slot) = self.slots.iter().find(|s| s.key == self.edit && s.built) else { return false };
-        slot.installed.iter().position(|(id, _)| id == node).is_some_and(|n| n < 64 && self.engine.status.asleep.load(Relaxed) >> n & 1 == 1)
+        self.edited(node).is_some_and(|n| n < 64 && self.engine.status.asleep.load(Relaxed) >> n & 1 == 1)
     }
 
     /// A node of the edited scene, with its values as the engine modulated them last frame (x
     /// and y per parameter, in header order), while it's mapped; asking makes the engine
     /// publish them.
     pub fn modulated(&self, node: &str) -> Option<[f32; 32]> {
-        let slot = self.slots.iter().find(|s| s.key == self.edit)?;
-        let n = slot.installed.iter().position(|(id, _)| id == node)?;
-        self.engine.status.watch(n)
+        self.engine.status.watch(self.slots.iter().find(|s| s.key == self.edit)?.at.get(node).copied()?)
     }
 
     /// What a signal node's output reads now: in the shared signals (node ids are unique in the
     /// project), else in the edited scene's graph (its card's meter).
     pub fn signal(&self, node: &str, port: u8) -> Option<f32> {
-        let key = format!("{node}/{port}");
-        if let Some(at) = self.signals.keys.iter().position(|k| *k == key) {
+        // "n_ab12/0", read without writing one (each card's meter asks every frame)
+        let key = |k: &String| k.strip_prefix(node).and_then(|k| k.strip_prefix('/')).is_some_and(|p| p.parse() == Ok(port));
+        if let Some(at) = self.signals.keys.iter().position(key) {
             return Some(self.engine.status.shared(at));
         }
         let slot = self.slots.iter().find(|s| s.key == self.edit)?;
-        let at = slot.signals.iter().position(|k| *k == key)?;
+        let at = slot.signals.iter().position(key)?;
         Some(self.engine.status.signal(at))
     }
 
