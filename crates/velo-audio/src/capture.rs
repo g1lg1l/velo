@@ -38,18 +38,16 @@ pub struct Capture {
     pub broken: Arc<AtomicBool>,
 }
 
-impl Capture {
-    /// The default device this capture follows (the computer's sound, the default input) is now
-    /// another one: open it again to hear that one.
-    pub fn default_moved(&self, source: &Source) -> bool {
-        let host = cpal::default_host();
-        let now = match source {
-            Source::Computer => host.default_output_device(),
-            Source::DefaultInput => host.default_input_device(),
-            _ => return false,
-        };
-        now.and_then(|d| d.description().ok()).is_some_and(|d| d.name() != self.name)
-    }
+/// The default device a capture of `source` named `name` follows (the computer's sound, the
+/// default input) is now another one: open it again to hear that one.
+pub fn default_moved(name: &str, source: &Source) -> bool {
+    let host = cpal::default_host();
+    let now = match source {
+        Source::Computer => host.default_output_device(),
+        Source::DefaultInput => host.default_input_device(),
+        _ => return false,
+    };
+    now.and_then(|d| d.description().ok()).is_some_and(|d| d.name() != name)
 }
 
 /// The names of the input devices (for a device picker). Can take a moment: call it off the UI thread.

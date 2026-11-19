@@ -237,6 +237,46 @@ impl Detector {
     }
 }
 
+/// Audio faster than the analysis is made for (88.2 to 192 kHz) brought down to 44.1 or 48 kHz,
+/// where its hop, windows and the drum model's bands are right: each step averages two samples
+/// into one (a gentle low-pass, enough for what's measured).
+pub struct Decimate {
+    carry: Vec<Option<f32>>,
+}
+
+impl Decimate {
+    pub fn new(rate: f32) -> Self {
+        let steps = (0..4).take_while(|&k| rate / 2f32.powi(k) > 50_000.0).count();
+        Self { carry: vec![None; steps] }
+    }
+
+    /// The rate it brings `rate` down to.
+    pub fn rate(&self, rate: f32) -> f32 {
+        rate / 2f32.powi(self.carry.len() as i32)
+    }
+
+    /// `samples` brought down in place: how many there are now (a sample left over waits for
+    /// the next call).
+    pub fn run(&mut self, samples: &mut [f32]) -> usize {
+        let mut n = samples.len();
+        for carry in &mut self.carry {
+            let mut out = 0;
+            for i in 0..n {
+                let s = samples[i];
+                match carry.take() {
+                    Some(a) => {
+                        samples[out] = (a + s) * 0.5;
+                        out += 1;
+                    }
+                    None => *carry = Some(s),
+                }
+            }
+            n = out;
+        }
+        n
+    }
+}
+
 /// One hop's features.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Hop {
@@ -487,6 +527,21 @@ pub fn score(truth: &[f64], found: &[f64], window: f64) -> (f32, f32, f32, f64) 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn fast_audio_is_brought_down_to_what_the_analysis_is_made_for() {
+        assert_eq!([44_100.0, 48_000.0, 88_200.0, 96_000.0, 192_000.0].map(|r| Decimate::new(r).rate(r)), [44_100.0, 48_000.0, 44_100.0, 48_000.0, 48_000.0]);
+        // 192 kHz: two halvings, a sample left over each odd call carried into the next
+        let mut down = Decimate::new(192_000.0);
+        let mut a: Vec<f32> = (0..10).map(|i| i as f32).collect();
+        let n = down.run(&mut a);
+        assert_eq!(&a[..n], &[1.5, 5.5]);
+        let mut b: Vec<f32> = (10..16).map(|i| i as f32).collect();
+        let n = down.run(&mut b);
+        assert_eq!(&b[..n], &[9.5, 13.5], "8 and 9 waited for 10 and 11");
+        let mut same = [1.0f32, 2.0];
+        assert_eq!(Decimate::new(48_000.0).run(&mut same), 2, "48 kHz goes through as it is");
+    }
     use super::*;
     use crate::synth;
 

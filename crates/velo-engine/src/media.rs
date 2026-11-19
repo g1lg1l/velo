@@ -429,18 +429,37 @@ pub struct Playing {
     cued: bool,
     /// A movie's reader, on its own thread.
     reader: Option<(Arc<Reader>, std::thread::Thread)>,
+    /// What its frames go up through (a reader's are staged on its own thread).
+    device: wgpu::Device,
     /// A live source's frame, swapped out of its mailbox.
     scratch: Vec<u8>,
 }
 
 /// What a movie's reader and the render thread share: the frame wanted next, the last one
 /// read (swapped in, never copied), stop.
+// shortcut: the render thread uploads each frame (write_texture: a copy there); staging it on the
+// reader thread instead (a GPU buffer a frame) wasn't faster when measured, within a busy scene's noise
 #[derive(Default)]
 struct Reader {
     want: AtomicUsize,
     /// The frame, its texture's blocks, not uploaded yet.
     ready: Mutex<(usize, Vec<u8>, bool)>,
     stop: AtomicBool,
+}
+
+/// `bytes` (`rows` of `row` bytes) in a buffer of their own, rows padded as a copy to a texture
+/// takes them: made where the frame was read, so no thread that renders copies it.
+fn staged(device: &wgpu::Device, bytes: &[u8], row: usize, rows: u32) -> Option<wgpu::Buffer> {
+    let bytes = bytes.get(..row * rows as usize)?;
+    let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("frame upload"), size: (padded * rows as usize) as u64, usage: wgpu::BufferUsages::COPY_SRC, mapped_at_creation: true });
+    if let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() {
+        for (r, line) in bytes.chunks_exact(row).enumerate() {
+            view.slice(r * padded..r * padded + row).copy_from_slice(line);
+        }
+    }
+    buffer.unmap();
+    Some(buffer)
 }
 
 impl Playing {
@@ -464,10 +483,11 @@ impl Playing {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            // (a copy out too: a graph built again takes the frame on show)
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let mut playing = Self { node, speed, range: None, transport: None, media, texture, shown: 0, at: 0.0, cued: false, reader: None, scratch: Vec::new() };
+        let mut playing = Self { node, speed, range: None, transport: None, media, texture, shown: 0, at: 0.0, cued: false, reader: None, device: device.clone(), scratch: Vec::new() };
         // a movie's first frame now, the rest on the reader's thread as they come due
         let mut first = Vec::new();
         match (&playing.media.movie, &playing.media.video) {
@@ -572,18 +592,28 @@ impl Playing {
     /// copy and never while a 4K picture is copied.
     fn upload_staged(&self, device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8]) {
         let (row, rows) = self.rows();
-        let Some(bytes) = bytes.get(..row * rows as usize) else { return };
-        let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("image upload"), size: (padded * rows as usize) as u64, usage: wgpu::BufferUsages::COPY_SRC, mapped_at_creation: true });
-        if let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() {
-            for (r, line) in bytes.chunks_exact(row).enumerate() {
-                view.slice(r * padded..r * padded + row).copy_from_slice(line);
-            }
+        if let Some(buffer) = staged(device, bytes, row, rows) {
+            self.copy_in(queue, &buffer);
         }
-        buffer.unmap();
-        let mut encoder = device.create_command_encoder(&Default::default());
+    }
+
+    /// Where `was` (the same node's, in the graph this one's replaces) had got to, when it plays
+    /// the same file: its frame on show and its clock, so a rebuild doesn't start the movie over.
+    pub fn adopt(&mut self, encoder: &mut wgpu::CommandEncoder, was: &Playing) {
+        if !Arc::ptr_eq(&self.media, &was.media) || self.texture.size() != was.texture.size() || self.texture.format() != was.texture.format() {
+            return;
+        }
+        encoder.copy_texture_to_texture(was.texture.as_image_copy(), self.texture.as_image_copy(), self.texture.size());
+        (self.shown, self.at, self.cued) = (was.shown, was.at, was.cued);
+    }
+
+    /// A frame [`staged`] for this texture, copied in.
+    fn copy_in(&self, queue: &wgpu::Queue, buffer: &wgpu::Buffer) {
+        let (row, rows) = self.rows();
+        let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        let mut encoder = self.device.create_command_encoder(&Default::default());
         let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded as u32), rows_per_image: Some(rows) };
-        encoder.copy_buffer_to_texture(wgpu::TexelCopyBufferInfo { buffer: &buffer, layout }, self.texture.as_image_copy(), self.texture.size());
+        encoder.copy_buffer_to_texture(wgpu::TexelCopyBufferInfo { buffer, layout }, self.texture.as_image_copy(), self.texture.size());
         queue.submit([encoder.finish()]);
     }
 
@@ -858,7 +888,12 @@ impl Reel {
             }
             // what isn't due goes, and a broken file is tried again once it's due anew
             for f in (0..n).filter(|&f| !wanted[f]) {
-                (self.cache[f], self.broken[f]) = (None, false);
+                // let go on a thread of its own: a GIF or a sequence in memory can be gigabytes,
+                // too long to free between two frames
+                if let Some(gone) = self.cache[f].take() {
+                    std::thread::spawn(move || drop(gone));
+                }
+                self.broken[f] = false;
             }
             let need: Vec<usize> = due.into_iter().filter(|&f| self.cache[f].is_none() && !self.broken[f] && asked.loading != Some(f)).collect();
             if need != asked.need {

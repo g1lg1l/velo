@@ -14,7 +14,7 @@ pub mod synth;
 pub mod tempo;
 pub mod track;
 
-pub use analysis::{Analyzer, BANDS, Detect, HITS, HOP, Hop, Mode, Settings};
+pub use analysis::{Analyzer, BANDS, Decimate, Detect, HITS, HOP, Hop, Mode, Settings};
 pub use capture::{Capture, Source};
 pub use features::{Features, Tracker};
 pub use tempo::{Estimate, Tempo};

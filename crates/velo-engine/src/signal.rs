@@ -1396,7 +1396,7 @@ mod tests {
             let (short, long) = (spectrum(hz, 512), spectrum(hz, 4096));
             let wave = crate::SharedWave::default();
             for _ in 0..30 {
-                wave.push_spectrum(&short, &long, 48_000.0);
+                wave.push_spectrum(&short, &long, 48_000.0, 1.0);
             }
             wave
         };

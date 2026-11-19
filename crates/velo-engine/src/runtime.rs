@@ -119,7 +119,9 @@ impl SharedWave {
     /// off, rising at once and falling slowly, so bars dance rather than flicker. Under
     /// 500 Hz (`LONG_UNDER_HZ`) the bands read `long`, a longer FFT's (finer bins, a slower window),
     /// scaled so a steady tone reads the same in both.
-    pub fn push_spectrum(&self, power: &[f32], long: &[f32], rate: f32) {
+    /// `hops`: how many analysis hops the audio came in since the last (the smoothing is by
+    /// time, not by how often the audio thread gets its samples).
+    pub fn push_spectrum(&self, power: &[f32], long: &[f32], rate: f32, hops: f32) {
         // a band's power in one spectrum, from `lo` to `hi` Hz
         let read = |power: &[f32], lo: f32, hi: f32| {
             let last = power.len() - 1;
@@ -134,15 +136,19 @@ impl SharedWave {
         };
         // a tone's peak grows with the FFT's length (the power is per point), noise's doesn't
         let scale = (power.len() - 1) as f32 / (long.len() - 1) as f32;
-        let octaves = (HIGHEST_HZ / LOWEST_HZ).log2();
-        let hz = |x: f32| LOWEST_HZ * 2f32.powf(octaves * x / WAVE_COLUMNS as f32);
-        for (b, slot) in self.spectrum.iter().enumerate() {
-            let (lo, hi) = (hz(b as f32), hz(b as f32 + 1.0));
+        // each band's edges in Hz and its tilt: the same every time, worked out once
+        static BANDS: std::sync::LazyLock<Vec<(f32, f32, f32)>> = std::sync::LazyLock::new(|| {
+            let octaves = (HIGHEST_HZ / LOWEST_HZ).log2();
+            let hz = |x: f32| LOWEST_HZ * 2f32.powf(octaves * x / WAVE_COLUMNS as f32);
+            (0..WAVE_COLUMNS).map(|b| (hz(b as f32), hz(b as f32 + 1.0), 4.5 * (hz(b as f32 + 0.5) / 1000.0).log2())).collect()
+        });
+        // quick up, slow down: 0.6 and 0.12 of the way a hop
+        let (up, down) = (1.0 - 0.4f32.powf(hops), 1.0 - 0.88f32.powf(hops));
+        for (slot, &(lo, hi, tilt)) in self.spectrum.iter().zip(BANDS.iter()) {
             let p = if hi <= LONG_UNDER_HZ { scale * read(long, lo, hi) } else { read(power, lo, hi) };
-            let tilt = 4.5 * (hz(b as f32 + 0.5) / 1000.0).log2();
             let v = ((10.0 * p.max(1e-12).log10() + tilt + 48.0) / 60.0).clamp(0.0, 1.0);
             let was = f32::from_bits(slot.load(Relaxed));
-            let now = if v > was { was + (v - was) * 0.6 } else { was + (v - was) * 0.12 };
+            let now = was + (v - was) * if v > was { up } else { down };
             slot.store(now.to_bits(), Relaxed);
         }
     }
@@ -176,6 +182,8 @@ impl SharedWave {
 
 /// A graph ready to install: compiled (on any thread, with [`Engine::device`]) and allocated.
 pub struct Graph {
+    /// Each node's id in the scene, by index: what carries over to the graph that replaces it.
+    pub ids: Vec<String>,
     pub programs: Vec<Program>,
     pub runner: Runner,
     /// The node whose picture goes out, if any.
@@ -363,6 +371,9 @@ pub struct Status {
     pub asleep: AtomicU64,
     /// Why sharing stopped (no NDI runtime, no DirectX 11), for the UI to say.
     pub share_error: Mutex<Option<String>>,
+    /// How many cells of the thumbnail sheet the last one drew (the edited graph's nodes, at most
+    /// a sheet): the rows past them are black.
+    pub thumbed: AtomicUsize,
     /// A recording finished: its movie, or why it failed.
     pub recorded: Arc<Mutex<Option<Result<std::path::PathBuf, String>>>>,
 }
@@ -903,6 +914,18 @@ impl Thread {
                                     new.adopt(old);
                                 }
                             }
+                            // and what each node had built up (trails, particles, the past), and
+                            // where its movie was: an edit on the live scene doesn't start it over
+                            let old = &slot.1;
+                            let pairs: Vec<(usize, usize)> = graph.ids.iter().enumerate().filter_map(|(n, id)| Some((n, old.ids.iter().position(|o| o == id)?))).collect();
+                            let mut encoder = self.device.create_command_encoder(&Default::default());
+                            graph.runner.adopt(&mut encoder, &old.runner, pairs.iter().copied());
+                            for new in &mut graph.media {
+                                if let Some(was) = pairs.iter().find(|p| p.0 == new.node).and_then(|p| old.media.iter().find(|m| m.node == p.1)) {
+                                    new.adopt(&mut encoder, was);
+                                }
+                            }
+                            self.queue.submit([encoder.finish()]);
                             drop_later(std::mem::replace(&mut slot.1, graph))
                         }
                         None => graphs.push((key, graph)),
@@ -1377,13 +1400,13 @@ impl Thread {
                 thumbs_into = self.thumbs.free();
                 if let Some(i) = thumbs_into {
                     last_thumbs = now;
-                    clear(&mut encoder, &thumbs_view);
-                    for n in 0..g.runner.len().min((THUMBS[0] * THUMBS[1]) as usize) {
+                    let drawn = g.runner.len().min((THUMBS[0] * THUMBS[1]) as usize);
+                    self.status.thumbed.store(drawn, Relaxed);
+                    let cells = (0..drawn).map(|n| {
                         let (col, row) = (n as u32 % THUMBS[0], n as u32 / THUMBS[0]);
-                        let cell = [(col * THUMB[0]) as f32, (row * THUMB[1]) as f32, THUMB[0] as f32, THUMB[1] as f32];
-                        let picture = g.runner.output(n);
-                        thumb_blit.draw(&self.device, &self.queue, &mut encoder, [picture, picture], (0.0, 1.0), &thumbs_view, Some(cell));
-                    }
+                        (g.runner.output(n), [(col * THUMB[0]) as f32, (row * THUMB[1]) as f32, THUMB[0] as f32, THUMB[1] as f32])
+                    });
+                    thumb_blit.draw_cells(&self.device, &self.queue, &mut encoder, cells, &thumbs_view);
                     self.thumbs.copy(&mut encoder, i);
                 }
             }
@@ -1755,15 +1778,46 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     /// height in pixels), leaving the rest as it is.
     #[allow(clippy::too_many_arguments)]
     fn draw(&self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, src: [&wgpu::TextureView; 2], (mix, style): (f32, f32), dst: &wgpu::TextureView, cell: Option<[f32; 4]>) {
+        let [w, h] = cell.map_or_else(|| [dst.texture().width() as f32, dst.texture().height() as f32], |c| [c[2], c[3]]);
+        self.uniform(queue, (mix, style), w / h.max(1.0));
+        let group = self.group(device, src);
+        let mut pass = Self::pass(encoder, dst, if cell.is_some() { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) });
+        if let Some([x, y, w, h]) = cell {
+            pass.set_viewport(x, y, w, h, 0.0, 1.0);
+        }
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Pictures each into its cell of `dst` (cleared first), all the same size: one pass, so a
+    /// tile-based GPU loads and stores the sheet once, not once a cell.
+    fn draw_cells<'a>(&self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, cells: impl Iterator<Item = (&'a wgpu::TextureView, [f32; 4])>, dst: &wgpu::TextureView) {
+        let cells: Vec<_> = cells.map(|(src, cell)| (self.group(device, [src, src]), cell)).collect();
+        if let Some((_, [_, _, w, h])) = cells.first() {
+            self.uniform(queue, (0.0, 1.0), w / h.max(1.0));
+        }
+        let mut pass = Self::pass(encoder, dst, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
+        pass.set_pipeline(&self.pipeline);
+        for (group, [x, y, w, h]) in &cells {
+            pass.set_viewport(*x, *y, *w, *h, 0.0, 1.0);
+            pass.set_bind_group(0, group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+    }
+
+    fn uniform(&self, queue: &wgpu::Queue, (mix, style): (f32, f32), aspect: f32) {
         let mut bytes = [0u8; 16];
         bytes[..4].copy_from_slice(&self.decode.to_ne_bytes());
         bytes[4..8].copy_from_slice(&mix.to_ne_bytes());
         bytes[8..12].copy_from_slice(&style.to_ne_bytes());
-        let [w, h] = cell.map_or_else(|| [dst.texture().width() as f32, dst.texture().height() as f32], |c| [c[2], c[3]]);
-        bytes[12..16].copy_from_slice(&(w / h.max(1.0)).to_ne_bytes());
+        bytes[12..16].copy_from_slice(&aspect.to_ne_bytes());
         queue.write_buffer(&self.uniform, 0, &bytes);
-        // ponytail: one small bind group per draw; cache per source view if it ever shows in profiles
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    }
+
+    // ponytail: one small bind group per draw; cache per source view if it ever shows in profiles
+    fn group(&self, device: &wgpu::Device, src: [&wgpu::TextureView; 2]) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit"),
             layout: &self.layout,
             entries: &[
@@ -1772,26 +1826,18 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&self.sampler) },
                 wgpu::BindGroupEntry { binding: 3, resource: self.uniform.as_entire_binding() },
             ],
-        });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        })
+    }
+
+    fn pass<'e>(encoder: &'e mut wgpu::CommandEncoder, dst: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>) -> wgpu::RenderPass<'e> {
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("blit"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: dst,
-                resolve_target: None,
-                ops: wgpu::Operations { load: if cell.is_some() { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) }, store: wgpu::StoreOp::Store },
-                depth_slice: None,
-            })],
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: dst, resolve_target: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store }, depth_slice: None })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
-        });
-        if let Some([x, y, w, h]) = cell {
-            pass.set_viewport(x, y, w, h, 0.0, 1.0);
-        }
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &group, &[]);
-        pass.draw(0..3, 0..1);
+        })
     }
 }
 
@@ -2067,7 +2113,7 @@ mod tests {
         let mut power = [1e-9f32; 257];
         power[11] = 1.0;
         for _ in 0..20 {
-            wave.push_spectrum(&power, &[1e-9; 2049], 48_000.0);
+            wave.push_spectrum(&power, &[1e-9; 2049], 48_000.0, 1.0);
         }
         let mut pixels = [[0.0; 4]; WAVE_COLUMNS * WAVE_ROWS];
         wave.load(&mut pixels);
@@ -2077,7 +2123,7 @@ mod tests {
         assert!((900.0..1200.0).contains(&hz), "the loudest band is the tone's: {hz} Hz");
         assert!(row[10] < 0.1 && row[500] < 0.1, "the rest stays dark");
         // and it falls back slowly once the tone stops
-        wave.push_spectrum(&[1e-9; 257], &[1e-9; 2049], 48_000.0);
+        wave.push_spectrum(&[1e-9; 257], &[1e-9; 2049], 48_000.0, 1.0);
         wave.load(&mut pixels);
         assert!(pixels[2 * WAVE_COLUMNS + loudest][0] > 0.5 * row[loudest]);
     }
@@ -2118,7 +2164,7 @@ mod tests {
         let mods = vec![Modulator::new(&programs[0].node, &[], Vec::new()), Modulator::new(kaleido, &kaleido.values(|_| None), crate::routes(kaleido, &[kick], &[], &[]))];
         engine.send(Command::Install {
             key: 1,
-            graph: Box::new(Graph { programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lines: Vec::new(), lazy: Vec::new(), under: None }),
+            graph: Box::new(Graph { ids: Vec::new(), programs, runner, output: Some(1), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lines: Vec::new(), lazy: Vec::new(), under: None }),
         });
         engine.send(Command::Launch { scene: 1, transition: Transition::Cut, duration_beats: 0.0, quantize: Quantize::Off });
         engine.send(Command::Edit(1));
@@ -2169,7 +2215,7 @@ mod tests {
         let runner = Runner::new(device, std::slice::from_ref(&program), &[NodeSpec { program: 0, inputs: vec![] }], &[], [64, 36], engine.wave_texture()).unwrap();
         runner.set_params(engine.queue(), std::slice::from_ref(&program), 0, &values);
         let mods = vec![Modulator::new(&program.node, &values, Vec::new())];
-        Box::new(Graph { programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lines: Vec::new(), lazy: Vec::new(), under: None })
+        Box::new(Graph { ids: Vec::new(), programs: vec![program], runner, output: Some(0), mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lines: Vec::new(), lazy: Vec::new(), under: None })
     }
 
     /// The newest preview's average red and blue (0..255), waiting up to 2 s for one.

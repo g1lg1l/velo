@@ -528,13 +528,17 @@ impl Live {
         }
         // the cards' pictures, a few times a second
         let edited = self.slots.iter().find(|s| s.key == self.edit && s.built).and_then(|s| Some((s.scene.clone(), s.output?)));
+        let drawn = self.engine.status.thumbed.load(Relaxed);
         self.engine.take_thumbs(|rgba| {
             use velo_engine::runtime::{THUMB, THUMBS};
             let width = (THUMB[0] * THUMBS[0]) as usize;
-            let image = egui::ColorImage::from_rgba_premultiplied([width, (THUMB[1] * THUMBS[1]) as usize], rgba);
             match &mut self.thumbs {
-                Some(t) => t.set(image, egui::TextureOptions::LINEAR),
-                None => self.thumbs = Some(ctx.load_texture("thumbs", image, egui::TextureOptions::LINEAR)),
+                // the rows the graph's nodes are in (a row more: one added since), not the whole sheet
+                Some(t) => {
+                    let rows = (drawn.div_ceil(THUMBS[0] as usize) + 1).min(THUMBS[1] as usize) * THUMB[1] as usize;
+                    t.set_partial([0, 0], egui::ColorImage::from_rgba_premultiplied([width, rows], &rgba[..width * rows * 4]), egui::TextureOptions::LINEAR);
+                }
+                None => self.thumbs = Some(ctx.load_texture("thumbs", egui::ColorImage::from_rgba_premultiplied([width, (THUMB[1] * THUMBS[1]) as usize], rgba), egui::TextureOptions::LINEAR)),
             }
             // the edited scene's picture, out of its output's cell: its card's
             if let Some((scene, n)) = edited.filter(|(_, n)| (*n as u32) < THUMBS[0] * THUMBS[1]) {
@@ -1348,46 +1352,81 @@ fn look_at_apps(looked: &mut Option<Instant>, state: &Mutex<AudioState>) -> bool
 /// An open input into the analyzer until stop, or until the app it listens to has other
 /// processes (it quit, opened again, started a helper): then it's opened again.
 fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: &mut Option<Instant>, links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>) {
+    struct Done<'a>(&'a AtomicBool);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Relaxed);
+        }
+    }
+    let (reopen, done) = (AtomicBool::new(false), AtomicBool::new(false));
+    let name = cap.name.clone();
+    let tapped = cap.tap.as_ref().map(|t| {
+        let mut p = t.processes.clone();
+        p.sort_unstable();
+        p
+    });
+    std::thread::scope(|scope| {
+        let _ = std::thread::Builder::new().name("velo audio watch".into()).spawn_scoped(scope, || watch(&name, source, app.zip(tapped.as_deref()), state, &reopen, &done));
+        let _done = Done(&done);
+        hear_on(cap, source, links, stop, state, &reopen);
+    });
+    *looked = Some(Instant::now());
+}
+
+/// What can move under an open input, looked at every [`APPS_EVERY`] off the analysis (Core
+/// Audio's answers take a few ms): the apps using audio (for the menu), the default device the
+/// input follows, the processes of the app it listens to. A move asks for it to be opened again.
+fn watch(name: &str, source: &Source, app: Option<(&str, &[u32])>, state: &Mutex<AudioState>, reopen: &AtomicBool, done: &AtomicBool) {
+    let mut looked = Instant::now();
+    while !done.load(Relaxed) {
+        std::thread::sleep(Duration::from_millis(50));
+        if looked.elapsed() < APPS_EVERY {
+            continue;
+        }
+        looked = Instant::now();
+        let found = apps::apps();
+        if let Ok(mut s) = state.lock() {
+            s.apps = found;
+        }
+        let other = app.is_some_and(|(id, before)| {
+            let mut now = apps::processes(id);
+            now.sort_unstable();
+            now != before
+        });
+        if other || capture::default_moved(name, source) {
+            reopen.store(true, Relaxed);
+        }
+    }
+}
+
+fn hear_on(cap: &mut capture::Capture, source: &Source, links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>, reopen: &AtomicBool) {
     let set = |f: &dyn Fn(&mut AudioState)| {
         if let Ok(mut s) = state.lock() {
             f(&mut s);
         }
     };
-    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(cap.rate), tracker(links), Tempo::new(cap.rate));
-    let dt = HOP as f32 / cap.rate;
+    // a 96 or 192 kHz device: analysed at 48 (its hop, windows and the model's bands are made for it)
+    let mut down = velo_audio::Decimate::new(cap.rate);
+    let rate = down.rate(cap.rate);
+    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(rate), tracker(links), Tempo::new(rate));
+    let dt = HOP as f32 / rate;
     let (opened, mut heard) = (Instant::now(), false);
-    // when samples last went through, and when the default device was last looked at
-    let (mut fed, mut checked) = (Instant::now(), Instant::now());
+    // when samples last went through
+    let mut fed = Instant::now();
     let mut buffer = vec![0.0f32; 4096];
     // what this computer plays reaches lagging speakers late; a microphone hears the room as it is
-    let (mut late, played) = (Late::new(cap.rate), matches!(source, Source::Computer | Source::App { .. }));
-    let lag = || if played { links.lag(cap.rate) } else { 0 };
+    let (mut late, played) = (Late::new(rate), matches!(source, Source::Computer | Source::App { .. }));
+    let lag = || if played { links.lag(rate) } else { 0 };
     // a new analyzer: the settings as they are
     links.tuning.changed.store(true, Release);
     while !stop.load(Relaxed) {
-        // the device went (open it again), or the default moved to another (hear that one)
-        if cap.broken.load(Relaxed) {
+        // the device went (open it again), the default moved to another (hear that one), or
+        // the app has other processes (it quit, opened again, started a helper)
+        if cap.broken.load(Relaxed) || reopen.load(Relaxed) {
             return;
-        }
-        if checked.elapsed() > Duration::from_secs(2) {
-            checked = Instant::now();
-            if cap.default_moved(source) {
-                return;
-            }
         }
         if let Some(s) = links.tuning.take() {
             analyzer.set(s);
-        }
-        if look_at_apps(looked, state)
-            && let (Some(id), Some(tap)) = (app, &cap.tap)
-        {
-            let mut now = apps::processes(id);
-            now.sort_unstable();
-            let mut before = tap.processes.clone();
-            before.sort_unstable();
-            if now != before {
-                return;
-            }
         }
         // the same audio in stereo: to a recording, else let go
         if let Ok(chunk) = cap.stereo.read_chunk(cap.stereo.slots()) {
@@ -1404,12 +1443,12 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
             // no samples (nothing plays into a loopback, a device stalled): silence goes through
             // instead, so hits and levels fall back and nothing a mapping moves stays stuck up
             if fed.elapsed() > Duration::from_millis(50) {
-                let silence = ((fed.elapsed().as_secs_f32() * cap.rate) as usize).min(buffer.len());
+                let silence = ((fed.elapsed().as_secs_f32() * rate) as usize).min(buffer.len());
                 buffer[..silence].fill(0.0);
                 late.pass(&mut buffer[..silence], lag());
                 links.wave.push_samples(&buffer[..silence]);
                 analyzer.push(&buffer[..silence], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
-                links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
+                links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate(), silence as f32 / HOP as f32);
                 fed = Instant::now();
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -1421,6 +1460,7 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
         buffer[..a.len()].copy_from_slice(a);
         buffer[a.len()..take].copy_from_slice(b);
         chunk.commit_all();
+        let take = down.run(&mut buffer[..take]);
         if !heard && buffer[..take].iter().any(|&x| x != 0.0) {
             heard = true;
             set(&|s| s.hearing = Hearing::Live);
@@ -1430,7 +1470,7 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
         late.pass(&mut buffer[..take], lag());
         links.wave.push_samples(&buffer[..take]);
         analyzer.push(&buffer[..take], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
-        links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
+        links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate(), take as f32 / HOP as f32);
     }
 }
 
@@ -1463,7 +1503,7 @@ fn test_loop(links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>) {
                 links.record(RATE, false, &both);
             }
             analyzer.push(&take.samples[at..at + n], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
-            links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
+            links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate(), n as f32 / HOP as f32);
             played += n;
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -1532,7 +1572,7 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
             late.pass(&mut chunk[..n], links.lag(track.rate));
             links.wave.push_samples(&chunk[..n]);
             analyzer.push(&chunk[..n], |hop| hop_out(hop, &mut tracker, dt, &mut tempo, links, state));
-            links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate());
+            links.wave.push_spectrum(analyzer.spectrum(), analyzer.long_spectrum(), analyzer.rate(), n as f32 / HOP as f32);
             heard += n;
         }
         std::thread::sleep(Duration::from_millis(5));

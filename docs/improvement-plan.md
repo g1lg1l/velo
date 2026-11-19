@@ -123,6 +123,21 @@ holds at 60 after it. `scene_costs` now scales overlapping spans as the live tim
 
 ## Phase 4: larger engine work
 
+Done on `perf/engine`: thumbnails in one pass and only their rows uploaded (3), evicted clips
+freed off the render thread, device and app polling on a watcher thread, the spectrum smoothed
+by time with its bands worked out once, 88.2-192 kHz analysed at 44.1/48 (5, 6). For item 1 a
+rebuilt graph now takes over what its nodes had built up (feedback, shader buffers, the time
+machine, particles) and where its movies were, so an edit on the live scene doesn't start them
+over; changing a text or a file without a rebuild would need a new engine command and is left.
+Item 2 was tried (frames staged into GPU buffers on the reader thread) and measured no faster:
+reverted. Item 4 left: Metal and the Windows drivers cache compiled pipelines, so the hitch is
+only on a first-ever attach. `write_buffer` batching and the per-frame scratch `Vec`s are left
+(tens of µs).
+
+Found while measuring: techno-night's scene 6 (MEDIA, media lists and movies that jump on the
+kick) runs 22-58 fps with 18-30 ms on the render thread, on main as on this branch. Next to
+profile with symbols (`CARGO_PROFILE_RELEASE_STRIP=false`).
+
 1. **A rebuild reuses nothing**: new canvas textures for every node, every still re-uploaded, every
    movie reopened, old and new graph both alive until install (2x VRAM), and a text or file change
    costs two rebuilds (`gpu.rs:287-383`, `media.rs:448-503`, `velo/src/live.rs:355-359,949`). Share

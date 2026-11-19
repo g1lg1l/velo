@@ -304,7 +304,7 @@ impl Runner {
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
                     format: FORMAT,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
                     view_formats: &[],
                 });
                 let frame = |i| ring.create_view(&wgpu::TextureViewDescriptor { dimension: Some(wgpu::TextureViewDimension::D2), base_array_layer: i, array_layer_count: Some(1), ..Default::default() });
@@ -366,7 +366,7 @@ impl Runner {
             };
             let groups: Vec<[wgpu::BindGroup; 2]> = (0..=buffers.len()).map(|pass| [group(pass, 0), group(pass, 1)]).collect();
             let sim = program.sim.as_ref().map(|sim| {
-                let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX;
+                let usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST;
                 let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("particles"), size: EMITTER + u64::from(PARTICLES) * PARTICLE, usage, mapped_at_creation: false });
                 let points = device.create_buffer(&wgpu::BufferDescriptor { label: Some("points"), size: 16 * (MAX_POINTS as u64 + 1), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
                 let emit = program.node.inputs.iter().position(|id| id == "emit");
@@ -604,6 +604,46 @@ impl Runner {
         needed
     }
 
+    /// What the nodes of the graph this one replaces had built up, carried over (`pairs`: this
+    /// one's node and `from`'s, the same node in the scene): their last frames where they read
+    /// them (feedback, a shader's buffers, the time machine's past) and their particles, where
+    /// they're the same size. An edit then doesn't wipe the trails or restart a swarm.
+    pub fn adopt(&mut self, encoder: &mut wgpu::CommandEncoder, from: &Runner, pairs: impl Iterator<Item = (usize, usize)>) {
+        // the frame count goes on too: which of a feedback's two pictures is the last
+        self.frame = from.frame;
+        let copy = |encoder: &mut wgpu::CommandEncoder, a: &wgpu::TextureView, b: &wgpu::TextureView| {
+            let (a, b) = (a.texture(), b.texture());
+            if a.size() == b.size() && a.format() == b.format() && b.usage().contains(wgpu::TextureUsages::COPY_DST) && a.usage().contains(wgpu::TextureUsages::COPY_SRC) {
+                encoder.copy_texture_to_texture(a.as_image_copy(), b.as_image_copy(), a.size());
+            }
+        };
+        for (n, o) in pairs {
+            let (Some(new), Some(old)) = (self.nodes.get(n), from.nodes.get(o)) else { continue };
+            if new.targets.len() == 2 && old.targets.len() == 2 {
+                for (a, b) in old.targets.iter().zip(&new.targets) {
+                    copy(encoder, a, b);
+                }
+            }
+            for (a, b) in old.buffers.iter().zip(&new.buffers) {
+                for (a, b) in a.iter().zip(b) {
+                    copy(encoder, a, b);
+                }
+            }
+            if let (Some(a), Some(b)) = (&old.past, &new.past)
+                && let (Some(a), Some(b)) = (a.frames.first(), b.frames.first())
+            {
+                copy(encoder, a, b);
+            }
+            if let (Some((a, ..)), Some((b, ..))) = (&old.sim, &new.sim)
+                && a.size() == b.size()
+            {
+                encoder.copy_buffer_to_buffer(a, 0, b, 0, a.size());
+                // as many as were stepped: past a count now lower, they're ended next frame
+                new.alive[1].store(old.alive[1].load(Relaxed), Relaxed);
+            }
+        }
+    }
+
     /// What `node` drew in the last frame rendered.
     pub fn output(&self, node: usize) -> &wgpu::TextureView {
         let n = &self.nodes[node];
@@ -786,7 +826,8 @@ fn multisampled(device: &wgpu::Device, [width, height]: [u32; 2], format: wgpu::
 }
 
 pub(crate) fn texture(device: &wgpu::Device, size: [u32; 2]) -> wgpu::TextureView {
-    texture_for(device, size, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC)
+    // (a copy in too: what a node built up carries over to the graph that replaces it)
+    texture_for(device, size, wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST)
 }
 
 /// A picture in the working format, for what `usage` says.
@@ -952,6 +993,40 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         let texels = pixels.as_chunks::<4>().0;
         let lit = texels.iter().filter(|p| p[0] != 0).count();
         assert!(lit > texels.len() / 20 && lit < texels.len(), "rings, not a flat picture ({lit} of {} lit)", texels.len());
+    }
+
+    #[test]
+    fn a_rebuilt_graph_goes_on_from_its_feedback() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        // a tenth more each frame, on its own last frame
+        let count = Program::new(&device, ShaderNode::parse("/*{ \"name\": \"Count\", \"category\": \"generator\", \"feedback\": true }*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f { return textureSampleLevel(prev, smp, uv, 0.0) + vec4f(0.1, 0.0, 0.0, 0.0); }").unwrap()).unwrap();
+        let programs = [count];
+        let nodes = [NodeSpec { program: 0, inputs: vec![] }];
+        let frames = |runner: &mut Runner, n: u32| {
+            for f in 0..n {
+                let mut encoder = device.create_command_encoder(&Default::default());
+                runner.render(&queue, &mut encoder, &programs, &[f as f32 / 60.0, 1.0 / 60.0, f as f32, 2.0]);
+                queue.submit([encoder.finish()]);
+            }
+        };
+        // as half-float bits (positive halves order as their bits do): 0.25 is 0x3400, 0.375 0x3600, 0.4375 0x3700
+        let red = |runner: &Runner| read(&device, &queue, runner, 0)[0];
+        let mut old = Runner::new(&device, &programs, &nodes, &[], [32, 16], &wave_texture(&device)).unwrap();
+        old.set_params(&queue, &programs, 0, &[[1.0, 0.0, 0.0, 0.0]]);
+        frames(&mut old, 3);
+        assert!((0x3400..0x3600).contains(&red(&old)), "0.3: {:#x}", red(&old));
+        // built again (an edit): it starts from where the old one was, not from black
+        let mut new = Runner::new(&device, &programs, &nodes, &[], [32, 16], &wave_texture(&device)).unwrap();
+        new.set_params(&queue, &programs, 0, &[[1.0, 0.0, 0.0, 0.0]]);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        new.adopt(&mut encoder, &old, std::iter::once((0, 0)));
+        queue.submit([encoder.finish()]);
+        frames(&mut new, 1);
+        assert!((0x3600..0x3700).contains(&red(&new)), "0.4, not 0.1: {:#x}", red(&new));
     }
 
     #[test]
