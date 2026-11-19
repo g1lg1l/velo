@@ -949,11 +949,19 @@ impl App {
                     });
                     // what it used, on a line of its own: the buttons above take the row's right
                     if let Some(used) = tokens {
-                        let mut line = tr!("{} tokens in, {} out", ai::short(used.read), ai::short(used.written));
+                        // what came from the cache costs about a tenth: apart, so the big number doesn't
+                        // read as the bill
+                        let fresh = used.read.saturating_sub(used.cached);
+                        let mut line = if used.cached > 0 {
+                            tr!("{} new · {} cached · {} out", ai::short(fresh), ai::short(used.cached), ai::short(used.written))
+                        } else {
+                            tr!("{} tokens in, {} out", ai::short(used.read), ai::short(used.written))
+                        };
                         if let Some(d) = used.dollars {
                             line = format!("{line} · ${d:.2}");
                         }
-                        ui.label(RichText::new(line).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+                        ui.label(RichText::new(line).font(Theme::mono(t.text_xs)).color(t.fg_muted))
+                            .on_hover_text(tr!("Tokens the model read anew, read again from the cache (about a tenth of the price) and wrote"));
                     }
                 }
             }

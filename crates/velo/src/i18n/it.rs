@@ -996,6 +996,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("{} s · {} steps", "{} s · {} passi"),
     ("{} s", "{} s"),
     ("{} tokens in, {} out", "{} token letti, {} scritti"),
+    ("{} new · {} cached · {} out", "{} nuovi · {} in cache · {} scritti"),
+    ("Tokens the model read anew, read again from the cache (about a tenth of the price) and wrote", "Token che il modello ha letto da capo, riletto dalla cache (circa un decimo del prezzo) e scritto"),
     ("Take back everything this reply changed", "Annulla tutto quello che ha cambiato questa risposta"),
     ("Copy the reply", "Copia la risposta"),
     ("Retry", "Riprova"),

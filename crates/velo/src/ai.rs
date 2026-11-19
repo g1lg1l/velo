@@ -217,11 +217,13 @@ pub enum Event {
     Usage(Tokens),
 }
 
-/// What a reply used: tokens the model read (cached ones too) and wrote, and its price where
-/// the provider says it.
+/// What a reply used: tokens the model read (of them, `cached` came from the provider's cache,
+/// at about a tenth of the price) and wrote, and its price where the provider says it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tokens {
     pub read: u64,
+    #[serde(default)]
+    pub cached: u64,
     pub written: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dollars: Option<f64>,
@@ -230,6 +232,7 @@ pub struct Tokens {
 impl std::ops::AddAssign for Tokens {
     fn add_assign(&mut self, more: Tokens) {
         self.read += more.read;
+        self.cached += more.cached;
         self.written += more.written;
         self.dollars = match (self.dollars, more.dollars) {
             (None, None) => None,
@@ -394,7 +397,7 @@ pub fn claude_line(line: &str) -> Vec<Event> {
             let u = &v["usage"];
             let read = count(&u["input_tokens"]) + count(&u["cache_creation_input_tokens"]) + count(&u["cache_read_input_tokens"]);
             if read > 0 {
-                out.push(Event::Usage(Tokens { read, written: count(&u["output_tokens"]), dollars: v["total_cost_usd"].as_f64() }));
+                out.push(Event::Usage(Tokens { read, cached: count(&u["cache_read_input_tokens"]), written: count(&u["output_tokens"]), dollars: v["total_cost_usd"].as_f64() }));
             }
             if v["is_error"] == true {
                 out.push(Event::Problem(v["result"].as_str().unwrap_or("Claude Code stopped").trim().into()));
@@ -421,7 +424,7 @@ pub fn codex_line(line: &str) -> Vec<Event> {
         (Some("item.completed"), Some("agent_message")) => item["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| vec![Event::Text(s.into())]).unwrap_or_default(),
         (Some("item.completed"), Some("error")) | (Some("error"), _) => vec![Event::Problem(item["message"].as_str().or(v["message"].as_str()).unwrap_or("Codex stopped").into())],
         // input_tokens counts the cached ones too
-        (Some("turn.completed"), _) => vec![Event::Usage(Tokens { read: count(&v["usage"]["input_tokens"]), written: count(&v["usage"]["output_tokens"]), dollars: None })],
+        (Some("turn.completed"), _) => vec![Event::Usage(Tokens { read: count(&v["usage"]["input_tokens"]), cached: count(&v["usage"]["cached_input_tokens"]), written: count(&v["usage"]["output_tokens"]), dollars: None })],
         (Some("turn.failed"), _) => vec![Event::Problem(v["error"]["message"].as_str().unwrap_or("Codex stopped").into())],
         _ => Vec::new(),
     }
@@ -739,7 +742,7 @@ fn local(prefs: &Prefs, prompt: &str, pictures: &[PathBuf], mut history: Vec<Val
         // each step reads the whole conversation again: that's what it uses
         let u = &reply["usage"];
         if !u.is_null() {
-            say(Event::Usage(Tokens { read: count(&u["prompt_tokens"]), written: count(&u["completion_tokens"]), dollars: None }));
+            say(Event::Usage(Tokens { read: count(&u["prompt_tokens"]), cached: count(&u["prompt_tokens_details"]["cached_tokens"]), written: count(&u["completion_tokens"]), dollars: None }));
         }
         let message = &reply["choices"][0]["message"];
         let content = message["content"].as_str().unwrap_or("");
@@ -865,12 +868,12 @@ mod tests {
     #[test]
     fn what_a_reply_used_is_counted() {
         let claude = r#"{"type":"result","subtype":"success","is_error":false,"total_cost_usd":0.031,"usage":{"input_tokens":12,"cache_creation_input_tokens":3000,"cache_read_input_tokens":9000,"output_tokens":820}}"#;
-        assert_eq!(claude_line(claude), [Event::Usage(Tokens { read: 12_012, written: 820, dollars: Some(0.031) })]);
+        assert_eq!(claude_line(claude), [Event::Usage(Tokens { read: 12_012, cached: 9000, written: 820, dollars: Some(0.031) })]);
         let codex = r#"{"type":"turn.completed","usage":{"input_tokens":5000,"cached_input_tokens":4000,"output_tokens":300}}"#;
-        assert_eq!(codex_line(codex), [Event::Usage(Tokens { read: 5000, written: 300, dollars: None })]);
-        let mut sum = Tokens { read: 1, written: 2, dollars: None };
-        sum += Tokens { read: 10, written: 20, dollars: Some(0.5) };
-        assert_eq!(sum, Tokens { read: 11, written: 22, dollars: Some(0.5) });
+        assert_eq!(codex_line(codex), [Event::Usage(Tokens { read: 5000, cached: 4000, written: 300, dollars: None })]);
+        let mut sum = Tokens { read: 1, cached: 0, written: 2, dollars: None };
+        sum += Tokens { read: 10, cached: 8, written: 20, dollars: Some(0.5) };
+        assert_eq!(sum, Tokens { read: 11, cached: 8, written: 22, dollars: Some(0.5) });
         assert_eq!([short(820), short(12_400), short(1_250_000)], ["820", "12.4k", "1.2M"]);
     }
 

@@ -22,7 +22,7 @@ Press <kbd>Ctrl</kbd> <kbd>I</kbd> (<kbd>Cmd</kbd> <kbd>I</kbd> on a Mac) to ope
 - **Videos as references**: attach, drop or paste (copied in the file manager) an `.mp4`, `.mov` or `.m4v` and its path goes into your message. The AI decides which frames to look at. HAP movies can't be looked at yet: give it an H.264 or ProRes copy.
 - **The model and how long it thinks**: under the box, from faster to smarter.
 - **Replies** read like a modern AI chat: Markdown with code you can copy, each command it ran folded into one row, and problems as cards with a retry.
-- **What a reply used**: under each reply, next to how long it took, the tokens the model read and wrote, and the price where the provider says it (Claude Code does).
+- **What a reply used**: under each reply, the tokens the model read anew, read again from the provider's cache (about a tenth of the price) and wrote, and the price where the provider says it (Claude Code does).
 
 ### Which AI
 

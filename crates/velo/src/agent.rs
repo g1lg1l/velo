@@ -618,10 +618,19 @@ pub(crate) fn list_nodes() -> Value {
         "recipes": recipes,
         "shader_presets": names(&PRESETS),
         "effect_presets": names(&EFFECT_PRESETS),
+        "operators": common_operators(),
         "sources": SOURCES,
         "wiring": "Pictures: edge.connect { from: [node, 0], to: [node, input port index] }; a scene shows what feeds its Output node. Signals (numbers): a signal node's output moves a parameter through mapping.add with source \"<node id>/<output index>\" (or a source name: kick, bass…); signal nodes feed each other with edge.connect.",
-        "how": "Build from these nodes: a look is usually a generator, a few effects and signal nodes moving them. use_recipe starts from a recipe as a new scene. A preset is a ready Shader node: node.add with kind velo.shader (effect presets: velo.shader_fx) and preset, its name. describe_node gives the parameters, ranges and named choices of the kinds you'll use. Write a Shader node's own WGSL only when no node, recipe or preset does it (describe_node velo.shader has the format).",
+        "how": "operators has the usual edits with example props: run them with run_operator { id, props }; search_operators finds the rest. Build from these nodes: a look is usually a generator, a few effects and signal nodes moving them. use_recipe starts from a recipe as a new scene. A preset is a ready Shader node: node.add with kind velo.shader (effect presets: velo.shader_fx) and preset, its name. describe_node gives the parameters, ranges and named choices of the kinds you'll use. Write a Shader node's own WGSL only when no node, recipe or preset does it (describe_node velo.shader has the format).",
     })
+}
+
+/// The operators nearly every build runs, with their example props: an agent that has them
+/// needn't search for them (search_operators has the rest).
+const COMMON_OPERATORS: [&str; 9] = ["scene.add", "scene.rename", "node.add", "node.set_param", "node.remove", "edge.connect", "mapping.add", "mapping.set", "mapping.remove"];
+
+fn common_operators() -> Value {
+    COMMON_OPERATORS.iter().filter_map(|id| OPERATORS.iter().find(|o| o.id == *id)).map(|o| (o.id.to_string(), serde_json::from_str(o.example).unwrap_or(json!(o.example)))).collect::<serde_json::Map<_, _>>().into()
 }
 
 /// The kinds an agent picked, whole: their parameters (id, type, range, default and the names
@@ -715,7 +724,10 @@ mod tests {
         let kinds = nodes["kinds"].as_array().unwrap();
         assert_eq!(kinds.len(), NODE_KINDS.len());
         assert!(kinds.iter().all(|k| k["about"].as_str().is_some_and(|a| !a.is_empty())), "every kind says what it does");
-        assert!(nodes.to_string().len() < 16_000, "the index stays small: {} bytes", nodes.to_string().len());
+        assert!(nodes.to_string().len() < 17_000, "the index stays small: {} bytes", nodes.to_string().len());
+        for id in COMMON_OPERATORS {
+            assert!(nodes["operators"][id].is_object(), "{id} and its example props");
+        }
         assert!(nodes["shader_presets"].as_str().unwrap().contains("tunnel") && nodes["effect_presets"].as_str().unwrap().contains("glitch"));
         let recipes = nodes["recipes"].as_array().unwrap();
         assert_eq!(recipes.len(), TEMPLATES.len() + RECIPES.len());
