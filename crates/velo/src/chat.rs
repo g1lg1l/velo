@@ -829,7 +829,7 @@ impl App {
                 }
             }
         });
-        ui.ctx().request_repaint(); // the big orb breathes
+        kit::animate(ui.ctx()); // the big orb breathes
     }
 
     /// The messages, the guide or the empty state, and the status of a reply on its way.
@@ -1332,7 +1332,7 @@ impl App {
             };
             ui.data_mut(|d| d.insert_temp(key, turn));
             beam(ui.painter(), box_rect, 16.0, strength, turn);
-            ui.ctx().request_repaint();
+            kit::animate(ui.ctx());
         }
         if let Some(i) = remove {
             self.chat.pictures.remove(i);

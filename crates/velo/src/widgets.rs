@@ -1765,7 +1765,7 @@ pub fn detector_graph(ui: &mut Ui, t: &Theme, points: &VecDeque<(f64, f32, bool)
             painter.circle_filled(pos2(x(at), rect.top() + 3.0), 2.0, t.accent);
         }
     }
-    ui.ctx().request_repaint();
+    kit::animate(ui.ctx());
     (response, moved)
 }
 

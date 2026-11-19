@@ -11,6 +11,12 @@ use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Frame, Id
 
 use crate::theme::Theme;
 
+/// The next frame of something that keeps moving: at the preview's rate, half that behind another
+/// app. Not `request_repaint`, which on a 120 Hz display draws 120 frames a second.
+pub fn animate(ctx: &egui::Context) {
+    ctx.request_repaint_after(std::time::Duration::from_millis(if ctx.input(|i| i.focused) { 16 } else { 33 }));
+}
+
 /// Cubic ease-out, 0..1.
 pub fn ease(k: f32) -> f32 {
     1.0 - (1.0 - k.clamp(0.0, 1.0)).powi(3)

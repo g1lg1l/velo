@@ -2260,17 +2260,13 @@ impl App {
         self.watch_engine(ctx.input(|i| i.time));
         self.autopilot(ctx.input(|i| i.stable_dt).min(0.1), ctx.input(|i| i.time));
         self.usage.sample(self.live.as_ref().map(|l| l.fps));
+        let wanted = self.preview_wanted();
         let Some(live) = &mut self.live else { return };
         live.budget = self.usage.vram_budget;
         if let Some((scene, beats)) = self.session.morph.take() {
             live.morph(scene, beats);
         }
         let scene = self.session.active();
-        // wanted where it shows: the floating card, behind the canvas, the split canvas' picture
-        // (it hides the card: without it here, the picture beside or under the nodes froze while
-        // an output window kept going), or an Output node's viewer
-        let output_node = scene.is_some_and(|s| s.nodes.iter().any(|n| node_kind(&n.kind).is_some_and(|k| k.category == Category::Output)));
-        let wanted = !self.settings.hide_preview || self.settings.preview_background || self.settings.split != Split::Off || output_node;
         let mut error = live.sync(ctx, &self.session.project, scene, wanted);
         // sharing that stopped (no NDI runtime, no DirectX 11): said, and off
         let unshared = live.engine.status.share_error.lock().ok().and_then(|mut e| e.take());
@@ -2305,6 +2301,14 @@ impl App {
         if let Some(e) = unshared {
             self.say(Tone::Error, tr!("Sharing stopped: {}", e));
         }
+    }
+
+    /// The preview is wanted where it shows: the floating card, behind the canvas, the split
+    /// canvas' picture (it hides the card: without it here, the picture beside or under the nodes
+    /// froze while an output window kept going), or an Output node's viewer.
+    fn preview_wanted(&self) -> bool {
+        let output_node = self.session.active().is_some_and(|s| s.nodes.iter().any(|n| node_kind(&n.kind).is_some_and(|k| k.category == Category::Output)));
+        !self.settings.hide_preview || self.settings.preview_background || self.settings.split != Split::Off || output_node
     }
 
     /// Where the output is, if anywhere.
@@ -4099,9 +4103,17 @@ impl eframe::App for App {
         if let Some(reel) = &mut self.reel {
             reel.frame(&ctx, picture, output);
         }
-        // live: at the preview's rate (it comes at most every 16 ms); else a frame a second at
-        // rest, for the autosave check
-        ctx.request_repaint_after(if self.live.is_some() { Duration::from_millis(16) } else { Duration::from_secs(1) });
+        // live: at the preview's rate (it comes at most every 16 ms) while it shows, always while the
+        // autopilot hears every frame for drops or Link leads the beat; else a few frames a second
+        // (the cards' pictures, the beat dot), fewer behind another app. At rest a frame a second,
+        // for the autosave check. MIDI, OSC and the agent wake it at once.
+        let focused = ctx.input(|i| i.focused);
+        match &self.live {
+            Some(live) if self.settings.autopilot.on || live.link_peers().is_some() => ctx.request_repaint_after(Duration::from_millis(16)),
+            Some(live) if live.picture().is_some() && self.preview_wanted() => kit::animate(&ctx),
+            Some(_) => ctx.request_repaint_after(Duration::from_millis(if focused { 100 } else { 250 })),
+            None => ctx.request_repaint_after(Duration::from_secs(1)),
+        }
         self.cpu.last_layout = started.elapsed().as_secs_f32();
     }
 

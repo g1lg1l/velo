@@ -354,7 +354,7 @@ impl App {
             let fill = level.clamp(0.0, 1.0).sqrt();
             ui.painter().circle_filled(center, 1.0 + 4.0 * fill, Theme::mix(t.fg_muted, t.accent, 0.4 + 0.6 * fill));
             // at the preview's rate, not the display's (a 144 Hz screen drew it 144 times a second)
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
+            kit::animate(ui.ctx());
         }
         self.hint(&r, tip);
         let mut picked = (None, false);
