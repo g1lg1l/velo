@@ -192,6 +192,19 @@ fn serve(stream: TcpStream, token: &str, calls: Sender<Call>, stop: Arc<AtomicBo
     ctx.request_repaint();
 }
 
+/// The preview as a PNG, for an agent: what it shows now.
+fn snapshot_png((frame, shows): (Vec<u8>, Option<String>)) -> Result<Value, String> {
+    let [w, h] = PREVIEW;
+    let mut png = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        encoder.write_header().and_then(|mut w| w.write_image_data(&frame)).map_err(|e| e.to_string())?;
+    }
+    Ok(json!({ "png_base64": base64(&png), "width": w, "height": h, "shows": shows }))
+}
+
 /// A video's frames (or a GIF's, an image sequence's, a picture) for an agent to look at: at most
 /// 12, 768 px a side at most, as JPEG.
 fn video_frames(p: &Value) -> Result<Value, String> {
@@ -308,7 +321,17 @@ impl App {
             live.keep_frame = clients > 0;
         }
         for call in calls {
-            let result = self.agent_call(&call.method, &call.params, call.panel);
+            // a snapshot's PNG is made on a thread of its own, which answers: here it held a frame up
+            let answers = call.method == "snapshot";
+            let result = if answers {
+                self.snapshot_frame().map(|frame| {
+                    let reply = call.reply.clone();
+                    std::thread::spawn(move || reply.send(snapshot_png(frame)));
+                    Value::Null
+                })
+            } else {
+                self.agent_call(&call.method, &call.params, call.panel)
+            };
             let detail = match call.method.as_str() {
                 "run_operator" => format!("run_operator {}", call.params["id"].as_str().unwrap_or("?")),
                 m => m.to_string(),
@@ -321,7 +344,9 @@ impl App {
             if self.agent.log.len() > LOG_LINES {
                 self.agent.log.remove(0);
             }
-            let _ = call.reply.send(result);
+            if !answers || result.is_err() {
+                let _ = call.reply.send(result);
+            }
         }
     }
 
@@ -446,7 +471,7 @@ impl App {
                 }))
             }
             "shader_errors" => Ok(json!(self.live.as_ref().map(|l| l.errors.iter().map(|(node, e)| json!({ "node": node, "error": e.to_string(), "line": e.line })).collect::<Vec<_>>()).unwrap_or_default())),
-            "snapshot" => self.snapshot(),
+            "snapshot" => self.snapshot_frame().and_then(snapshot_png),
             "listen" => {
                 let live = self.live.as_ref().ok_or("the engine isn't running")?;
                 let sources = live.sources();
@@ -514,22 +539,14 @@ impl App {
         }
     }
 
-    /// What the preview shows now, as a PNG.
-    fn snapshot(&self) -> Result<Value, String> {
+    /// What the preview shows now (its pixels, and the scene's name), for [`snapshot_png`].
+    fn snapshot_frame(&self) -> Result<(Vec<u8>, Option<String>), String> {
         let live = self.live.as_ref().ok_or("the engine isn't running")?;
         let [w, h] = PREVIEW;
         if live.frame.len() != (w * h * 4) as usize {
             return Err("no picture yet: try again in a moment".into());
         }
-        let mut png = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png, w, h);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            encoder.write_header().and_then(|mut w| w.write_image_data(&live.frame)).map_err(|e| e.to_string())?;
-        }
-        let shows = self.session.active().map(|s| s.name.clone());
-        Ok(json!({ "png_base64": base64(&png), "width": w, "height": h, "shows": shows }))
+        Ok((live.frame.clone(), self.session.active().map(|s| s.name.clone())))
     }
 
     /// Preferences → AI and agents.

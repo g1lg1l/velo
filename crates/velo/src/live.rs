@@ -409,8 +409,9 @@ impl Live {
                 self.engine.take_shot(|rgba| {
                     let [w, h] = velo_engine::runtime::shot_size();
                     set_shot(shots, ctx, &p.scene, egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], rgba));
-                    if let Some(file) = &keep {
-                        keep_shot(file, rgba, SHOTS_KEPT);
+                    if let Some(file) = keep.clone() {
+                        let rgba = rgba.to_vec();
+                        crate::files::background(move || keep_shot(&file, &rgba, SHOTS_KEPT));
                     }
                     got = true;
                 });

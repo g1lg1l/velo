@@ -1106,12 +1106,24 @@ impl App {
     /// The start screen, before a project is open: the recent projects to pick up again, a new
     /// one, one from a file, the demo. Esc (or its close button) leaves an empty project.
     pub fn start_ui(&mut self, ctx: &egui::Context) {
+        // the recent files are looked at on disk once while the screen is up, not every frame:
+        // which are still there, and when each was saved (the list they're of, to see it change)
+        type Looked = (Vec<std::path::PathBuf>, std::sync::Arc<Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>>);
+        let looked = Id::unique("start recent");
         if !self.start {
+            ctx.data_mut(|d| d.remove_temp::<Looked>(looked));
             return;
         }
         let t = self.theme.clone();
         let screen = ctx.content_rect();
-        let recent: Vec<std::path::PathBuf> = self.settings.recent.iter().filter(|p| p.exists()).cloned().collect();
+        let recent = match ctx.data(|d| d.get_temp::<Looked>(looked)) {
+            Some((of, recent)) if of == self.settings.recent => recent,
+            _ => {
+                let recent: std::sync::Arc<Vec<_>> = std::sync::Arc::new(self.settings.recent.iter().filter_map(|p| std::fs::metadata(p).ok().map(|m| (p.clone(), m.modified().ok()))).collect());
+                ctx.data_mut(|d| d.insert_temp::<Looked>(looked, (self.settings.recent.clone(), recent.clone())));
+                recent
+            }
+        };
         let mut pick: Option<crate::files::Pending> = None;
         let mut forget: Option<std::path::PathBuf> = None;
         let (has_recovery, mut restore, mut discard) = (self.recovery.is_some(), false, false);
@@ -1200,7 +1212,7 @@ impl App {
                 }
                 kit::scroll(ui, &t, "start recent", false, t.bg_base, |ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    for path in &recent {
+                    for (path, saved) in recent.iter() {
                         let name = path.file_stem().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
                         let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::click());
                         let h = kit::hover(ui, &t, &resp);
@@ -1214,7 +1226,7 @@ impl App {
                         kit::icon_at(painter, swatch.center(), icons::STACK, 16.0, t.fg_text.gamma_multiply(0.85));
                         painter.text(r.left_center() + vec2(56.0, -8.0), Align2::LEFT_CENTER, &name, t.body(), t.fg_text);
                         let folder = path.parent().map(tilde).unwrap_or_default();
-                        let when = std::fs::metadata(path).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok()).map(|age| ago(age.as_secs())).unwrap_or_default();
+                        let when = saved.and_then(|at| at.elapsed().ok()).map(|age| ago(age.as_secs())).unwrap_or_default();
                         let when = painter.text(r.right_center() - vec2(14.0, 0.0), Align2::RIGHT_CENTER, when, t.small(), t.fg_muted);
                         // the folder, cut short before the date
                         let room = when.left() - (r.left() + 56.0) - t.pad;

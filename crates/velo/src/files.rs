@@ -332,6 +332,27 @@ fn to_ron(project: &Project) -> Result<String, String> {
     ron::ser::to_string_pretty(project, ron::ser::PrettyConfig::default().compact_arrays(true)).map_err(|e| e.to_string())
 }
 
+/// Runs `job` on Velo's one writing thread, after the jobs given before it: files written there
+/// never stall a frame, and never pass each other.
+pub fn background(job: impl FnOnce() + Send + 'static) {
+    type Job = Box<dyn FnOnce() + Send>;
+    static WRITER: std::sync::LazyLock<std::sync::mpsc::Sender<Job>> = std::sync::LazyLock::new(|| {
+        let (tx, jobs) = std::sync::mpsc::channel::<Job>();
+        let _ = std::thread::Builder::new().name("velo writer".into()).spawn(move || jobs.into_iter().for_each(|job| job()));
+        tx
+    });
+    let _ = WRITER.send(Box::new(job));
+}
+
+/// Waits for what was given to [`background`] so far (quitting).
+pub fn written() {
+    let (tx, done) = std::sync::mpsc::channel();
+    background(move || {
+        let _ = tx.send(());
+    });
+    let _ = done.recv();
+}
+
 /// Writes to a temp file first and syncs it, so a crash mid-save never corrupts a file.
 pub fn write_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut tmp = path.as_os_str().to_owned();
@@ -709,6 +730,7 @@ impl App {
     /// Work still waiting for "restore?" stays in its own file and is offered again.
     pub fn exit_cleanup(&mut self) {
         self.autosave_wait();
+        written(); // the chats, the cards' pictures
         if self.dirty() {
             if let Some(path) = data_file(&own_autosave()) {
                 let _ = write_ron(&path, &self.session.project);
@@ -793,6 +815,17 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_writing_thread_keeps_the_order_and_quitting_waits_for_it() {
+        let done = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        for i in 0..20 {
+            let done = done.clone();
+            background(move || done.lock().unwrap().push(i));
+        }
+        written();
+        assert_eq!(*done.lock().unwrap(), (0..20).collect::<Vec<_>>());
+    }
 
     #[test]
     fn a_crashed_sessions_work_is_set_aside_and_a_running_ones_is_left_alone() {
