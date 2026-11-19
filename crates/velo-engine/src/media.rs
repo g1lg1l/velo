@@ -888,14 +888,27 @@ impl Reel {
 
     /// What `old`, the same list in the graph this one replaces, has in or loading, carried
     /// over (bound to this one's slots on its first step): a rebuild never shows its files black.
+    /// With files added or taken out (an AI Image's new picture, a file dropped on a live list),
+    /// those both lists have keep what's in, by path; only what was still loading starts again.
     pub fn adopt(&mut self, old: &mut Reel) {
-        if (&old.id, &old.files) == (&self.id, &self.files) {
+        if old.id != self.id {
+            return;
+        }
+        if old.files == self.files {
             std::mem::swap(&mut self.cache, &mut old.cache);
             std::mem::swap(&mut self.broken, &mut old.broken);
             std::mem::swap(&mut self.loader, &mut old.loader);
             std::mem::swap(&mut self.done, &mut old.done);
-            (self.hits, self.ahead, self.began) = (old.hits, old.ahead, old.began);
+        } else {
+            for (k, path) in self.files.iter().enumerate() {
+                // the same file twice in a list: the first takes what's in, the other loads
+                if let Some(j) = old.files.iter().position(|f| f == path) {
+                    self.cache[k] = old.cache[j].take();
+                    self.broken[k] = old.broken[j];
+                }
+            }
         }
+        (self.hits, self.ahead, self.began) = (old.hits, old.ahead, old.began);
     }
 
     /// How many of its files are in.

@@ -4410,6 +4410,7 @@ fn node_icon(id: &str) -> &'static str {
         v::VIDEO => icons::FILM_STRIP,
         v::LIVE => icons::BROADCAST,
         v::MEDIA_LIST => icons::IMAGES,
+        v::AI_IMAGE => icons::SPARKLE,
         v::TEXT => icons::TEXT_T,
         v::TEXT_LIST => icons::LIST_BULLETS,
         v::PARTICLES => icons::CONFETTI,
@@ -4495,6 +4496,7 @@ fn node_blurb(id: &str) -> Option<&'static str> {
         velo_core::VIDEO => tr!("A movie from a file, looping."),
         velo_core::LIVE => tr!("A live picture: an NDI source, a Spout sender or a camera, as it comes; or, in a layer on top, what plays under it."),
         velo_core::MEDIA_LIST => tr!("Pictures and movies in turn, streamed from disk: in order, at random or back and forth, on the beat."),
+        velo_core::AI_IMAGE => tr!("Pictures a model on this computer makes from your prompt, played in turn on the beat."),
         velo_core::TEXT => tr!("Words set in a font, colored, sized and placed."),
         velo_core::TEXT_LIST => tr!("Lines of words one at a time: in order, at random or back and forth, on the beat."),
         velo_core::PARTICLES => tr!("Thousands of glowing points or pictures of your own, thrown, pulled and stirred: map Kick onto Emission for bursts."),
@@ -5284,6 +5286,71 @@ mod tests {
             h.frame(Vec::new());
             assert_eq!(attacks(&h), before + 1, "a click on the chip opened its settings (on its link: {on_link})");
         }
+    }
+
+    #[test]
+    fn an_ai_image_asks_for_pictures_from_its_inspector() {
+        let mut h = Harness::new();
+        // nothing listens on the discard port: the ask fails at once, and says so
+        h.app.settings.imagegen.endpoint = "http://127.0.0.1:9/v1".into();
+        h.app.run("node.add", json!({ "kind": velo_core::AI_IMAGE, "pos": [-340.0, 200.0] }));
+        let ai = h.id(3);
+        h.app.canvas.selected = vec![ai.clone()];
+        h.ctx.enable_accesskit();
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        assert!(h.widget("PROMPT").is_some() && h.widget("Generate").is_some(), "its prompt and buttons in the inspector");
+        h.app.run("node.set_text", json!({ "node": ai, "text": "neon jellyfish" }));
+        h.frame(Vec::new());
+        let generate = h.widget("Generate").unwrap();
+        h.click(generate.center());
+        h.frame(Vec::new());
+        assert!(h.widget("Stop").is_some(), "making: Stop instead of Generate");
+        // the worker answers on its own thread: a few frames for it
+        for _ in 0..200 {
+            if h.widget("Generate").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            // what `logic` does every frame in the app (the harness draws only)
+            h.app.poll_generations(&h.ctx.clone());
+            h.frame(Vec::new());
+        }
+        h.frame(Vec::new());
+        // painted under the buttons (notes aren't in the accessibility tree): what it says
+        let said = h.app.gens.failed(&ai).unwrap_or_default().to_string();
+        assert!(said.contains("Nothing answers at 127.0.0.1:9"), "why it made nothing: {said:?}");
+        assert!(velo_core::media_list(&h.scene().nodes[3]).is_empty(), "and nothing was added");
+    }
+
+    /// The whole way, against a real server: `VELO_IMAGEGEN_ENDPOINT=http://127.0.0.1:1234/v1
+    /// cargo test -p velo an_ai_image_fills_from -- --ignored`.
+    #[test]
+    #[ignore = "needs a local images server"]
+    fn an_ai_image_fills_from_a_real_server() {
+        let mut h = Harness::new();
+        h.app.settings.imagegen.endpoint = std::env::var("VELO_IMAGEGEN_ENDPOINT").expect("VELO_IMAGEGEN_ENDPOINT");
+        h.app.run("node.add", json!({ "kind": velo_core::AI_IMAGE, "pos": [-340.0, 200.0] }));
+        let ai = h.id(3);
+        h.app.run("node.set_text", json!({ "node": ai, "text": "a red paper lantern glowing in fog" }));
+        h.app.canvas.selected = vec![ai.clone()];
+        h.ctx.enable_accesskit();
+        h.frame(Vec::new());
+        h.frame(Vec::new());
+        h.click(h.widget("Generate").unwrap().center());
+        h.frame(Vec::new());
+        let started = std::time::Instant::now();
+        while h.widget("Generate").is_none() && started.elapsed().as_secs() < 300 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            h.app.poll_generations(&h.ctx.clone());
+            h.frame(Vec::new());
+        }
+        assert_eq!(h.app.gens.failed(&ai), None);
+        let files: Vec<String> = velo_core::media_list(&h.scene().nodes[3]).into_iter().map(String::from).collect();
+        assert_eq!(files.len(), 1, "one picture in the node");
+        assert!(image::open(&files[0]).is_ok(), "{} is a picture", files[0]);
+        assert_eq!(h.app.session.undo_label(), Some("Add a File"), "one undo step");
+        eprintln!("{} in {:.1} s", files[0], started.elapsed().as_secs_f64());
     }
 
     #[test]

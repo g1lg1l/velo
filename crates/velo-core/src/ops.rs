@@ -47,6 +47,7 @@ fn has_scenes(s: &Session) -> bool {
 struct SceneRef {
     /// A scene id; none means the active scene.
     scene: Option<String>,
+    #[serde(alias = "label")]
     name: Option<String>,
     icon: Option<String>,
 }
@@ -54,14 +55,16 @@ struct SceneRef {
 #[derive(Deserialize)]
 struct AddNode {
     kind: String,
+    /// Where on the canvas; none (agents leave it out): right of the node furthest right.
     #[serde(default)]
-    pos: [f32; 2],
+    pos: Option<[f32; 2]>,
     /// A name to start from ("Blur" becomes "Blur 2" if taken); the kind's label by default.
-    #[serde(default)]
+    #[serde(default, alias = "label")]
     name: Option<String>,
-    /// Parameter values and mappings to start from (a duplicate's).
+    /// Parameter values and mappings to start from (a duplicate's): each as `node.set_param`
+    /// takes it, a number or up to four.
     #[serde(default)]
-    params: BTreeMap<String, [f32; 4]>,
+    params: BTreeMap<String, ParamValue>,
     #[serde(default)]
     mappings: Vec<Mapping>,
     /// A Shader node's WGSL.
@@ -70,8 +73,8 @@ struct AddNode {
     /// An Image node's file or folder.
     #[serde(default)]
     media: Option<String>,
-    /// A Text node's words ("Text" if none).
-    #[serde(default)]
+    /// A Text node's words ("Text" if none); an AI Image's prompt.
+    #[serde(default, alias = "prompt")]
     text: Option<String>,
     #[serde(default)]
     icon: String,
@@ -199,13 +202,36 @@ fn node_index(scene: &Scene, id: &str) -> Result<usize, String> {
     scene.nodes.iter().position(|n| n.id == id).ok_or_else(|| format!("no node {id}"))
 }
 
-/// A parameter value: a number, an on/off, or up to four numbers (a color, a vec2).
+/// How far right of the node furthest right a node added with no place goes, in canvas units.
+const NEXT_NODE: f32 = 240.0;
+
+/// A parameter value: a number, an on/off, or up to four numbers (a color, a vec2). Words are
+/// read only to say where they go instead (agents put a prompt among the numbers).
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ParamValue {
     Number(f32),
     Bool(bool),
     List(Vec<f32>),
+    Words(String),
+}
+
+impl ParamValue {
+    /// The value as its vec4 slot takes it.
+    fn slot(self, id: &str) -> Result<[f32; 4], String> {
+        let mut slot = [0.0; 4];
+        match self {
+            ParamValue::Number(x) => slot[0] = x,
+            ParamValue::Bool(b) => slot[0] = f32::from(u8::from(b)),
+            ParamValue::List(list) if (1..=4).contains(&list.len()) => slot[..list.len()].copy_from_slice(&list),
+            ParamValue::List(_) => return Err(format!("{id} takes one to four numbers")),
+            ParamValue::Words(words) => return Err(format!("{id} takes a number, true/false or up to four numbers, not words ({words:?}): a Text's words and an AI Image's prompt go in text")),
+        }
+        if id.trim().is_empty() || slot.iter().any(|x| !x.is_finite()) {
+            return Err("a parameter id and finite values are required".into());
+        }
+        Ok(slot)
+    }
 }
 
 #[derive(Deserialize)]
@@ -568,12 +594,13 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "node.add",
         label: "Add Node",
-        description: "Add a node of a kind (\"velo.noise\", \"velo.blur\"…) at a canvas position, in the selected scene unless scene has an id (\"shared\": the shared signals, which take signal nodes only, no Probe).",
+        description: "Add a node of a kind (\"velo.noise\", \"velo.blur\"…) at a canvas position, in the selected scene unless scene has an id (\"shared\": the shared signals, which take signal nodes only, no Probe). Optional: name, params (each a number, true/false or up to four numbers), text (a Text's words, an AI Image's prompt).",
         example: r#"{"kind": "velo.noise", "pos": [0, 0]}"#,
         undo: true,
         poll: has_scenes,
         exec: |s, v| {
-            let AddNode { kind, pos, name, mut params, mappings, code, media, text, icon, link, scene: scene_id } = props(v)?;
+            let AddNode { kind, pos, name, params, mappings, code, media, text, icon, link, scene: scene_id } = props(v)?;
+            let mut params = params.into_iter().map(|(id, value)| value.slot(&id).map(|slot| (id, slot))).collect::<Result<BTreeMap<_, _>, _>>()?;
             if kind == AUDIO {
                 params.entry("hidden".into()).or_insert([AUDIO_HIDDEN, 0.0, 0.0, 0.0]);
             }
@@ -599,7 +626,14 @@ pub static OPERATORS: &[Operator] = &[
             let isf = code.as_deref().is_some_and(|c| c.contains("void main") && !c.contains("fn main_image"));
             let file = is_shader(&kind).then(|| shader_file(&s.project, &name, if isf { "fs" } else { "wgsl" }));
             let scene = s.graph_mut(scene_id.as_deref())?;
-            let text = first_text(&kind).map(|first| text.unwrap_or(first));
+            // with no place given, beside the others rather than on top of the first
+            let pos = pos.unwrap_or_else(|| scene.nodes.iter().max_by(|a, b| a.pos[0].total_cmp(&b.pos[0])).map_or([0.0, 0.0], |n| [n.pos[0] + NEXT_NODE, n.pos[1]]));
+            // words where the kind shows them: a Text's (its first if none), an AI Image's prompt
+            let text = match first_text(&kind) {
+                Some(first) => Some(text.unwrap_or(first)),
+                None if kind == AI_IMAGE => text.filter(|t| !t.trim().is_empty()),
+                None => None,
+            };
             scene.nodes.push(Node { id, kind, name, off: false, pos, params, mappings, code, file, media, text, icon: short_icon(&icon), link });
             Ok(())
         },
@@ -1151,16 +1185,7 @@ pub static OPERATORS: &[Operator] = &[
         poll: has_scenes,
         exec: |s, v| {
             let SetParam { node, param, value, scene } = props(v)?;
-            let mut slot = [0.0; 4];
-            match value {
-                ParamValue::Number(x) => slot[0] = x,
-                ParamValue::Bool(b) => slot[0] = f32::from(u8::from(b)),
-                ParamValue::List(list) if (1..=4).contains(&list.len()) => slot[..list.len()].copy_from_slice(&list),
-                ParamValue::List(_) => return Err("value takes one to four numbers".into()),
-            }
-            if param.trim().is_empty() || slot.iter().any(|x| !x.is_finite()) {
-                return Err("a parameter id and finite values are required".into());
-            }
+            let slot = value.slot(&param)?;
             // a shared signal's setting is changed from whichever scene reads it too (its Shared
             // node's inspector): ids are unique in the project, so the node says which graph
             let scene = scene.or_else(|| s.project.shared.node(&node).map(|_| SHARED.to_string()));
@@ -1250,7 +1275,7 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "node.set_media",
         label: "Set Image",
-        description: "Set what an Image or Video node shows: an image file (PNG, JPEG, WebP…), an animated GIF, a movie (.mov or .mp4: HAP, and on macOS H.264, HEVC or ProRes), or a folder of numbered frames played as an image sequence, by absolute path. On a Particles node, the picture each particle is, or a 3D model (.obj or .ply) they are born on with Shape Model; on a Mesh node, the 3D model (.obj or .ply with faces) it draws; on a Media List, its files, a path a line; on a Text or Text List node, its own font (.ttf or .otf), which its Font set to File shows; on a Live node, its source, ndi:<name>, spout:<name> (Windows) or camera:<name> (Windows and macOS), or program: what plays under the layer its scene is (scene.set_layer, on top), for an effect over everything. Empty clears it.",
+        description: "Set what an Image or Video node shows: an image file (PNG, JPEG, WebP…), an animated GIF, a movie (.mov or .mp4: HAP, and on macOS H.264, HEVC or ProRes), or a folder of numbered frames played as an image sequence, by absolute path. On a Particles node, the picture each particle is, or a 3D model (.obj or .ply) they are born on with Shape Model; on a Mesh node, the 3D model (.obj or .ply with faces) it draws; on a Media List or an AI Image, its files, a path a line; on a Text or Text List node, its own font (.ttf or .otf), which its Font set to File shows; on a Live node, its source, ndi:<name>, spout:<name> (Windows) or camera:<name> (Windows and macOS), or program: what plays under the layer its scene is (scene.set_layer, on top), for an effect over everything. Empty clears it.",
         example: r#"{"node": "n_ab12", "media": "/Users/me/Loops/tunnel.gif"}"#,
         undo: true,
         poll: has_scenes,
@@ -1258,17 +1283,52 @@ pub static OPERATORS: &[Operator] = &[
             let SetMedia { node, media, scene } = props(v)?;
             let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
-            if !shows_media(&scene.nodes[i].kind) && !sets_text(&scene.nodes[i].kind) && ![MEDIA_LIST, PARTICLES, MESH, LIVE].contains(&scene.nodes[i].kind.as_str()) {
-                return Err(format!("{node} isn't an Image, Video, Live, Media List, Particles, Mesh, Text or Text List node"));
+            if !shows_media(&scene.nodes[i].kind) && !sets_text(&scene.nodes[i].kind) && ![MEDIA_LIST, AI_IMAGE, PARTICLES, MESH, LIVE].contains(&scene.nodes[i].kind.as_str()) {
+                return Err(format!("{node} isn't an Image, Video, Live, Media List, AI Image, Particles, Mesh, Text or Text List node"));
             }
             scene.nodes[i].media = Some(media.trim().to_string()).filter(|m| !m.is_empty());
             Ok(())
         },
     },
     Operator {
+        id: "node.add_media",
+        label: "Add a File",
+        description: "Add a file at the end of what a Media List or an AI Image plays, by absolute path. An AI Image keeps its newest pictures, as many as its Pool says: the oldest goes. A file it already plays isn't added twice.",
+        example: r#"{"node": "n_ab12", "media": "/Users/me/Pictures/one.png"}"#,
+        undo: true,
+        poll: has_scenes,
+        exec: |s, v| {
+            let SetMedia { node, media, scene } = props(v)?;
+            let scene = s.graph_mut(scene.as_deref())?;
+            let i = node_index(scene, &node)?;
+            let n = &mut scene.nodes[i];
+            if !plays_list(&n.kind) {
+                return Err(format!("{node} isn't a Media List or an AI Image node"));
+            }
+            let media = media.trim();
+            if media.is_empty() {
+                return Err("no file to add".into());
+            }
+            let mut files: Vec<String> = media_list(n).into_iter().map(String::from).collect();
+            if files.iter().any(|f| f == media) {
+                return Ok(());
+            }
+            files.push(media.to_string());
+            let room = list_room(n);
+            if n.kind == AI_IMAGE {
+                // the newest stay
+                files.drain(..files.len().saturating_sub(room));
+            } else if files.len() > room {
+                return Err(format!("a Media List plays {room} files at most"));
+            }
+            n.media = Some(files.join("\n"));
+            Ok(())
+        },
+    },
+    Operator {
         id: "node.set_text",
         label: "Set Text",
-        description: "Set the words a Text node shows; a newline starts another line. On a Text List each item starts with the record separator (U+001E) and may run over lines; words without one are an item a line.",
+        description: "Set the words a Text node shows; a newline starts another line. On a Text List each item starts with the record separator (U+001E) and may run over lines; words without one are an item a line. On an AI Image, the prompt its pictures are made from.",
         example: r#"{"node": "n_ab12", "text": "VELO"}"#,
         undo: true,
         poll: has_scenes,
@@ -1276,8 +1336,8 @@ pub static OPERATORS: &[Operator] = &[
             let SetText { node, text, scene } = props(v)?;
             let scene = s.graph_mut(scene.as_deref())?;
             let i = node_index(scene, &node)?;
-            if !sets_text(&scene.nodes[i].kind) {
-                return Err(format!("{node} isn't a Text or Text List node"));
+            if !sets_text(&scene.nodes[i].kind) && scene.nodes[i].kind != AI_IMAGE {
+                return Err(format!("{node} isn't a Text, Text List or AI Image node"));
             }
             scene.nodes[i].text = Some(text);
             Ok(())
@@ -1287,7 +1347,7 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "mapping.add",
         label: "Map Source",
-        description: "Let a signal node's output move one of a node's parameters, at half its range with 5 ms attack and 150 ms release. The source is \"node_id/output\" (an Audio In's 0 level to 6 hat and 7 melody, a Beat's 0 beat and 1 bar, any other signal node's 0), or level, bass, mid, high, kick, snare, hat, melody, beat, bar_phase: the scene's Audio In or Beat output of that name, the node added if the scene has none; or \"shared:node_id/output\", an output of the shared signals, which every scene can read. Mapping the same source twice does nothing.",
+        description: "Let a signal node's output move one of a node's parameters, at half its range with 5 ms attack and 150 ms release. The source is \"node_id/output\" (an Audio In's 0 level to 6 hat and 7 melody, a Beat's 0 beat and 1 bar, any other signal node's 0), or level, bass, mid, high, kick, snare, hat, melody, beat, bar_phase: the scene's Audio In or Beat output of that name, the node added if the scene has none; or \"shared:node_id/output\", an output of the shared signals, which every scene can read. Mapping the same source twice does nothing. Onto a Media List's or an AI Image's Hit, it also sets their Clock to Hits: each hit then moves them on.",
         example: r#"{"node": "n_ab12", "param": "zoom", "source": "kick"}"#,
         undo: true,
         poll: has_scenes,
@@ -1315,9 +1375,17 @@ pub static OPERATORS: &[Operator] = &[
             if !signal {
                 return Err(format!("unknown source {}", m.source));
             }
+            let hit = m.param == "hit";
             let (list, at) = mapping(s, &m)?;
             if at.is_none() {
                 list.push(Mapping { param: m.param, source: m.source, amount: Mapping::AMOUNT, attack_ms: Mapping::ATTACK_MS, release_ms: Mapping::RELEASE_MS, invert: false });
+            }
+            // a list's Hit moves it only on Hits: mapping onto it asks for them (on Beats or
+            // Seconds it would do nothing, and nothing would say why)
+            let i = node_index(&s.project.scenes[c], &m.node)?;
+            let n = &mut s.project.scenes[c].nodes[i];
+            if hit && plays_list(&n.kind) {
+                n.params.insert("clock".into(), [LIST_CLOCK_HITS, 0.0, 0.0, 0.0]);
             }
             Ok(())
         },

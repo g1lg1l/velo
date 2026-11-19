@@ -666,6 +666,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind(VIDEO, "Video", Category::Generator, &[], OUT),
     kind(LIVE, "Live", Category::Generator, &[], OUT),
     kind(MEDIA_LIST, "Media List", Category::Generator, &[], OUT),
+    kind(AI_IMAGE, "AI Image", Category::Generator, &[], OUT),
     kind(TEXT, "Text", Category::Generator, &[], OUT),
     kind(TEXT_LIST, "Text List", Category::Generator, &[], OUT),
     kind(PARTICLES, "Particles", Category::Generator, &["emit", "sprite"], OUT),
@@ -900,7 +901,29 @@ pub const MEDIA_LIST: &str = "velo.medialist";
 /// How many files a Media List holds: the engine streams them, three in memory at a time.
 pub const MEDIA_LIST_FILES: usize = 256;
 
-/// A Media List's files, in the order it plays them.
+/// Pictures a model made from its prompt ([`Node::text`]), played as a Media List plays its
+/// files ([`Node::media`], a path a line, the newest last). The app asks a local model for them
+/// and adds each as it comes (`node.add_media`); the engine only plays files (docs/local-ai-plan.md).
+pub const AI_IMAGE: &str = "velo.ai_image";
+/// How many pictures an AI Image keeps when its `pool` parameter isn't set: the shader
+/// header's default.
+pub const AI_IMAGE_POOL: usize = 8;
+
+/// A list's `clock` on Hits (its header's third choice): a turn lasts until `hit` rises again.
+pub const LIST_CLOCK_HITS: f32 = 2.0;
+
+/// The nodes that play a list of files in turn: a Media List, an AI Image.
+pub fn plays_list(kind: &str) -> bool {
+    kind == MEDIA_LIST || kind == AI_IMAGE
+}
+
+/// How many files a node playing a list keeps: an AI Image its `pool`, a Media List
+/// [`MEDIA_LIST_FILES`].
+pub fn list_room(n: &Node) -> usize {
+    if n.kind == AI_IMAGE { n.params.get("pool").map_or(AI_IMAGE_POOL, |v| v[0].round().max(1.0) as usize).min(MEDIA_LIST_FILES) } else { MEDIA_LIST_FILES }
+}
+
+/// A Media List's files, in the order it plays them (an AI Image's too).
 pub fn media_list(n: &Node) -> Vec<&str> {
     n.media.as_deref().map_or_else(Vec::new, |m| m.lines().map(str::trim).filter(|l| !l.is_empty()).take(MEDIA_LIST_FILES).collect())
 }

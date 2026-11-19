@@ -18,6 +18,7 @@ mod code;
 mod files;
 mod host;
 mod icons;
+mod imagegen;
 mod keymap;
 mod kit;
 #[cfg(feature = "link")]
@@ -144,6 +145,8 @@ struct Settings {
     agent: agent::Prefs,
     /// Which AI the AI panel uses, and the local model's endpoint.
     ai: ai::Prefs,
+    /// Where AI Image nodes get their pictures.
+    imagegen: imagegen::Prefs,
     /// OSC in: on or off, its port.
     osc: osc::Prefs,
     /// Auto-BPM: the beat clock follows the music's tempo while it's sure of it.
@@ -377,6 +380,8 @@ struct App {
     agent: agent::Agent,
     /// The AI panel's conversation.
     chat: chat::Chat,
+    /// Pictures being made for AI Image nodes.
+    gens: imagegen::Gens,
     /// The OSC port, while it's on.
     osc: Option<osc::Osc>,
     /// Auto-BPM's last estimate taken, the one before, and when it last set the clock.
@@ -459,6 +464,7 @@ impl App {
             watch: files::Watch::default(),
             agent: agent::Agent::default(),
             chat: chat::Chat::default(),
+            gens: imagegen::Gens::default(),
             osc: None,
             auto: shell::Auto::default(),
             frame_times: std::collections::VecDeque::new(),
@@ -571,6 +577,14 @@ impl App {
             };
             app.settings.ai.provider = provider;
             *provider.model(&mut app.settings.ai) = model.to_string();
+        }
+        // VELO_DEMO_ENDPOINT=<url>: the local model's endpoint; VELO_DEMO_IMAGES=<url>, the AI
+        // Image nodes' (end-to-end tests)
+        if let Ok(url) = std::env::var("VELO_DEMO_ENDPOINT") {
+            app.settings.ai.endpoint = url;
+        }
+        if let Ok(url) = std::env::var("VELO_DEMO_IMAGES") {
+            app.settings.imagegen.endpoint = url;
         }
         // VELO_DEMO_ATTACH=<picture>[;<picture>…]: attached to the AI panel's next message
         if let Ok(files) = std::env::var("VELO_DEMO_ATTACH") {
@@ -1720,6 +1734,10 @@ impl App {
         if kind_id == velo_core::MEDIA_LIST {
             self.media_list_section(ui, t, &node_id);
         }
+        if kind_id == velo_core::AI_IMAGE {
+            self.ai_image_section(ui, t, &node_id, false);
+            self.media_list_section(ui, t, &node_id);
+        }
         if kind_id == velo_core::PARTICLES {
             self.sprite_section(ui, t, &node_id);
         }
@@ -2636,8 +2654,14 @@ impl App {
         // each file the engine couldn't play on its last turn, and why
         let failed: Vec<Option<String>> = files.iter().map(|f| velo_engine::media::failed(f)).collect();
         let (mut act, mut add, mut clear) = (None, false, false);
-        let max = velo_core::MEDIA_LIST_FILES;
+        let max = velo_core::list_room(n);
+        let made = n.kind == velo_core::AI_IMAGE;
         kit::section(ui, t, icons::IMAGES, tr!("FILES"), false, |ui| {
+            // an AI Image's come from its prompt, not from a file dialog
+            if files.is_empty() && made {
+                kit::hint(ui, t, &tr!("The pictures come here as they're made, the newest {} kept.", max));
+                return;
+            }
             if files.is_empty() {
                 add = kit::drop_zone(ui, t, icons::IMAGES, tr!("Add pictures or movies"), &tr!("Up to {}, streamed in turn", max)).clicked();
                 return;
@@ -3929,6 +3953,7 @@ impl App {
             watch: files::Watch::default(),
             agent: agent::Agent::default(),
             chat: chat::Chat::default(),
+            gens: imagegen::Gens::default(),
             osc: None,
             auto: shell::Auto::default(),
             frame_times: std::collections::VecDeque::new(),
@@ -3976,6 +4001,7 @@ impl eframe::App for App {
         self.poll_agent(ctx, now);
         self.poll_osc(ctx, now);
         self.chat_poll();
+        self.poll_generations(ctx);
         self.poll_updates(ctx);
         // the projections as adjusted on the output, kept with the preferences once a drag ends
         if let Some(live) = &self.live {
