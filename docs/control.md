@@ -109,8 +109,10 @@ OSC in, on a UDP port (9000 by default), off until Preferences → Control turns
 /velo/tempo/resync                       the downbeat is now
 /velo/blackout                 [i|f|T|F] on or off; no argument flips it
 /velo/freeze                   [i|f|T|F] the same
-/velo/op/<operator>            [s]       any operator, its props as JSON
+/velo/op/<operator>            [s]       any operator, its props as JSON (only when allowed)
 ```
+
+The port listens on every interface, so a phone on the same Wi-Fi reaches it, and so does anyone else on that network. Everything above plays the show; `/velo/op` can change or delete anything, so it's off until Preferences → Control → "Run any command" allows it.
 
 `/velo/op` makes OSC the plugin path for outside tools in any language (plugins.md). Not yet: `/velo/source/<name>` as a modulation source, learning custom addresses, OSC out, OSCQuery.
 

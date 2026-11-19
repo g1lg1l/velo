@@ -14,8 +14,12 @@
 //! /velo/tempo/bpm                f
 //! /velo/tempo/resync                      a downbeat now
 //! /velo/blackout                 [i|f|T|F] on or off; nothing flips it
-//! /velo/op/<operator>            [s]      any operator, its props as JSON
+//! /velo/op/<operator>            [s]      any operator, its props as JSON (only when allowed)
 //! ```
+//!
+//! The port listens on every interface (a phone on the Wi-Fi sends to it), so anyone on the
+//! network can play the show; `/velo/op`, which can change or delete anything, is off until
+//! Preferences → Control allows it.
 
 use std::net::UdpSocket;
 use std::sync::Arc;
@@ -37,11 +41,13 @@ use crate::{App, icons, kit};
 pub struct Prefs {
     pub enabled: bool,
     pub port: u16,
+    /// `/velo/op/<operator>` runs: anything can change, from anyone on the network.
+    pub ops: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Self { enabled: false, port: 9000 }
+        Self { enabled: false, port: 9000, ops: false }
     }
 }
 
@@ -296,6 +302,9 @@ impl App {
                 None => self.trigger(&Target::Freeze, m.at, now),
             },
             ["velo", "op", id] => {
+                if !self.settings.osc.ops {
+                    return false;
+                }
                 let props = text.and_then(|t| serde_json::from_str::<Value>(&t).ok()).unwrap_or(json!({}));
                 if velo_core::OPERATORS.iter().all(|o| o.id != *id) {
                     return false;
@@ -315,7 +324,9 @@ impl App {
             kit::setting(ui, t, tr!("Listen for OSC"), tr!("From TouchOSC, a lighting desk or any tool that sends OSC."), |ui| kit::switch(ui, t, &mut o.enabled, tr!("Listen for OSC")));
             ui.add_enabled_ui(o.enabled, |ui| {
                 kit::divider(ui, t);
-                kit::setting(ui, t, tr!("Port"), "", |ui| ui.add(egui::DragValue::new(&mut o.port).range(1024..=65535)))
+                kit::setting(ui, t, tr!("Port"), "", |ui| ui.add(egui::DragValue::new(&mut o.port).range(1024..=65535)));
+                kit::divider(ui, t);
+                kit::setting(ui, t, tr!("Run any command"), tr!("/velo/op can change or delete anything in the project, from anyone on this network."), |ui| kit::switch(ui, t, &mut o.ops, tr!("Run any command")))
             });
             let status = match (&self.osc, local_ip()) {
                 (Some(osc), ip) => {

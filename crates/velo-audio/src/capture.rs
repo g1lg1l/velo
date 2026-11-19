@@ -86,7 +86,7 @@ pub fn open(source: &Source) -> Result<Capture, String> {
     };
     let broken = Arc::new(AtomicBool::new(false));
     let open = |buffer: cpal::BufferSize| {
-        // a second of audio: if analysis stalls, the oldest audio is dropped, nothing waits
+        // a second of audio: if analysis stalls, the newest audio is dropped, nothing waits
         let (tx, samples) = rtrb::RingBuffer::new(rate as usize);
         let stream_config = cpal::StreamConfig { buffer_size: buffer, ..config.into() };
         let stream = match config.sample_format() {
@@ -117,13 +117,17 @@ where
     f32: FromSample<T>,
 {
     let channels = usize::from(config.channels).max(1);
-    let scale = 1.0 / channels as f32;
+    // the first two channels, where music comes in: an interface's other inputs (often silent)
+    // would turn it down, -12 dB on an 8-channel card
+    // shortcut: music on inputs 3 and up isn't heard; a channel picker when someone needs it
+    let used = channels.min(2);
+    let scale = 1.0 / used as f32;
     device
         .build_input_stream(
             config,
             move |data: &[T], _: &cpal::InputCallbackInfo| {
                 for frame in data.chunks_exact(channels) {
-                    let mono = frame.iter().map(|&s| f32::from_sample(s)).sum::<f32>() * scale;
+                    let mono = frame[..used].iter().map(|&s| f32::from_sample(s)).sum::<f32>() * scale;
                     // a NaN would stay in every filter after it: silence instead
                     let mono = if mono.is_finite() { mono } else { 0.0 };
                     // full: analysis is behind; drop rather than wait

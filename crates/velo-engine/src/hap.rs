@@ -58,6 +58,10 @@ impl Format {
     }
 }
 
+/// The most a frame's bytes may take, packed or not: the largest texture Velo takes (8192 px a
+/// side) at a byte a pixel, twice over. Past it a file's sizes are broken, not a frame.
+const FRAME_MOST: usize = 2 * 8192 * 8192;
+
 /// A HAP movie's video track, as its sample tables give it.
 #[derive(Debug)]
 pub struct Movie {
@@ -76,6 +80,9 @@ impl Movie {
     /// Frame `index` from `file` into `texture` (its blocks, reused), through `packed`.
     pub fn read(&self, file: &mut File, index: usize, packed: &mut Vec<u8>, texture: &mut Vec<u8>) -> Result<Format, String> {
         let &(offset, len) = self.samples.get(index).ok_or("no such frame")?;
+        if len as usize > FRAME_MOST {
+            return Err("a frame bigger than any picture: a broken movie".into());
+        }
         packed.resize(len as usize, 0);
         file.seek(SeekFrom::Start(offset)).and_then(|_| file.read_exact(packed)).map_err(|e| e.to_string())?;
         unpack(packed, texture)
@@ -169,6 +176,9 @@ fn durations(stts: &[u8], scale: f64) -> Result<Vec<f64>, String> {
 fn samples(stbl: &[u8]) -> Result<Vec<(u64, u32)>, String> {
     let stsz = find(stbl, &[b"stsz"]).ok_or("no sample sizes")?;
     let (fixed, count) = (be32(stsz, 4).ok_or("broken stsz")?, be32(stsz, 8).ok_or("broken stsz")? as usize);
+    if count > 1 << 20 {
+        return Err("more than a million frames".into());
+    }
     let size = |i: usize| if fixed != 0 { Some(fixed) } else { be32(stsz, 12 + i * 4) };
     let chunks: Vec<u64> = if let Some(stco) = find(stbl, &[b"stco"]) {
         (0..be32(stco, 4).ok_or("broken stco")? as usize).map(|i| be32(stco, 8 + i * 4).map(u64::from)).collect::<Option<_>>().ok_or("broken stco")?
@@ -245,6 +255,9 @@ pub fn unpack(frame: &[u8], out: &mut Vec<u8>) -> Result<Format, String> {
 fn snappy(input: &[u8], out: &mut Vec<u8>) -> Result<(), String> {
     let len = snap::raw::decompress_len(input).map_err(|e| e.to_string())?;
     let start = out.len();
+    if start + len > FRAME_MOST {
+        return Err("a frame bigger than any picture: a broken movie".into());
+    }
     out.resize(start + len, 0);
     snap::raw::Decoder::new().decompress(input, &mut out[start..]).map_err(|e| e.to_string())?;
     Ok(())
@@ -328,6 +341,8 @@ pub(crate) mod tests {
         assert!(open(&dir.join("junk.mov")).unwrap_err().contains("moov"));
         // sections cut short or past the end are errors, not panics
         assert!(unpack(&[0x10, 0, 0, 0xBB], &mut Vec::new()).is_err());
+        // a Snappy length of 2 GB: refused, not allocated
+        assert!(unpack(&[5, 0, 0, 0xBB, 0xFF, 0xFF, 0xFF, 0xFF, 0x07], &mut Vec::new()).unwrap_err().contains("broken movie"));
         assert!(unpack(&[1, 0, 0, 0x0D, 0], &mut Vec::new()).unwrap_err().contains("Hap Q Alpha"));
         let mut out = Vec::new();
         assert_eq!(unpack(&[2, 0, 0, 0xAB, 7, 9], &mut out), Ok(Format::Bc1));

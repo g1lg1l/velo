@@ -44,6 +44,18 @@ impl Features {
     pub fn globals(&self) -> [f32; 12] {
         [self.level, self.bass, self.mid, self.high, self.kick, self.snare, self.hat, self.bass_time, self.mid_time, self.high_time, self.level_time, self.melody]
     }
+
+    /// Back from [`Self::globals`].
+    pub fn from_globals(g: [f32; 12]) -> Self {
+        let [level, bass, mid, high, kick, snare, hat, bass_time, mid_time, high_time, level_time, melody] = g;
+        Self { level, bass, mid, high, kick, snare, hat, melody, level_time, bass_time, mid_time, high_time }
+    }
+
+    /// Nothing heard: every level and hit at 0, the clocks where they are (a clock that jumped
+    /// back would jolt whatever runs on it).
+    pub fn quiet(self) -> Self {
+        Self { level_time: self.level_time, bass_time: self.bass_time, mid_time: self.mid_time, high_time: self.high_time, ..Self::default() }
+    }
 }
 
 /// Turns analysis hops into [`Features`].
@@ -53,11 +65,20 @@ pub struct Tracker {
     peaks: [f32; 5],
     smooth: [f32; 5],
     features: Features,
+    /// The clocks (level, bass, mid, high), counted in f64: an f32 stops moving in quiet passages
+    /// after some 9 hours (a hop's step under half its last bit).
+    clocks: [f64; 4],
 }
 
 impl Tracker {
     pub fn new() -> Self {
         Self { peaks: [SILENCE_DB; 5], ..Default::default() }
+    }
+
+    /// A new one whose clocks go on from `before`'s (the input opened again, or another picked).
+    pub fn after(before: Features) -> Self {
+        let clocks = [before.level_time, before.bass_time, before.mid_time, before.high_time].map(f64::from);
+        Self { clocks, features: before.quiet(), ..Self::new() }
     }
 
     /// One hop, `dt` seconds after the last.
@@ -87,9 +108,10 @@ impl Tracker {
             *env = if onset.is_some() { 1.0 } else { *env * fall };
         }
         // clocks: a quarter speed in silence, up to 1.75× when the band is full
-        for (clock, level) in [(&mut f.level_time, f.level), (&mut f.bass_time, f.bass), (&mut f.mid_time, f.mid), (&mut f.high_time, f.high)] {
-            *clock += dt * (0.25 + 1.5 * level);
+        for (clock, level) in self.clocks.iter_mut().zip([f.level, f.bass, f.mid, f.high]) {
+            *clock += f64::from(dt * (0.25 + 1.5 * level));
         }
+        [f.level_time, f.bass_time, f.mid_time, f.high_time] = self.clocks.map(|c| c as f32);
     }
 
     pub fn features(&self) -> Features {
@@ -101,6 +123,22 @@ impl Tracker {
 mod tests {
     use super::*;
     use crate::{Analyzer, HOP, synth};
+
+    #[test]
+    fn clocks_go_on_for_hours_and_into_a_new_tracker() {
+        let silence = Hop { level_db: -100.0, bands_db: [-100.0; 3], tonal_db: -100.0, ..Hop::default() };
+        let dt = HOP as f32 / 48_000.0;
+        // nine hours in: an f32 clock stops in silence there (a quarter speed, a hop's step under half its last bit)
+        let before = Features { level_time: 32_768.0, bass_time: 32_768.0, mid_time: 32_768.0, high_time: 32_768.0, kick: 1.0, ..Features::default() };
+        let mut tracker = Tracker::after(before);
+        assert_eq!(tracker.features(), before.quiet(), "the clocks go on, nothing else is carried over");
+        for _ in 0..1000 {
+            tracker.hop(&silence, dt);
+        }
+        let moved = tracker.features().bass_time - 32_768.0;
+        assert!((moved - 1000.0 * dt * 0.25).abs() < 0.01, "a quarter speed in silence: {moved}");
+        assert_eq!(Features::from_globals(before.globals()), before);
+    }
 
     #[test]
     fn the_loop_drives_levels_hits_and_clocks() {

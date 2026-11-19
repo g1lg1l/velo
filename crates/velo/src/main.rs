@@ -432,14 +432,18 @@ struct App {
     /// Quitting with the answer given: Some(false) until the close is asked for, then Some(true).
     quitting: Option<bool>,
     /// The restore dialog closed without an answer: offered again next time.
-    recovery_later: bool,
     recovery: Option<Project>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>, live: Option<live::Live>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
-        let mut settings: Settings = cc.storage.and_then(|s| eframe::get_value(s, "settings")).unwrap_or_default();
+        // one field Velo can't read (a hand edit, another version's) mustn't lose them all unsaid:
+        // the stored text is kept, and the start says so
+        let read: Option<Settings> = cc.storage.and_then(|s| eframe::get_value(s, "settings"));
+        let stored = cc.storage.and_then(|s| s.get_string("settings"));
+        let unread = read.is_none() && stored.as_ref().zip(files::data_dir()).is_some_and(|(text, dir)| std::fs::write(dir.join("settings.bak"), text).is_ok());
+        let mut settings = read.unwrap_or_default();
         // VELO_DEMO_THEME=stage: the stage theme on (screenshots)
         if std::env::var("VELO_DEMO_THEME").as_deref() == Ok("stage") {
             settings.stage = true;
@@ -496,7 +500,6 @@ impl App {
             last_autosave: 0.0,
             pending: None,
             quitting: None,
-            recovery_later: false,
             recovery: files::take_recovery(),
         };
         // opened by itself, Velo always starts on the start screen, unsaved work from last time
@@ -504,6 +507,9 @@ impl App {
         // screenshot run only with VELO_DEMO_START
         let shots = std::env::var_os("VELO_CAPTURE_TO").is_some();
         app.start = std::env::args_os().nth(1).is_none() && (!shots || std::env::var_os("VELO_DEMO_START").is_some());
+        if unread {
+            app.say(Tone::Error, tr!("Couldn't read your settings: Velo starts with its own (yours are kept in settings.bak)"));
+        }
         // `velo show.velo` (also what double-clicking a project file does)
         if let Some(path) = std::env::args_os().nth(1) {
             app.request(files::Pending::Open(path.into()));
@@ -593,7 +599,7 @@ impl App {
         }
         // VELO_DEMO_OSC=port: OSC on (end-to-end tests)
         if let Some(port) = std::env::var("VELO_DEMO_OSC").ok().and_then(|p| p.parse().ok()) {
-            app.settings.osc = osc::Prefs { enabled: true, port };
+            app.settings.osc = osc::Prefs { enabled: true, port, ops: true };
         }
         // VELO_DEMO_AUTO_BPM: auto-BPM on (end-to-end tests)
         if std::env::var_os("VELO_DEMO_AUTO_BPM").is_some() {
@@ -3983,7 +3989,6 @@ impl App {
             last_autosave: 0.0,
             pending: None,
             quitting: None,
-            recovery_later: false,
             recovery: None,
         }
     }

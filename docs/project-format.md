@@ -102,7 +102,7 @@ Abridged from a real file:
 ## 4. Saving safely
 
 - Every file is written to `<name>.tmp`, synced, then renamed over the old one: a crash mid-save never corrupts a show.
-- **Autosave**: every 60 s, unsaved work is written to `autosave.velo` in Velo's data folder. A `session.lock` there marks a running session; if it's still there at the next start, Velo offers the autosave.
+- **Autosave**: every 60 s, unsaved work is written to `autosave-<pid>.velo` in Velo's data folder, beside `session-<pid>.lock`, which the running Velo holds with an OS file lock (each running Velo has its own pair). At start, a lock nobody holds is a session that crashed or quit with work unsaved: its snapshot is set aside as `recover.velo` and offered ("Restore unsaved work?"). It stays there until it's restored or discarded, while the new session autosaves as usual. A failed autosave says so.
 - A file saved by a newer Velo (a higher `format`) is refused with a message instead of being opened and overwritten.
 
 ## 5. Media, import and export

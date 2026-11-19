@@ -505,6 +505,12 @@ impl Playing {
     /// `dt` seconds later as `t` says (its speed, direction, the part looped, a cue, a scrub): the
     /// frame due, if it changed. A movie's frame is read ahead, for the next frame; one that isn't
     /// read yet waits a frame.
+    /// Whether the reader has a frame waiting: what a test waits for instead of the clock.
+    #[cfg(test)]
+    pub fn ready(&self) -> bool {
+        self.reader.as_ref().is_some_and(|(reader, _)| reader.ready.lock().is_ok_and(|r| r.2))
+    }
+
     pub fn step(&mut self, queue: &wgpu::Queue, dt: f32, t: Transport) {
         // a live source's newest frame, if one came since the last: never waited for
         if let Some(feed) = self.media.live.clone() {

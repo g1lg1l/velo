@@ -14,7 +14,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use velo_audio::{Analyzer, HOP, Mode, Settings, Source, Tempo, Tracker, apps, capture, synth};
+use velo_audio::{Analyzer, Features, HOP, Mode, Settings, Source, Tempo, Tracker, apps, capture, synth};
 use velo_core::{Curve, Launch, MACROS, ParamInfo, Project, Quantize, SOURCES, Scene, Transition, is_shader};
 use velo_engine::media::Loading;
 use velo_engine::shader::{Param, ParamType};
@@ -883,10 +883,12 @@ fn keep_shot(file: &Path, rgba: &[u8], most: usize) {
     if std::fs::create_dir_all(dir).is_err() || image::save_buffer(file, rgba, THUMB[0], THUMB[1], image::ColorType::Rgba8).is_err() {
         return;
     }
-    let pictures = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "png"));
+    // the one just kept is the newest, whatever the file times say (Windows stamps a write
+    // with a coarser clock than a time set by hand)
+    let pictures = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p != file && p.extension().is_some_and(|e| e == "png"));
     let mut kept: Vec<(SystemTime, PathBuf)> = pictures.filter_map(|p| Some((p.metadata().ok()?.modified().ok()?, p))).collect();
     kept.sort();
-    for (_, old) in kept.iter().rev().skip(most) {
+    for (_, old) in kept.iter().rev().skip(most.saturating_sub(1)) {
         let _ = std::fs::remove_file(old);
     }
 }
@@ -1293,11 +1295,23 @@ fn listen(input: Option<Input>, links: &Links, stop: &AtomicBool, state: &Mutex<
             }
             Err(e) => set(&|s| s.hearing = Hearing::Failed(e.clone())),
         }
-        // what the mappings follow lets go while nothing is heard
-        links.features.store([0.0; 12]);
+        // what the mappings follow lets go while nothing is heard (an input switched to has
+        // its own thread by now: nothing of this one's goes over it)
+        if !stop.load(Relaxed) {
+            let_go(links);
+        }
         std::thread::sleep(Duration::from_millis(if app.is_some() { 250 } else { 1000 }));
     }
-    links.features.store([0.0; 12]);
+}
+
+/// Every level and hit at 0, the clocks where they are.
+fn let_go(links: &Links) {
+    links.features.store(Features::from_globals(links.features.load()).quiet().globals());
+}
+
+/// A tracker for a new input: its clocks go on from what was last heard.
+fn tracker(links: &Links) -> Tracker {
+    Tracker::after(Features::from_globals(links.features.load()))
 }
 
 /// The apps using audio, for the menu, when it's been a while.
@@ -1321,7 +1335,7 @@ fn hear(cap: &mut capture::Capture, source: &Source, app: Option<&str>, looked: 
             f(&mut s);
         }
     };
-    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(cap.rate), Tracker::new(), Tempo::new(cap.rate));
+    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(cap.rate), tracker(links), Tempo::new(cap.rate));
     let dt = HOP as f32 / cap.rate;
     let (opened, mut heard) = (Instant::now(), false);
     // when samples last went through, and when the default device was last looked at
@@ -1405,7 +1419,7 @@ fn test_loop(links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>) {
         s.name = "Test loop · 128 BPM".into();
         s.hearing = Hearing::Live;
     }
-    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(RATE), Tracker::new(), Tempo::new(RATE));
+    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(RATE), tracker(links), Tempo::new(RATE));
     let dt = HOP as f32 / RATE;
     let (start, mut played, mut looked) = (Instant::now(), 0usize, None);
     links.tuning.changed.store(true, Release);
@@ -1425,7 +1439,6 @@ fn test_loop(links: &Links, stop: &AtomicBool, state: &Mutex<AudioState>) {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    links.features.store([0.0; 12]);
 }
 
 /// An audio file as the input ([`Input::File`]): played over and over on the default output and
@@ -1444,6 +1457,7 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
         Err(e) => {
             // said in the top bar until another input is picked
             set(&|s| s.hearing = Hearing::Failed(e.clone()));
+            let_go(links);
             while !stop.load(Relaxed) {
                 std::thread::sleep(Duration::from_millis(250));
             }
@@ -1452,9 +1466,11 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
     };
     // (VELO_AUDIO_FROM=seconds: from there in the file, for a film of the app)
     let from = std::env::var("VELO_AUDIO_FROM").ok().and_then(|s| s.parse().ok()).unwrap_or(0.0);
-    let player = velo_audio::track::Player::start(track.clone(), std::env::var_os("VELO_CAPTURE_TO").is_none(), from);
+    let aloud = std::env::var_os("VELO_CAPTURE_TO").is_none();
+    let mut player = velo_audio::track::Player::start(track.clone(), aloud, from);
+    let (mut moved, mut last) = (Instant::now(), player.position());
     set(&|s| s.hearing = Hearing::Live);
-    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(track.rate), Tracker::new(), Tempo::new(track.rate));
+    let (mut analyzer, mut tracker, mut tempo) = (Analyzer::new(track.rate), tracker(links), Tempo::new(track.rate));
     let dt = HOP as f32 / track.rate;
     let (mut heard, mut looked, mut chunk, mut late) = (player.position(), None, vec![0.0f32; 1024], Late::new(track.rate));
     links.tuning.changed.store(true, Release);
@@ -1464,6 +1480,14 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
         }
         look_at_apps(&mut looked, state);
         let due = player.position();
+        if due != last {
+            (moved, last) = (Instant::now(), due);
+        } else if moved.elapsed() > Duration::from_secs(1) {
+            // the output it played on went (unplugged; on Windows, another made the default):
+            // on the default again, from where it was
+            player = velo_audio::track::Player::start(track.clone(), aloud, due as f64 / f64::from(track.rate));
+            moved = Instant::now();
+        }
         // a second behind (the computer slept): from where the output is now, not all it missed
         if due > heard + track.rate as usize {
             heard = due.saturating_sub(chunk.len());
@@ -1479,7 +1503,6 @@ fn file_loop(path: &str, links: &Links, stop: &AtomicBool, state: &Mutex<AudioSt
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    links.features.store([0.0; 12]);
 }
 
 /// One hop out to the others: the features, the audio texture's column, the graphs, the tempo.

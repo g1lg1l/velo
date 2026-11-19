@@ -396,8 +396,14 @@ impl App {
         if std::mem::replace(&mut self.chat.loaded, true) {
             return;
         }
-        if let Some(chats) = Self::chats_file().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| serde_json::from_str::<Vec<Conversation>>(&t).ok()) {
-            self.chat.chats = chats;
+        let Some(file) = Self::chats_file() else { return };
+        let Ok(text) = std::fs::read_to_string(&file) else { return };
+        match serde_json::from_str::<Vec<Conversation>>(&text) {
+            Ok(chats) => self.chat.chats = chats,
+            // one Velo can't read stays as it was, beside the new one
+            Err(_) => {
+                let _ = std::fs::rename(&file, file.with_extension("json.bak"));
+            }
         }
     }
 

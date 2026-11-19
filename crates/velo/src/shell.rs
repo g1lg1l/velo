@@ -1248,14 +1248,14 @@ impl App {
             self.restore_recovery();
         }
         if discard {
-            self.recovery = None;
+            self.discard_recovery();
         }
         // a project loaded closes it (files.rs); so does leaving
         if leave {
             self.start = false;
         }
-        // left for another project with that work still unopened: let go (its file stays until
-        // this session's first autosave takes its place), so this session autosaves as usual
+        // left for another project with that work still unopened: let go (its file stays, and
+        // is offered again next time)
         if !self.start {
             self.recovery = None;
         }

@@ -60,9 +60,11 @@ Turn OSC on in **Preferences → OSC**. It shows this computer's address and the
 | `/velo/tempo/resync` | | Puts the downbeat on now |
 | `/velo/blackout` | on or off, or nothing to flip | Blackout |
 | `/velo/freeze` | on or off, or nothing to flip | Freeze |
-| `/velo/op/<operator>` | the operator's settings as JSON | Runs any operator |
+| `/velo/op/<operator>` | the operator's settings as JSON | Runs any operator, once allowed |
 
 `/velo/op/` reaches every command in Velo: the same operators the command palette (<kbd>Ctrl</kbd> <kbd>K</kbd>) runs. That makes OSC the simplest way to script Velo from another language or a live-coding setup.
+
+Velo listens for OSC from the whole network, so anyone on the venue's Wi-Fi can send to it. The other addresses only play the show, but `/velo/op/` can change or delete anything in it, so it stays off until you turn on **Run any command** in Preferences → Control.
 
 ## Keys
 

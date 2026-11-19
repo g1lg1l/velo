@@ -5750,6 +5750,8 @@ mod midi_tests {
         assert!(h.app.apply_osc(&m("/velo/scene/macro/1", vec![Arg::Float(0.9)]), 1.0));
         assert!((h.macro_value(0) - 0.9).abs() < 1e-6, "{}", h.macro_value(0));
         assert!(!h.app.apply_osc(&m("/velo/scene/macro/9", vec![Arg::Float(0.5)]), 1.0), "there are 8 macros");
+        // anything, over the network: only once allowed
+        h.app.settings.osc.ops = true;
         assert!(h.app.apply_osc(&m("/velo/op/scene.add", vec![Arg::Str(r#"{"name": "From OSC"}"#.into())]), 1.0));
         assert_eq!(h.app.session.active().map(|s| s.name.as_str()), Some("From OSC"));
         assert!(h.app.apply_osc(&m("/velo/scene/select", vec![Arg::Int(1)]), 1.0));
@@ -5880,7 +5882,10 @@ mod midi_tests {
         assert!(h.app.settings.hide_preview);
         // bound in the project (here over OSC, as an outside tool would), it's the project's
         let bind = r#"{"control": {"Key": "P"}, "target": {"Macro": 0}, "behavior": "Toggle"}"#;
-        assert!(h.app.apply_osc(&crate::osc::Message { address: "/velo/op/binding.add".into(), args: vec![crate::osc::Arg::Str(bind.into())], at: Instant::now() }, 1.0));
+        let op = crate::osc::Message { address: "/velo/op/binding.add".into(), args: vec![crate::osc::Arg::Str(bind.into())], at: Instant::now() };
+        assert!(!h.app.apply_osc(&op, 1.0), "anything over the network: off until allowed");
+        h.app.settings.osc.ops = true;
+        assert!(h.app.apply_osc(&op, 1.0));
         h.key(Key::P);
         assert!(h.app.settings.hide_preview && h.macro_value(0) == 1.0, "the binding, not the command");
         // with a dialog open neither runs

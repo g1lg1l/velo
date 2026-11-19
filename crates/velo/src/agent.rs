@@ -4,7 +4,7 @@
 //! whether they may edit, touch the live scene, or save. What an agent changes until its next
 //! checkpoint undoes in one step, and every call lands in a log the user can read.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -123,6 +123,9 @@ fn listen(listener: TcpListener, token: String, calls: Sender<Call>, stop: Arc<A
     }
 }
 
+/// The longest hello line read: a token and a few flags.
+const HELLO_MOST: u64 = 4096;
+
 fn send(stream: &mut TcpStream, id: &Value, result: Result<Value, String>) -> std::io::Result<()> {
     let line = match result {
         Ok(v) => json!({ "id": id, "result": v }),
@@ -136,8 +139,16 @@ fn send(stream: &mut TcpStream, id: &Value, result: Result<Value, String>) -> st
 fn serve(stream: TcpStream, token: &str, calls: Sender<Call>, stop: Arc<AtomicBool>, clients: Arc<AtomicUsize>, ctx: egui::Context) {
     let _ = stream.set_nonblocking(false);
     let Ok(mut out) = stream.try_clone() else { return };
-    let mut lines = BufReader::new(stream).lines();
-    let Some(Ok(first)) = lines.next() else { return };
+    // before the token anything on this computer may be talking: a short line, soon, or nothing
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let mut reader = BufReader::new(stream);
+    let mut first = String::new();
+    if (&mut reader).take(HELLO_MOST).read_line(&mut first).is_err() || !first.ends_with('\n') {
+        return;
+    }
+    // an agent may sit quiet as long as it likes
+    let _ = reader.get_ref().set_read_timeout(None);
+    let lines = reader.lines();
     let hello: Value = serde_json::from_str(&first).unwrap_or_default();
     if hello["method"] != "hello" || hello["params"]["token"].as_str() != Some(token) {
         let _ = send(&mut out, &hello["id"], Err("wrong or missing token: use velo-mcp, which reads it from Velo's data folder".into()));
@@ -355,7 +366,9 @@ impl App {
                 // allowed; Velo's own AI panel may (the user is asking, in Velo)
                 let target = props["scene"].as_str().map(String::from).or_else(|| self.session.active_scene.clone());
                 let live = self.live.as_ref().and_then(|l| l.live_scene().map(String::from));
-                if !prefs.live && !panel && edits_a_scene(id) && target.is_some() && target == live {
+                // the shared signals and the canvas's size reach the live scene too
+                let shown = live.is_some() && ((edits_a_scene(id) && (target == live || target.as_deref() == Some(velo_core::SHARED))) || id == "project.set_canvas");
+                if !prefs.live && !panel && shown {
                     return Err(tr!("That scene is live: work on another one (scene.add makes a new one and selects it; the preview shows it), or the user allows editing live in Preferences → AI and agents").into());
                 }
                 self.session.run_merge(id, props.clone(), MERGE)?;

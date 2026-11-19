@@ -1154,10 +1154,13 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             };
             let first = frame(&mut runner);
             assert_eq!([lit(&first, 8, 4), lit(&first, 56, 4), lit(&first, 32, 26)], [Some(0), Some(1), Some(2)], "{name}: red | green over blue");
-            // read ahead on the reader's thread: the frame due at 0.2 s is blue (time for a
-            // reader starting a GPU's decoder, with other tests on the GPU too)
+            // read ahead on the reader's thread: the frame due at 0.2 s is blue (as long as a
+            // reader starting a decoder takes: a CI runner's software GPU can take seconds)
             playing.step(&queue, 0.1, crate::media::Transport::default());
-            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let asked = std::time::Instant::now();
+            while !playing.ready() && asked.elapsed() < std::time::Duration::from_secs(20) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             playing.step(&queue, 0.1, crate::media::Transport::default());
             let third = frame(&mut runner);
             assert_eq!([lit(&third, 8, 4), lit(&third, 56, 26)], [Some(2), Some(2)], "{name}: the third frame");
@@ -1541,9 +1544,18 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         runner.set_params(&queue, &programs, 3, &values);
         let mut reel = crate::media::Reel::new(&device, &queue, "list".into(), 3, &programs[1].node, [0, 1, 2], vec![movie], false).unwrap();
         let dt = 1.0 / 60.0;
-        let mut seen = Vec::new();
-        // a second at 60 frames a second: the clip (0.4 s) two and a half times
-        for frame in 0..60 {
+        let mut seen: Vec<Vec<bool>> = Vec::new();
+        let (blue, green, white) = (vec![false, false, true], vec![false, true, false], vec![true, true, true]);
+        // its three colours, and one of them again after another (a slow machine shows fewer
+        // frames a turn, so not a count of changes)
+        let done = |seen: &[Vec<bool>]| [&blue, &green, &white].iter().all(|c| seen.contains(c)) && seen.iter().enumerate().any(|(i, p)| seen[..i.saturating_sub(1)].contains(p));
+        // at 60 frames a second, until it has gone round: a second is the clip (0.4 s) two and a
+        // half times; a CI runner's software GPU, its decoder starting, may take seconds more
+        let started = std::time::Instant::now();
+        for frame in 0.. {
+            if done(&seen) || started.elapsed() > std::time::Duration::from_secs(20) {
+                break;
+            }
             reel.step(&device, &queue, &mut runner, &programs, |p| values[p][0], 0.0, frame as f32 * dt, dt);
             let mut encoder = device.create_command_encoder(&Default::default());
             runner.render(&queue, &mut encoder, &programs, &[frame as f32 * dt, dt, 0.0, 2.0]);
@@ -1554,7 +1566,6 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
             }
             std::thread::sleep(std::time::Duration::from_secs_f32(dt));
         }
-        let (blue, green, white) = (vec![false, false, true], vec![false, true, false], vec![true, true, true]);
         assert!(seen.contains(&green) && seen.contains(&white) && seen.contains(&blue), "its frames in turn: {seen:?}");
         // round again: a frame comes back after another (a slow machine shows fewer frames a
         // turn, so not a count of changes)

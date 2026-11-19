@@ -23,9 +23,9 @@ const SHADERS: &str = "shaders";
 /// In a project exported to share: the files its nodes show (pictures, movies, fonts).
 const MEDIA: &str = "media";
 const AUTOSAVE_SECONDS: f64 = 60.0;
-const AUTOSAVE: &str = "autosave.velo";
-/// There while Velo runs: found at start, the last session didn't close cleanly.
-const LOCK: &str = "session.lock";
+/// Unsaved work from a session that didn't close cleanly, waiting for "restore?": set aside, so
+/// no session's autosave writes over it.
+const RECOVER: &str = "recover.velo";
 
 /// Shader files being watched for an outside editor's saves.
 #[derive(Default)]
@@ -363,13 +363,56 @@ pub fn changed_shaders(dir: &Path, project: &Project, seen: &mut HashMap<String,
     changed
 }
 
-/// Unsaved work from a session that crashed or closed with changes, if any.
+/// This session's lock, `session-<pid>.lock`, held (an OS file lock) while Velo runs, and its
+/// snapshot of unsaved work, `autosave-<pid>.velo`: each running Velo has its own pair, and a
+/// lock nobody holds is a session that crashed or closed with work unsaved.
+fn own_lock() -> String {
+    format!("session-{}.lock", std::process::id())
+}
+
+fn own_autosave() -> String {
+    format!("autosave-{}.velo", std::process::id())
+}
+
+static HELD: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+
+/// Unsaved work from a session that crashed or closed with changes, if any (the newest).
 /// Also marks this session as running.
 pub fn take_recovery() -> Option<Project> {
-    let lock = data_file(LOCK)?;
-    let recovered = lock.exists().then(|| data_file(AUTOSAVE).and_then(|p| read_ron(&p).ok())).flatten();
-    let _ = std::fs::write(&lock, b"running");
+    let dir = data_dir()?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let recovered = recover_in(&dir);
+    if let Ok(lock) = std::fs::File::create(dir.join(own_lock()))
+        && lock.try_lock().is_ok()
+    {
+        let _ = HELD.set(lock);
+    }
     recovered
+}
+
+/// Sets aside the snapshot of every session in `dir` that ended without cleaning up (its lock
+/// held by nobody; `session.lock` is an older Velo's), and reads what waits for "restore?".
+fn recover_in(dir: &Path) -> Option<Project> {
+    for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(pid) = name.strip_prefix("session").and_then(|n| n.strip_suffix(".lock")) else { continue };
+        // a running Velo holds its own
+        if std::fs::File::open(entry.path()).is_ok_and(|f| f.try_lock().is_err()) {
+            continue;
+        }
+        let snapshot = dir.join(format!("autosave{pid}.velo"));
+        if snapshot.exists() {
+            // the newest is the one offered; one still unanswered stays beside it, not lost
+            let recover = dir.join(RECOVER);
+            if recover.exists() {
+                let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                let _ = std::fs::rename(&recover, dir.join(format!("recover-{secs}.velo")));
+            }
+            let _ = std::fs::rename(&snapshot, &recover);
+        }
+        let _ = std::fs::remove_file(entry.path());
+    }
+    read_ron(&dir.join(RECOVER)).ok()
 }
 
 impl App {
@@ -381,10 +424,23 @@ impl App {
         self.file.as_deref().and_then(Path::file_stem).map_or(tr!("Untitled").into(), |s| s.to_string_lossy().into_owned())
     }
 
-    /// The work Velo closed with unsaved last time, open again (the start screen's Restore).
+    /// The work Velo closed with unsaved last time, open again (the start screen's Restore):
+    /// its snapshot becomes this session's, so a crash now still has it.
     pub fn restore_recovery(&mut self) {
         if let Some(project) = self.recovery.take() {
+            if let (Some(from), Some(to)) = (data_file(RECOVER), data_file(&own_autosave())) {
+                let _ = std::fs::rename(from, to);
+            }
+            self.autosaved = project.clone();
             self.load_project(project, None, Project::default());
+        }
+    }
+
+    /// The work Velo closed with unsaved last time, thrown away (held to discard).
+    pub fn discard_recovery(&mut self) {
+        self.recovery = None;
+        if let Some(file) = data_file(RECOVER) {
+            let _ = std::fs::remove_file(file);
         }
     }
 
@@ -505,7 +561,7 @@ impl App {
             Ok(()) => {
                 self.saved = self.session.project.clone();
                 // nothing unsaved now: a crash from here offers nothing older than this
-                if let Some(snapshot) = data_file(AUTOSAVE) {
+                if let Some(snapshot) = data_file(&own_autosave()) {
                     let _ = std::fs::remove_file(snapshot);
                 }
                 self.autosaved = self.saved.clone();
@@ -604,33 +660,30 @@ impl App {
     }
 
     /// Every 60 s, snapshot unsaved work for crash recovery (nothing unsaved, nothing to snapshot).
+    /// Work still waiting for "restore?" has a file of its own, so this never waits for the answer.
     pub fn autosave(&mut self, now: f64) {
-        // while "restore unsaved work?" is unanswered, the old snapshot is what we'd overwrite
-        if now - self.last_autosave < AUTOSAVE_SECONDS || self.recovery.is_some() || self.recovery_later {
+        if now - self.last_autosave < AUTOSAVE_SECONDS {
             return;
         }
         self.last_autosave = now;
-        if self.dirty()
-            && self.session.project != self.autosaved
-            && let Some(path) = data_file(AUTOSAVE)
-            && write_ron(&path, &self.session.project).is_ok()
-        {
-            self.autosaved = self.session.project.clone();
+        if self.dirty() && self.session.project != self.autosaved {
+            match data_file(&own_autosave()).ok_or_else(|| tr!("no folder for Velo's data").to_string()).and_then(|path| write_ron(&path, &self.session.project)) {
+                Ok(()) => self.autosaved = self.session.project.clone(),
+                Err(e) => self.say(Tone::Error, tr!("Couldn't keep a copy of your unsaved work: {}", e)),
+            }
         }
     }
 
     /// On a clean exit with nothing unsaved, drop the lock; otherwise keep the work for next time.
+    /// Work still waiting for "restore?" stays in its own file and is offered again.
     pub fn exit_cleanup(&mut self) {
-        if self.recovery.is_some() || self.recovery_later {
-            return; // never answered: offer it again next time
-        }
         if self.dirty() {
-            if let Some(path) = data_file(AUTOSAVE) {
+            if let Some(path) = data_file(&own_autosave()) {
                 let _ = write_ron(&path, &self.session.project);
             }
         } else {
-            for name in [LOCK, AUTOSAVE] {
-                if let Some(path) = data_file(name) {
+            for name in [own_lock(), own_autosave()] {
+                if let Some(path) = data_file(&name) {
                     let _ = std::fs::remove_file(path); // nothing to recover next time
                 }
             }
@@ -693,12 +746,13 @@ impl App {
                 let discard = kit::hold_button(ui, &t, Some(crate::icons::TRASH), tr!("Hold to discard"), tr!("Discarded"), 1.0);
                 if restore { Some(0) } else { discard.then_some(1) }
             });
+            self.recovery = Some(project);
             match choice {
-                Some(0) => self.load_project(project, None, Project::default()),
-                Some(_) => {}
-                // closed: asked again next time
-                None if closed => self.recovery_later = true,
-                None => self.recovery = Some(project),
+                Some(0) => self.restore_recovery(),
+                Some(_) => self.discard_recovery(),
+                // closed: its file stays, asked again next time
+                None if closed => self.recovery = None,
+                None => {}
             }
         }
     }
@@ -707,6 +761,29 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_crashed_sessions_work_is_set_aside_and_a_running_ones_is_left_alone() {
+        let dir = std::env::temp_dir().join(format!("velo-recover-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::default();
+        session.run("scene.add", serde_json::json!({ "name": "Crashed" })).unwrap();
+        // a session that crashed: its lock left, held by nobody
+        std::fs::write(dir.join("session-1.lock"), b"").unwrap();
+        write_ron(&dir.join("autosave-1.velo"), &session.project).unwrap();
+        // one still running: its lock held
+        let running = std::fs::File::create(dir.join("session-2.lock")).unwrap();
+        running.try_lock().unwrap();
+        write_ron(&dir.join("autosave-2.velo"), &Project::default()).unwrap();
+        assert_eq!(recover_in(&dir), Some(session.project.clone()));
+        assert!(!dir.join("session-1.lock").exists() && !dir.join("autosave-1.velo").exists());
+        assert!(dir.join("session-2.lock").exists() && dir.join("autosave-2.velo").exists(), "a running Velo's files aren't touched");
+        // not answered: offered again next time
+        assert_eq!(recover_in(&dir), Some(session.project));
+        drop(running);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn projects_round_trip_through_ron_files() {

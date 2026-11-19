@@ -252,7 +252,7 @@ impl<'a> Host<'a> {
         config.format = surface.get_capabilities(&engine.adapter).formats.into_iter().find(|f| !f.is_srgb()).unwrap_or(config.format);
         config.present_mode = wgpu::PresentMode::Fifo;
         config.desired_maximum_frame_latency = 1;
-        let millihertz = monitor.or_else(|| window.current_monitor()).and_then(|m| m.refresh_rate_millihertz()).unwrap_or(60_000);
+        let millihertz = monitor.or_else(|| window.current_monitor()).and_then(|m| m.refresh_rate_millihertz()).filter(|&m| m > 0).unwrap_or(60_000);
         engine.send(Command::Attach { surface, config, period: Duration::from_secs_f64(1000.0 / f64::from(millihertz)) });
         self.output = Some(window);
         self.shared.borrow_mut().output = Some(target);
