@@ -135,14 +135,17 @@ by time with its bands worked out once, 88.2-192 kHz analysed at 44.1/48 (5, 6).
 rebuilt graph now takes over what its nodes had built up (feedback, shader buffers, the time
 machine, particles) and where its movies were, so an edit on the live scene doesn't start them
 over; changing a text or a file without a rebuild would need a new engine command and is left.
-Item 2 was tried (frames staged into GPU buffers on the reader thread) and measured no faster:
-reverted. Item 4 left: Metal and the Windows drivers cache compiled pipelines, so the hitch is
+Item 2 is done after all: a first try (a new GPU buffer a frame) measured no faster in fps,
+which on techno-night's scene 6 swing 22-58 on any build. Sampled with symbols, the uploads were a
+third of the render thread's busy time there; three buffers a movie, written on its reader thread
+and mapped again after the GPU's copy, took the render thread's busy time from 822 samples to 570
+(-31%) and the uploads from 156 to 6. What's left there is wgpu and Metal encoding the passes of
+six layers every frame (`encoder.finish`, about 2/3 of it): fewer passes would mean fusing nodes. Item 4 left: Metal and the Windows drivers cache compiled pipelines, so the hitch is
 only on a first-ever attach. `write_buffer` batching and the per-frame scratch `Vec`s are left
 (tens of µs).
 
-Found while measuring: techno-night's scene 6 (MEDIA, media lists and movies that jump on the
-kick) runs 22-58 fps with 18-30 ms on the render thread, on main as on this branch. Next to
-profile with symbols (`CARGO_PROFILE_RELEASE_STRIP=false`).
+Profiling: `CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo
+build --release -p velo --target-dir target/prof`, then `sample <pid> 8` while a scene runs.
 
 1. **A rebuild reuses nothing**: new canvas textures for every node, every still re-uploaded, every
    movie reopened, old and new graph both alive until install (2x VRAM), and a text or file change

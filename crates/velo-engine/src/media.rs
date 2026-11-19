@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::hap::{Format, Movie};
@@ -436,15 +436,75 @@ pub struct Playing {
 }
 
 /// What a movie's reader and the render thread share: the frame wanted next, the last one
-/// read (swapped in, never copied), stop.
-// shortcut: the render thread uploads each frame (write_texture: a copy there); staging it on the
-// reader thread instead (a GPU buffer a frame) wasn't faster when measured, within a busy scene's noise
-#[derive(Default)]
+/// read (in which of the upload buffers), stop.
 struct Reader {
     want: AtomicUsize,
-    /// The frame, its texture's blocks, not uploaded yet.
-    ready: Mutex<(usize, Vec<u8>, bool)>,
+    /// The frame, the buffer it's in, whether it's new.
+    ready: Mutex<(usize, usize, bool)>,
     stop: AtomicBool,
+    uploads: Uploads,
+}
+
+/// A buffer an upload buffer is: mapped and free for the reader to write a frame into, holding
+/// one for the render thread to copy, or being copied and mapped again.
+const WRITABLE: u8 = 0;
+const FULL: u8 = 1;
+const COPYING: u8 = 2;
+
+/// The buffers a movie's frames go up through, used in turn: the reader writes a frame into a
+/// mapped one on its own thread, the render thread only asks the GPU to copy it into the texture
+/// (a 1080p frame is 8 MB: copied on the render thread it cost a third of its time with four
+/// movies playing). None is made per frame.
+struct Uploads {
+    buffers: [(wgpu::Buffer, Arc<AtomicU8>); 3],
+    row: usize,
+    rows: u32,
+}
+
+impl Uploads {
+    fn new(device: &wgpu::Device, (row, rows): (usize, u32)) -> Self {
+        let padded = row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        let buffer = || device.create_buffer(&wgpu::BufferDescriptor { label: Some("frame upload"), size: (padded * rows as usize) as u64, usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC, mapped_at_creation: true });
+        Self { buffers: std::array::from_fn(|_| (buffer(), Arc::new(AtomicU8::new(WRITABLE)))), row, rows }
+    }
+
+    /// `bytes` (rows of `row` bytes) into a free buffer, unmapped for the copy: which one, or
+    /// none while all three are in use (the frame is skipped).
+    fn put(&self, bytes: &[u8]) -> Option<usize> {
+        let bytes = bytes.get(..self.row * self.rows as usize)?;
+        let i = self.buffers.iter().position(|(_, state)| state.load(Relaxed) == WRITABLE)?;
+        let buffer = &self.buffers[i].0;
+        let padded = self.row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        {
+            let Ok(mut view) = buffer.slice(..).get_mapped_range_mut() else { return None };
+            for (r, line) in bytes.chunks_exact(self.row).enumerate() {
+                view.slice(r * padded..r * padded + self.row).copy_from_slice(line);
+            }
+        }
+        buffer.unmap();
+        self.buffers[i].1.store(FULL, Relaxed);
+        Some(i)
+    }
+
+    /// Buffer `i`'s frame copied into `texture` (one submit), then mapped again for the next:
+    /// free once the GPU is done with it (the render thread's poll says so).
+    fn copy(&self, device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture, i: usize) {
+        let buffer = &self.buffers[i].0;
+        let padded = self.row.next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(padded as u32), rows_per_image: Some(self.rows) };
+        encoder.copy_buffer_to_texture(wgpu::TexelCopyBufferInfo { buffer, layout }, texture.as_image_copy(), texture.size());
+        queue.submit([encoder.finish()]);
+        self.release(i);
+    }
+
+    /// Buffer `i` mapped again for a frame to be written in: free once the GPU is done with it.
+    fn release(&self, i: usize) {
+        let (buffer, state) = &self.buffers[i];
+        state.store(COPYING, Relaxed);
+        let state = state.clone();
+        buffer.map_async(wgpu::MapMode::Write, .., move |r| state.store(if r.is_ok() { WRITABLE } else { COPYING }, Relaxed));
+    }
 }
 
 /// `bytes` (`rows` of `row` bytes) in a buffer of their own, rows padded as a copy to a texture
@@ -512,7 +572,8 @@ impl Playing {
             }
         }
         if playing.media.count() > 1 {
-            let (shared, media) = (Arc::new(Reader::default()), playing.media.clone());
+            let uploads = Uploads::new(device, playing.rows());
+            let (shared, media) = (Arc::new(Reader { want: AtomicUsize::new(0), ready: Mutex::new((0, 0, false)), stop: AtomicBool::new(false), uploads }), playing.media.clone());
             let thread = {
                 let shared = shared.clone();
                 std::thread::Builder::new().name("velo movie".into()).spawn(move || read(&media, &shared))
@@ -565,7 +626,7 @@ impl Playing {
                     && ready.2
                 {
                     ready.2 = false;
-                    self.upload(queue, &ready.1);
+                    reader.uploads.copy(&self.device, queue, &self.texture, ready.1);
                 }
             }
             None => {
@@ -635,6 +696,21 @@ impl Drop for Playing {
     }
 }
 
+/// A frame into a free upload buffer, waiting a little for one (the render thread frees them as
+/// the GPU copies): none in 50 ms, the frame is skipped.
+fn put(shared: &Reader, frame: &[u8]) -> Option<usize> {
+    for _ in 0..50 {
+        if let Some(i) = shared.uploads.put(frame) {
+            return Some(i);
+        }
+        if shared.stop.load(Relaxed) {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    None
+}
+
 /// A movie's reader: the frame wanted, read and unpacked into a buffer of its own, then
 /// swapped in for the render thread.
 fn read(media: &Media, shared: &Reader) {
@@ -656,9 +732,13 @@ fn read(media: &Media, shared: &Reader) {
         if movie.read(&mut file, want, &mut packed, &mut blocks).is_err() {
             continue;
         }
+        let Some(i) = put(shared, &blocks) else { continue };
         let Ok(mut ready) = shared.ready.lock() else { return };
-        std::mem::swap(&mut ready.1, &mut blocks);
-        (ready.0, ready.2) = (want, true);
+        // one the render thread never took: its buffer free again
+        if ready.2 {
+            shared.uploads.release(ready.1);
+        }
+        *ready = (want, i, true);
     }
 }
 
@@ -698,9 +778,12 @@ fn read_video(clip: &Clip, shared: &Reader) {
         if !got {
             continue;
         }
+        let Some(i) = put(shared, &frame) else { continue };
         let Ok(mut ready) = shared.ready.lock() else { return };
-        std::mem::swap(&mut ready.1, &mut frame);
-        (ready.0, ready.2) = (want, true);
+        if ready.2 {
+            shared.uploads.release(ready.1);
+        }
+        *ready = (want, i, true);
     }
 }
 
