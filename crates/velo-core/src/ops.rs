@@ -378,7 +378,7 @@ pub static OPERATORS: &[Operator] = &[
             let p = &mut s.project;
             let id = new_id("s_", |id| p.scene(id).is_some());
             let name = name.unwrap_or_else(|| format!("Scene {}", p.scenes.len() + 1));
-            p.scenes.push(Scene { id: id.clone(), name, ..Default::default() });
+            p.scenes.push(Arc::new(Scene { id: id.clone(), name, ..Default::default() }));
             s.active_scene = Some(id);
             Ok(())
         },
@@ -393,9 +393,9 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let SceneRef { scene, name, .. } = props(v)?;
             let i = s.scene_index(scene.as_deref())?;
-            let copy = adopt(&s.project, s.project.scenes[i].clone(), name);
+            let copy = adopt(&s.project, Scene::clone(&s.project.scenes[i]), name);
             let id = copy.id.clone();
-            s.project.scenes.insert(i + 1, copy);
+            s.project.scenes.insert(i + 1, Arc::new(copy));
             s.active_scene = Some(id);
             Ok(())
         },
@@ -424,7 +424,7 @@ pub static OPERATORS: &[Operator] = &[
             for scene in scenes {
                 let copy = adopt(&s.project, scene, None);
                 s.active_scene = Some(copy.id.clone());
-                s.project.scenes.push(copy);
+                s.project.scenes.push(Arc::new(copy));
             }
             Ok(())
         },
@@ -440,7 +440,7 @@ pub static OPERATORS: &[Operator] = &[
             let SceneRef { scene, name, .. } = props(v)?;
             let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).ok_or("name is required")?;
             let i = s.scene_index(scene.as_deref())?;
-            s.project.scenes[i].name = name;
+            Arc::make_mut(&mut s.project.scenes[i]).name = name;
             Ok(())
         },
     },
@@ -454,7 +454,7 @@ pub static OPERATORS: &[Operator] = &[
         exec: |s, v| {
             let SceneRef { scene, icon, .. } = props(v)?;
             let i = s.scene_index(scene.as_deref())?;
-            s.project.scenes[i].icon = short_icon(&icon.ok_or("icon is required")?);
+            Arc::make_mut(&mut s.project.scenes[i]).icon = short_icon(&icon.ok_or("icon is required")?);
             Ok(())
         },
     },
@@ -585,7 +585,11 @@ pub static OPERATORS: &[Operator] = &[
             let SetSilence { scene, on } = props(v)?;
             let id = s.scene_mut(scene.as_deref())?.id.clone();
             for scene in &mut s.project.scenes {
-                scene.silence = on && scene.id == id && scene.layer == Layer::Scene;
+                // (only the scenes it changes are copied)
+                let silence = on && scene.id == id && scene.layer == Layer::Scene;
+                if scene.silence != silence {
+                    Arc::make_mut(scene).silence = silence;
+                }
             }
             Ok(())
         },
@@ -963,7 +967,7 @@ pub static OPERATORS: &[Operator] = &[
                 fresh.push(new_id("n_", |id| s.project.graphs().any(|c| c.node(id).is_some()) || fresh.iter().any(|f| f == id)));
             }
             let Project { scenes, shared, .. } = &mut s.project;
-            let graph = scenes.iter_mut().find(|c| c.id == scene_id).ok_or("no such scene")?;
+            let graph = scenes.iter_mut().find(|c| c.id == scene_id).map(Arc::make_mut).ok_or("no such scene")?;
             // below what's shared already, as they stood
             let bottom = shared.nodes.iter().map(|n| n.pos[1]).fold(f32::NEG_INFINITY, f32::max);
             let top = graph.nodes.iter().filter(|n| goes(&n.id)).map(|n| n.pos[1]).fold(f32::INFINITY, f32::min);
@@ -1083,7 +1087,7 @@ pub static OPERATORS: &[Operator] = &[
                 ids.insert(id.clone(), new);
             }
             let Project { scenes, shared, .. } = &mut s.project;
-            let graph = scenes.iter_mut().find(|c| c.id == scene_id).ok_or("no such scene")?;
+            let graph = scenes.iter_mut().find(|c| c.id == scene_id).map(Arc::make_mut).ok_or("no such scene")?;
             graph.nodes.retain(|n| n.id != node);
             // as they stand in the shared signals, the linked one where the Shared node was
             for n in shared.nodes.iter().filter(|n| chain.contains(&n.id)) {
@@ -1251,7 +1255,7 @@ pub static OPERATORS: &[Operator] = &[
             let outputs = if new.category == Category::Signal { new.outputs.len() } else { 0 };
             // what the scenes took from a shared node's outputs, while it still has them
             if shared {
-                for n in s.project.scenes.iter_mut().flat_map(|c| &mut c.nodes) {
+                for n in s.project.scenes.iter_mut().flat_map(|c| &mut Arc::make_mut(c).nodes) {
                     n.mappings.retain(|m| shared_output(&m.source).is_none_or(|(id, port)| id != node || usize::from(port) < outputs));
                 }
             }
@@ -1383,7 +1387,7 @@ pub static OPERATORS: &[Operator] = &[
             // a list's Hit moves it only on Hits: mapping onto it asks for them (on Beats or
             // Seconds it would do nothing, and nothing would say why)
             let i = node_index(&s.project.scenes[c], &m.node)?;
-            let n = &mut s.project.scenes[c].nodes[i];
+            let n = &mut Arc::make_mut(&mut s.project.scenes[c]).nodes[i];
             if hit && plays_list(&n.kind) {
                 n.params.insert("clock".into(), [LIST_CLOCK_HITS, 0.0, 0.0, 0.0]);
             }
@@ -1819,7 +1823,7 @@ pub(crate) fn signal_source(project: &mut Project, c: usize, source: &str) -> Op
         return Some(key);
     }
     let id = new_id("n_", |id| project.graphs().any(|c| c.node(id).is_some()));
-    let nodes = &mut project.scenes[c].nodes;
+    let nodes = &mut Arc::make_mut(&mut project.scenes[c]).nodes;
     let [x, y] = nodes.iter().fold([f32::INFINITY; 2], |[x, y], n| [x.min(n.pos[0]), y.min(n.pos[1])]);
     let pos = if x.is_finite() { [x - 260.0, y] } else { [0.0, 0.0] };
     let name = node_kind(kind).map_or(kind, |k| k.label).to_string();
@@ -1860,7 +1864,7 @@ fn adopt(p: &Project, mut scene: Scene, name: Option<String>) -> Scene {
     // the files are picked one by one against the project with the ones picked so far in it:
     // two nodes of the same name never share one
     let mut files = p.clone();
-    files.scenes.push(Scene::default());
+    files.scenes.push(Arc::default());
     let mut ids: BTreeMap<String, String> = BTreeMap::new();
     for n in &mut scene.nodes {
         let new = new_id("n_", |id| p.graphs().any(|c| c.node(id).is_some()) || ids.values().any(|v| v == id));
@@ -1868,7 +1872,7 @@ fn adopt(p: &Project, mut scene: Scene, name: Option<String>) -> Scene {
         if let Some(file) = &n.file {
             let ext = file.rsplit_once('.').map_or("wgsl", |(_, e)| e);
             n.file = Some(shader_file(&files, &n.name, ext));
-            files.scenes.last_mut().expect("pushed").nodes.push(n.clone());
+            Arc::make_mut(files.scenes.last_mut().expect("pushed")).nodes.push(n.clone());
         }
     }
     let renamed = |id: &mut String| {

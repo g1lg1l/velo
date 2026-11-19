@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use eframe::egui::{self, RichText};
@@ -171,7 +172,7 @@ pub fn read(path: &Path) -> Result<(Project, Vec<String>), String> {
     let Some(dir) = bundle(path) else { return Ok((read_ron(path)?, Vec::new())) };
     let mut project = read_ron(&dir.join(PROJECT))?;
     let mut missing = Vec::new();
-    for node in project.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in project.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         let Some(file) = node.file.clone() else { continue };
         match plain(&file).then(|| std::fs::read_to_string(dir.join(SHADERS).join(&file)).ok()).flatten() {
             Some(code) => node.code = Some(code),
@@ -216,7 +217,7 @@ fn read_package(path: &Path, media: Option<&Path>) -> Result<(Project, Vec<Strin
     };
     let mut project = parse(&text(&mut zip, PROJECT).ok_or_else(|| tr!("{} is not a valid project: {}", path.display(), PROJECT))?, path)?;
     let mut missing = Vec::new();
-    for node in project.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in project.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         let Some(file) = node.file.clone() else { continue };
         match plain(&file).then(|| text(&mut zip, &format!("{SHADERS}/{file}"))).flatten() {
             Some(code) => node.code = Some(code),
@@ -232,7 +233,7 @@ fn read_package(path: &Path, media: Option<&Path>) -> Result<(Project, Vec<Strin
         let written = to.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::File::create(&to)).and_then(|mut out| std::io::copy(&mut entry, &mut out));
         written.map_err(|e| format!("{}: {e}", to.display()))?;
     }
-    for node in project.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in project.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         if let Some(own) = node.media.as_deref().map(Path::new).filter(|m| m.starts_with(MEDIA) && m.components().all(|c| matches!(c, std::path::Component::Normal(_)))) {
             node.media = Some(media.join(own).to_string_lossy().into_owned());
         }
@@ -253,7 +254,7 @@ pub fn write_package(path: &Path, project: &Project, media: bool) -> Result<(), 
     let text = SimpleFileOptions::default();
     let mut stored = project.clone();
     let mut written = std::collections::HashSet::new();
-    for node in stored.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in stored.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         let Some(code) = node.code.take() else { continue };
         let file = file_of(node);
         if written.insert(file.clone()) {
@@ -266,7 +267,7 @@ pub fn write_package(path: &Path, project: &Project, media: bool) -> Result<(), 
         // each file (or folder of frames) once, under a name of its own; pictures and movies are
         // packed already, so they go in as they are
         let mut names: HashMap<PathBuf, String> = HashMap::new();
-        for node in stored.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+        for node in stored.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
             let Some(from) = node.media.as_deref().map(PathBuf::from).filter(|m| m.exists()) else { continue };
             if let Some(name) = names.get(&from) {
                 node.media = Some(name.clone());
@@ -314,7 +315,7 @@ pub fn write_bundle(dir: &Path, project: &Project) -> Result<(), String> {
     let shaders = dir.join(SHADERS);
     std::fs::create_dir_all(&shaders).map_err(|e| format!("{}: {e}", shaders.display()))?;
     let mut stored = project.clone();
-    for node in stored.scenes.iter_mut().flat_map(|s| &mut s.nodes) {
+    for node in stored.scenes.iter_mut().flat_map(|s| &mut Arc::make_mut(s).nodes) {
         let Some(code) = node.code.take() else { continue };
         store(dir, node, &code)?;
         node.file = Some(file_of(node));
@@ -847,7 +848,7 @@ mod tests {
         session.run("node.add", json!({ "kind": velo_core::SHADER, "name": "Tunnel", "code": velo_engine::TEMPLATE })).unwrap();
         for media in [&picture, &picture, &frames] {
             session.run("node.add", json!({ "kind": velo_core::IMAGE })).unwrap();
-            session.project.scenes[0].nodes.last_mut().unwrap().media = Some(media.to_string_lossy().into_owned());
+            Arc::make_mut(&mut session.project.scenes[0]).nodes.last_mut().unwrap().media = Some(media.to_string_lossy().into_owned());
         }
         let project = session.project.clone();
         // saved: one file, the code in it, the media where they are
@@ -885,7 +886,7 @@ mod tests {
         // a node from a single-file project: code, no file
         let scene = session.project.scenes[0].id.clone();
         let mut project = session.project.clone();
-        project.scenes[0].nodes.push(Node {
+        Arc::make_mut(&mut project.scenes[0]).nodes.push(Node {
             id: "n_old".into(),
             kind: velo_core::SHADER.into(),
             name: "Old".into(),
@@ -928,8 +929,8 @@ mod tests {
         // a missing file is reported; a name leaving shaders/ is never read
         std::fs::remove_file(dir.join("shaders/n_old.wgsl")).unwrap();
         let mut evil = back.clone();
-        evil.scenes[0].nodes[0].file = Some("../project.ron".into());
-        evil.scenes[0].nodes[0].code = None;
+        let node = &mut Arc::make_mut(&mut evil.scenes[0]).nodes[0];
+        (node.file, node.code) = (Some("../project.ron".into()), None);
         write_ron(&dir.join(PROJECT), &evil).unwrap();
         let (opened, missing) = read(&dir).unwrap();
         assert_eq!(missing, ["../project.ron", "n_old.wgsl"]);

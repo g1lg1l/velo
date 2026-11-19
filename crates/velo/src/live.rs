@@ -164,6 +164,8 @@ struct Slot {
     output: Option<usize>,
     /// It holds a picture of what plays under it (a layer on top showing the program).
     under: bool,
+    /// The project's revision all of the above was last checked against (none: check it).
+    seen: Option<u64>,
 }
 
 /// The project's shared signal graph as the engine was last told: its outputs' names (what the
@@ -178,8 +180,9 @@ struct Signals {
 pub struct Live {
     pub engine: Rc<Engine>,
     pub shared: Rc<RefCell<Shared>>,
-    /// The shared signal graph, as last sent.
+    /// The shared signal graph, as last sent, and the project's revision it was planned from.
     signals: Signals,
+    planned: Option<u64>,
     compiler: Compiler,
     /// The scenes the engine holds or is getting, most recently used (edited, launched) first.
     slots: Vec<Slot>,
@@ -250,6 +253,7 @@ impl Live {
             engine,
             shared,
             signals: Signals::default(),
+            planned: None,
             compiler,
             slots: Vec::new(),
             keys: 0,
@@ -291,7 +295,9 @@ impl Live {
     /// when their structure changed and get changed values; finished builds are installed; the
     /// least recently used go; the newest preview is taken if `preview` is wanted. Returns a
     /// build error to show.
-    pub fn sync(&mut self, ctx: &egui::Context, project: &Project, selected: Option<&Scene>, preview: bool) -> Option<String> {
+    /// `revision`: the session's (see [`velo_core::Session::revision`]); while it's the same, what
+    /// was sent of the project isn't looked at again.
+    pub fn sync(&mut self, ctx: &egui::Context, project: &Project, revision: u64, selected: Option<&Scene>, preview: bool) -> Option<String> {
         let size = [project.canvas.width, project.canvas.height];
         // the shared signals aren't a scene: while they're edited the preview shows the program
         let selected = selected.filter(|s| s.id != velo_core::SHARED);
@@ -340,7 +346,7 @@ impl Live {
             self.peek = Some(Peek { scene: slot.scene.clone(), key: live, since: Instant::now(), sent: false, keep: false });
         }
         // the layers switched on, held and rendered every frame
-        let on: Vec<&Scene> = project.scenes.iter().filter(|s| s.layer != velo_core::Layer::Scene && !self.off.contains(&s.id)).collect();
+        let on: Vec<&Scene> = project.scenes.iter().map(std::sync::Arc::as_ref).filter(|s| s.layer != velo_core::Layer::Scene && !self.off.contains(&s.id)).collect();
         let layers: Vec<_> = on.into_iter().map(|s| (self.slot(&s.id).key, s.layer, s.blend)).collect();
         if layers != self.layers {
             self.engine.send(Command::Layers(layers.clone()));
@@ -356,10 +362,10 @@ impl Live {
                 }
             }
             if fresh {
-                slot.asked = None;
+                (slot.asked, slot.seen) = (None, None);
             }
         }
-        for slot in &mut self.slots {
+        for slot in self.slots.iter_mut().filter(|s| s.seen != Some(revision) || s.asked.is_none()) {
             let Some(scene) = project.scene(&slot.scene) else { continue };
             let shape = structure(Some(scene), size);
             if slot.asked != Some(shape) {
@@ -384,7 +390,7 @@ impl Live {
                     // the build set the values it was asked with; anything newer goes below
                     slot.sent = vec![Vec::new(); slot.installed.len()];
                     slot.routed = vec![Vec::new(); slot.installed.len()];
-                    (slot.macros, slot.driving) = (None, None);
+                    (slot.macros, slot.driving, slot.seen) = (None, None, None);
                     self.engine.send(Command::Install { key, graph: b.graph });
                 }
                 Err(e) => error = Some(e),
@@ -419,15 +425,18 @@ impl Live {
         // the shared signals: planned again when they're rewired (each node keeps what it was
         // doing, the engine carries it over), retuned when a setting changed. Sent before the
         // routes below, which follow their outputs to their new slots in the same batch
-        let (plan, keys) = velo_engine::signal::plan_shared(&project.shared);
-        let wiring: Vec<[Option<usize>; 2]> = plan.iter().map(|s| s.inputs).collect();
-        let kinds: Vec<velo_engine::signal::Kind> = plan.iter().map(|s| s.kind).collect();
-        if keys != self.signals.keys || wiring != self.signals.wiring {
-            self.engine.send(Command::Shared { signals: plan, keys: keys.clone() });
-        } else if kinds != self.signals.kinds {
-            self.engine.send(Command::Signals { key: velo_engine::runtime::SHARED_KEY, kinds: kinds.clone() });
+        if self.planned != Some(revision) {
+            self.planned = Some(revision);
+            let (plan, keys) = velo_engine::signal::plan_shared(&project.shared);
+            let wiring: Vec<[Option<usize>; 2]> = plan.iter().map(|s| s.inputs).collect();
+            let kinds: Vec<velo_engine::signal::Kind> = plan.iter().map(|s| s.kind).collect();
+            if keys != self.signals.keys || wiring != self.signals.wiring {
+                self.engine.send(Command::Shared { signals: plan, keys: keys.clone() });
+            } else if kinds != self.signals.kinds {
+                self.engine.send(Command::Signals { key: velo_engine::runtime::SHARED_KEY, kinds: kinds.clone() });
+            }
+            self.signals = Signals { keys, wiring, kinds };
         }
-        self.signals = Signals { keys, wiring, kinds };
         // the hot path: values and mappings only, no rebuild (drags, undo of a drag); the
         // engine computes the modulated values itself, for every graph it renders
         let morph = self.morph.take();
@@ -437,8 +446,11 @@ impl Live {
         if !self.loops.is_empty() {
             ctx.request_repaint();
         }
-        for slot in &mut self.slots {
+        // (a looping macro or a morph moves its values with no edit)
+        let still = self.loops.is_empty() && morph.is_none();
+        for slot in self.slots.iter_mut().filter(|s| !still || s.seen != Some(revision)) {
             let Some(scene) = project.scene(&slot.scene) else { continue };
+            slot.seen = Some(revision);
             // the macros: what they drive first (a node they let go of gets its values again
             // below), then where they are, or a morph to there
             let nodes: Vec<(&str, &ShaderNode)> = slot.installed.iter().map(|(id, shader)| (id.as_str(), shader)).collect();
@@ -578,6 +590,7 @@ impl Live {
                     driving: None,
                     output: None,
                     under: false,
+                    seen: None,
                 }
             }
         };
@@ -1740,10 +1753,10 @@ mod tests {
         let mut total = 0.0;
         for (k, scene) in project.scenes.iter().enumerate() {
             // twice: the first build starts the text and image loads, the second has them
-            compiler.build(k as u64, scene.clone(), size);
+            compiler.build(k as u64, Scene::clone(scene), size);
             let _ = compiler.built.recv();
             std::thread::sleep(Duration::from_millis(300));
-            compiler.build(k as u64, scene.clone(), size);
+            compiler.build(k as u64, Scene::clone(scene), size);
             let Ok((_, Ok(mut built))) = compiler.built.recv() else { continue };
             let g = &mut built.graph;
             // what renders as the engine runs it: what a Switch or a clear Blend doesn't show sleeps

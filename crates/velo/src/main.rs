@@ -43,6 +43,7 @@ use shell::Tone;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
@@ -90,8 +91,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// The autopilot's next scene among those that take turns (not a layer, not left out, not the
 /// silence scene): the one after `now`, or with `random` (0..1) any but `now`. None with fewer
 /// than two.
-fn next_turn(scenes: &[Scene], now: Option<&str>, random: Option<f64>) -> Option<String> {
-    let turns: Vec<&Scene> = scenes.iter().filter(|s| s.layer == Layer::Scene && !s.manual && !s.silence).collect();
+fn next_turn(scenes: &[Arc<Scene>], now: Option<&str>, random: Option<f64>) -> Option<String> {
+    let turns: Vec<&Arc<Scene>> = scenes.iter().filter(|s| s.layer == Layer::Scene && !s.manual && !s.silence).collect();
     if turns.len() < 2 {
         return None;
     }
@@ -1179,7 +1180,7 @@ impl App {
     }
 
     /// A scene card dragged over the list: a line where it would land, the move on release.
-    fn scene_drop(&mut self, ui: &egui::Ui, t: &Theme, scenes: &[Scene], cards: &[egui::Rect]) {
+    fn scene_drop(&mut self, ui: &egui::Ui, t: &Theme, scenes: &[Arc<Scene>], cards: &[egui::Rect]) {
         let Some(drag) = egui::DragAndDrop::payload::<widgets::SceneDrag>(ui.ctx()) else { return };
         let Some(from) = scenes.iter().position(|s| s.id == drag.0) else { return };
         let Some(p) = ui.ctx().pointer_interact_pos().filter(|p| ui.clip_rect().contains(*p)) else { return };
@@ -1790,7 +1791,7 @@ impl App {
             i += 1;
         }
         // the scenes that read any of it, through a Shared node or a mapping
-        let reads = |s: &&Scene| s.nodes.iter().flat_map(|n| n.link.iter().chain(n.mappings.iter().map(|m| &m.source))).filter_map(|source| velo_core::shared_output(source)).any(|(id, _)| chain.iter().any(|c| c == id));
+        let reads = |s: &&Arc<Scene>| s.nodes.iter().flat_map(|n| n.link.iter().chain(n.mappings.iter().map(|m| &m.source))).filter_map(|source| velo_core::shared_output(source)).any(|(id, _)| chain.iter().any(|c| c == id));
         let scenes = project.scenes.iter().filter(reads).count();
         // by its group's name where it's the group's output, as the node menu and the deck call it
         let name = shared_sources(project).into_iter().find(|(key, _)| *key == velo_core::shared_key(&to, port)).map_or_else(|| output_name(&project.shared, &to, port), |(_, name)| name);
@@ -2270,7 +2271,7 @@ impl App {
             live.morph(scene, beats);
         }
         let scene = self.session.active();
-        let mut error = live.sync(ctx, &self.session.project, scene, wanted);
+        let mut error = live.sync(ctx, &self.session.project, self.session.revision(), scene, wanted);
         // sharing that stopped (no NDI runtime, no DirectX 11): said, and off
         let unshared = live.engine.status.share_error.lock().ok().and_then(|mut e| e.take());
         if unshared.is_some() {
@@ -2992,7 +2993,7 @@ impl App {
         let Some(outputs) = scene.node(node).and_then(|n| node_kind(&n.kind)).map(|k| k.outputs) else { return };
         // what it moves: in its scene; a shared signal's, in every scene (named with its scene)
         let shared = scene.id == velo_core::SHARED;
-        let graphs: Vec<velo_core::Scene> = if shared { self.session.project.scenes.clone() } else { vec![scene.clone()] };
+        let graphs: Vec<Arc<Scene>> = self.session.project.scenes.iter().filter(|s| shared || s.id == scene.id).cloned().collect();
         let links: Vec<(&str, String, &velo_core::Node, &Mapping, u8)> = graphs
             .iter()
             .flat_map(|g| g.nodes.iter().flat_map(move |n| n.mappings.iter().map(move |m| (g, n, m))))
@@ -3790,12 +3791,12 @@ mod projection_tests {
 
 #[cfg(test)]
 mod pilot_tests {
-    use super::{Hush, Layer, Pilot, Scene, next_turn};
+    use super::{Arc, Hush, Layer, Pilot, Scene, next_turn};
 
     #[test]
     fn the_autopilot_takes_turns_among_the_scenes_left_in() {
         let scene = |id: &str, layer: Layer, manual: bool| Scene { id: id.into(), layer, manual, ..Default::default() };
-        let scenes = [scene("a", Layer::Scene, false), scene("t", Layer::Top, false), scene("b", Layer::Scene, false), scene("m", Layer::Scene, true), scene("c", Layer::Scene, false)];
+        let scenes = [scene("a", Layer::Scene, false), scene("t", Layer::Top, false), scene("b", Layer::Scene, false), scene("m", Layer::Scene, true), scene("c", Layer::Scene, false)].map(Arc::new);
         assert_eq!(next_turn(&scenes, Some("a"), None).as_deref(), Some("b"), "past the layer");
         assert_eq!(next_turn(&scenes, Some("c"), None).as_deref(), Some("a"), "past the one left out, round to the first");
         assert_eq!(next_turn(&scenes, Some("m"), None).as_deref(), Some("a"), "from a scene out of the turns: the first");
@@ -3804,7 +3805,7 @@ mod pilot_tests {
             assert!(next != "b" && ["a", "c"].contains(&next.as_str()), "{r}: {next}");
         }
         assert_eq!(next_turn(&scenes[..2], Some("a"), None), None, "one scene and a layer: nothing to turn to");
-        let quiet = [scene("a", Layer::Scene, false), Scene { silence: true, ..scene("q", Layer::Scene, false) }, scene("b", Layer::Scene, false)];
+        let quiet = [scene("a", Layer::Scene, false), Scene { silence: true, ..scene("q", Layer::Scene, false) }, scene("b", Layer::Scene, false)].map(Arc::new);
         assert_eq!(next_turn(&quiet, Some("a"), None).as_deref(), Some("b"), "the silence scene takes no turn");
     }
 
