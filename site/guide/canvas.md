@@ -38,6 +38,8 @@ The groups in the node menu:
 
 Each node's line in the menu says what it does, and the inspector shows its values once it's selected. Generators, effects and composites make pictures; signals and logic make numbers, which move values (see [Signals and jacks](./signals)).
 
+**Time Machine** shows its input as it was a moment ago: up to 119 frames back, two seconds at 60 fps. Wire a Gradient into its map for a slit-scan: each row or column comes from its own moment, the dark parts now, the bright ones further back. Any picture works as the map, a shape or a noise too. It keeps those frames at a quarter size, about 124 MB of video memory at 1080p, so what it shows from the past is a little softer than the input.
+
 ### Adding one
 
 - <kbd>Tab</kbd> opens the node menu. Type to search, <kbd>↑</kbd> <kbd>↓</kbd> to choose, <kbd>Ctrl</kbd> <kbd>Tab</kbd> to move between groups, <kbd>Enter</kbd> to add, <kbd>Esc</kbd> to close. A search dims the groups it leaves empty.

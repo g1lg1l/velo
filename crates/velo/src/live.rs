@@ -504,13 +504,14 @@ impl Live {
         let (live, fading) = (status.live.load(Relaxed), status.fading.load(Relaxed));
         let in_use: Vec<u64> = [live, fading, status.armed().map_or(0, |a| a.0), self.launched, self.edit, self.peek.as_ref().map_or(0, |p| p.key)].into_iter().chain(self.layers.iter().map(|l| l.0)).collect();
         // what a graph's pictures take: a texture of the canvas each node, two for feedback, a
-        // history's frames at a quarter of one each, and two pictures a buffer at its scale (in quarters)
+        // history's frames at their scale, and two pictures a buffer at its scale (in quarters)
         let texture = u64::from(size[0]) * u64::from(size[1]) * 8;
         let quarters = |s: &velo_engine::ShaderNode| {
             let buffers: u64 = s.buffers.iter().map(|b| (8.0 * b.scale * b.scale).ceil() as u64).sum();
             // a mesh's samples (a texture's worth each) and its depth (half a texture's a sample); its triangles aren't counted
             let mesh = if s.mesh { u64::from(velo_engine::gpu::MSAA) * 6 } else { 0 };
-            4 * (1 + u64::from(s.feedback)) + if s.history { u64::from(velo_engine::gpu::HISTORY) } else { 0 } + buffers + mesh
+            let history = if s.history { (4 * u64::from(velo_engine::gpu::HISTORY)).div_ceil(u64::from(velo_engine::gpu::HISTORY_SCALE.pow(2))) } else { 0 };
+            4 * (1 + u64::from(s.feedback)) + history + buffers + mesh
         };
         // and a layer on top showing the program, one picture of what plays under it
         let bytes = |s: &Slot| (s.installed.iter().map(|(_, shader)| quarters(shader)).sum::<u64>() + 4 * u64::from(s.under)) * texture / 4;

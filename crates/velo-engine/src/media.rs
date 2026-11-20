@@ -596,7 +596,7 @@ impl Playing {
     }
 
     /// The frame on the texture.
-    #[cfg(test)]
+    #[cfg(all(test, any(target_os = "macos", windows)))]
     pub fn shown(&self) -> usize {
         self.shown
     }

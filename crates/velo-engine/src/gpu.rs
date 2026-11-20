@@ -13,10 +13,14 @@ use crate::shader::{GLOBAL_FLOATS, ShaderError, ShaderNode};
 /// Every node renders in half floats: feedback trails and glow add up past 1 without banding.
 pub const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
-/// The frames a node with a history keeps, at half the canvas each way: a second at 30 fps, 133 MB
-/// at 1080p. ponytail: fixed; a length of its own (rebuilt when it changes) if more is wanted.
-pub const HISTORY: u32 = 32;
-/// Draws a picture into a history's frame, halving it.
+/// The frames a node with a history keeps, at a quarter of the canvas each way ([`HISTORY_SCALE`]):
+/// two seconds at 60 fps in 124 MB at 1080p (498 MB at 4K), where whole frames would take 2 GB.
+/// shortcut: one length and size for every node; a choice of its own (rebuilt when it changes) if
+/// a show needs sharper or longer.
+pub const HISTORY: u32 = 120;
+/// How many times smaller than the canvas each way a history's frames are.
+pub const HISTORY_SCALE: u32 = 4;
+/// Draws a picture into a history's frame, shrinking it.
 const RECORD: &str = r#"/*{ "name": "Record", "category": "effect", "inputs": [{ "id": "src" }], "amount": "none" }*/
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     return textureSample(src, smp, uv);
@@ -312,7 +316,7 @@ impl Runner {
             let past = record.as_ref().filter(|_| program.node.history).map(|record| {
                 let ring = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("history"),
-                    size: wgpu::Extent3d { width: (size[0] / 2).max(1), height: (size[1] / 2).max(1), depth_or_array_layers: HISTORY },
+                    size: wgpu::Extent3d { width: (size[0] / HISTORY_SCALE).max(1), height: (size[1] / HISTORY_SCALE).max(1), depth_or_array_layers: HISTORY },
                     mip_level_count: 1,
                     sample_count: 1,
                     dimension: wgpu::TextureDimension::D2,
@@ -2723,7 +2727,28 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f { return vec4f(g.time, 0.0, 0.0, 1.
         assert!((got - 0.6).abs() < 0.01, "{got}");
         assert!((frames(&mut runner, 2.5, 10, 11) - 0.75).abs() < 0.01, "frame 10 (1.0), 2.5 back: between 0.8 and 0.7");
         assert!((frames(&mut runner, 0.0, 11, 12) - 1.1).abs() < 0.01, "none back: as it is");
-        // further back than it has kept: the ring wraps over what came last, never past it
-        assert!((frames(&mut runner, 31.0, 12, 50) - (4.9 - 3.1)).abs() < 0.01);
+        // as far back as it keeps (two seconds at 60 fps), and further: its oldest, never past it
+        assert_eq!(HISTORY, 120);
+        assert!((frames(&mut runner, 119.0, 12, 200) - (19.9 - 11.9)).abs() < 0.01);
+        assert!((frames(&mut runner, 500.0, 200, 201) - (20.0 - 11.9)).abs() < 0.01);
+        // a slit-scan: a ramp from dark at the left to bright at the right as its map, each column further back
+        let ramp = ShaderNode::parse(
+            r#"/*{ "name": "Ramp" }*/
+fn main_image(uv: vec2f, px: vec2f) -> vec4f { return vec4f(uv.x, uv.x, uv.x, 1.0); }"#,
+        )
+        .unwrap();
+        let programs = [programs[0].clone(), programs[1].clone(), Program::new(&device, ramp).unwrap()];
+        let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 2, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![Some(0), Some(1)] }];
+        let mut runner = Runner::new(&device, &programs, &nodes, &[], [64, 36], &wave_texture(&device)).unwrap();
+        runner.set_params(&queue, &programs, 2, &programs[1].node.values(|p| (p == "frames").then_some([10.0, 0.0, 0.0, 0.0])));
+        for frame in 0..20 {
+            let mut encoder = device.create_command_encoder(&Default::default());
+            runner.render(&queue, &mut encoder, &programs, &[frame as f32 / 10.0, 1.0 / 60.0, frame as f32, 16.0 / 9.0]);
+            queue.submit([encoder.finish()]);
+        }
+        let row = read(&device, &queue, &runner, 2);
+        let at = |x: usize| half(row[(18 * 64 + x) * 4]);
+        // frame 19 (1.9): the left column 0.08 frames back, the right one 9.92
+        assert!((at(0) - (1.9 - 0.0078)).abs() < 0.01 && (at(63) - (1.9 - 0.992)).abs() < 0.01, "{} {}", at(0), at(63));
     }
 }
