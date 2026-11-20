@@ -2679,6 +2679,10 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
                 for f in 0..12 {
                     let mut encoder = device.create_command_encoder(&Default::default());
                     runner.render_timed(&queue, &mut encoder, &programs, &globals(f as f32 / 30.0, false), Some(&set), None);
+                    queue.submit([encoder.finish()]);
+                    // resolved once the GPU is done with the frame, as the live timing does
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    let mut encoder = device.create_command_encoder(&Default::default());
                     encoder.resolve_query_set(&set, 0..6, &resolve, 0);
                     encoder.copy_buffer_to_buffer(&resolve, 0, &back, 0, 48);
                     queue.submit([encoder.finish()]);
@@ -2686,7 +2690,8 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
                     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                     let ticks: Vec<u64> = back.slice(..).get_mapped_range().unwrap().as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect();
                     back.unmap();
-                    best = best.min(ticks[5].saturating_sub(ticks[4]) as f32 * queue.get_timestamp_period() / 1e6);
+                    let spans: Vec<(u64, u64)> = ticks.as_chunks::<2>().0.iter().map(|t| (t[0], t[1])).collect();
+                    best = best.min(crate::runtime::costs(&spans, u64::MAX)[2] as f32 * queue.get_timestamp_period() / 1e6);
                 }
                 best
             } else {

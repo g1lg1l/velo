@@ -1858,24 +1858,26 @@ mod tests {
                 let mut encoder = device.create_command_encoder(&Default::default());
                 let globals = [f as f32 / 60.0, 1.0 / 60.0, f as f32, size[0] as f32 / size[1] as f32, 120.0, 0.0, 0.0];
                 g.runner.render_timed(queue, &mut encoder, &g.programs, &globals, timed.then_some(&set), awake.as_deref());
-                if timed {
-                    encoder.resolve_query_set(&set, 0..n as u32, &resolve, 0);
-                    encoder.copy_buffer_to_buffer(&resolve, 0, &back, 0, n * 8);
-                }
                 queue.submit([encoder.finish()]);
                 if timed {
+                    // resolved once the GPU is done with the frame, as the live timing does
+                    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                    let mut encoder = device.create_command_encoder(&Default::default());
+                    encoder.resolve_query_set(&set, 0..n as u32, &resolve, 0);
+                    encoder.copy_buffer_to_buffer(&resolve, 0, &back, 0, n * 8);
+                    queue.submit([encoder.finish()]);
                     back.map_async(wgpu::MapMode::Read, .., |r| r.expect("map"));
                     device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
                     let ticks: Vec<u64> = back.slice(..).get_mapped_range().unwrap().as_chunks::<8>().0.iter().map(|b| u64::from_le_bytes(*b)).collect();
                     back.unmap();
                     // a GPU that runs passes side by side (Apple's) gives spans that overlap:
-                    // scaled to the time it was busy, as the live timing does
+                    // each node's share of the time it was busy, as the live timing does
                     let period = queue.get_timestamp_period();
                     let spans: Vec<(u64, u64)> = (0..best.len()).map(|i| (ticks[2 * i], ticks[2 * i + 1])).collect();
-                    let scale = velo_engine::runtime::overlap(&spans, (1e8 / period.max(1e-6)) as u64);
+                    let costs = velo_engine::runtime::costs(&spans, (1e8 / period.max(1e-6)) as u64);
                     for (i, b) in best.iter_mut().enumerate() {
                         let asleep = awake.as_ref().is_some_and(|a| !a[i]);
-                        *b = if asleep { 0.0 } else { b.min(spans[i].1.saturating_sub(spans[i].0) as f32 * period / 1e6 * scale) };
+                        *b = if asleep { 0.0 } else { b.min(costs[i] as f32 * period / 1e6) };
                     }
                 }
             }

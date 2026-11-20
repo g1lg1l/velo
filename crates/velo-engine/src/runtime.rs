@@ -547,6 +547,9 @@ impl Drop for Engine {
 const FREE: u8 = 0;
 const PENDING: u8 = 1;
 const MAPPED: u8 = 2;
+// a timed frame submitted, and the GPU done with it
+const STAMPED: u8 = 3;
+const DONE: u8 = 4;
 
 /// A small picture of the output for the UI: drawn small, copied to mappable buffers; the UI
 /// copies a mapped one out and frees it.
@@ -712,7 +715,9 @@ fn send_shared(taker: Taker, mut preview: Arc<Preview>, swaps: &mpsc::Receiver<A
 const TIMING_EVERY: Duration = Duration::from_millis(250);
 
 /// The edited graph's nodes timed on the GPU: a timestamp before and after each one's pass,
-/// resolved and read back like the preview, published in ms.
+/// resolved once the GPU is done with the frame that took them and read back like the preview,
+/// published in ms. Resolved any sooner, in the same command buffer or the next, Metal doesn't
+/// wait for the last passes' end stamps and reads what the frame before left there.
 struct Timing {
     key: u64,
     nodes: usize,
@@ -734,9 +739,21 @@ impl Timing {
         Self { key, nodes, set, resolve, readback, state: Arc::new(AtomicU8::new(FREE)) }
     }
 
-    fn copy(&self, encoder: &mut wgpu::CommandEncoder) {
+    /// After the timed frame's submit: its stamps can be resolved once the GPU is done with it.
+    fn stamped(&self, queue: &wgpu::Queue) {
+        self.state.store(STAMPED, Relaxed);
+        let state = self.state.clone();
+        queue.on_submitted_work_done(move || state.store(DONE, Relaxed));
+    }
+
+    /// The stamps resolved and copied out, if the GPU is done with the frame that took them.
+    fn copy(&self, encoder: &mut wgpu::CommandEncoder) -> bool {
+        if self.state.load(Relaxed) != DONE {
+            return false;
+        }
         encoder.resolve_query_set(&self.set, 0..2 * self.nodes as u32, &self.resolve, 0);
         encoder.copy_buffer_to_buffer(&self.resolve, 0, &self.readback, 0, self.resolve.size());
+        true
     }
 
     /// After the submit: the timestamps read back, each node's cost published (`period`: ns a tick).
@@ -748,10 +765,8 @@ impl Timing {
                 if let Ok(view) = buffer.slice(..).get_mapped_range() {
                     let at = |k: usize| view.get(k * 8..k * 8 + 8).and_then(|b| <[u8; 8]>::try_from(b).ok()).map_or(0, u64::from_le_bytes);
                     let spans: Vec<(u64, u64)> = (0..nodes).map(|n| (at(2 * n), at(2 * n + 1))).collect();
-                    let scale = overlap(&spans, (1e8 / period.max(1e-6)) as u64);
-                    for (slot, (from, to)) in status.costs.0.iter().zip(&spans) {
-                        let ms = to.saturating_sub(*from) as f32 * period / 1e6 * scale;
-                        slot.store(ms.to_bits(), Relaxed);
+                    for (slot, ticks) in status.costs.0.iter().zip(costs(&spans, (1e8 / period.max(1e-6)) as u64)) {
+                        slot.store((ticks as f32 * period / 1e6).to_bits(), Relaxed);
                     }
                 }
                 buffer.unmap();
@@ -762,22 +777,23 @@ impl Timing {
     }
 }
 
-/// What to scale the nodes' spans by so they add up to the time the GPU was busy with them: it
-/// runs passes side by side (Apple's do), so the spans overlap and add up to several frames.
-/// `spans` are each node's first tick and last; one that ended more than `stale` ticks before
-/// the latest wasn't drawn this frame (asleep) and isn't counted. 1 when nothing overlaps.
-pub fn overlap(spans: &[(u64, u64)], stale: u64) -> f32 {
+/// Each node's share of the time the GPU was busy with them, in ticks. `spans` are each node's
+/// first tick and last. A GPU that runs passes side by side gives spans that overlap, Apple's
+/// all the more as it stamps a pass's start when its vertices start, long before its pixels: so
+/// each is given the time from its end back to the end before it (or its start, if later), the
+/// spans laid end to end, adding up to the time the GPU was busy. One pass after the other,
+/// that's each one's span. One that ended more than `stale` ticks before the latest wasn't drawn
+/// this frame (asleep), and one never stamped is all 0: both cost nothing.
+pub fn costs(spans: &[(u64, u64)], stale: u64) -> Vec<u64> {
     let latest = spans.iter().map(|s| s.1).max().unwrap_or(0);
-    let mut fresh: Vec<(u64, u64)> = spans.iter().copied().filter(|&(from, to)| to > from && to + stale >= latest).collect();
-    fresh.sort_unstable();
-    let sum: u64 = fresh.iter().map(|(from, to)| to - from).sum();
-    // the busy time: the spans put end to end where they overlap
-    let (mut busy, mut end) = (0u64, 0u64);
-    for (from, to) in fresh {
-        busy += to.saturating_sub(from.max(end));
-        end = end.max(to);
+    let mut fresh: Vec<usize> = (0..spans.len()).filter(|&n| spans[n].1 > spans[n].0 && spans[n].1.saturating_add(stale) >= latest).collect();
+    fresh.sort_unstable_by_key(|&n| spans[n].1);
+    let (mut costs, mut end) = (vec![0; spans.len()], 0);
+    for n in fresh {
+        costs[n] = spans[n].1 - spans[n].0.max(end);
+        end = spans[n].1;
     }
-    if sum > busy && busy > 0 { busy as f32 / sum as f32 } else { 1.0 }
+    costs
 }
 
 struct Output {
@@ -1247,10 +1263,11 @@ impl Thread {
                     }
                 }
             }
-            if time_now && let Some(x) = &timing {
-                x.copy(&mut encoder);
+            if time_now {
                 last_timing = now;
             }
+            // a timed frame's stamps, once the GPU is done with it
+            let resolved = timing.as_ref().is_some_and(|x| x.copy(&mut encoder));
             let picture = |key: u64| graphs.iter().find(|g| g.0 == key).and_then(|(_, g)| g.output.map(|n| g.runner.output(n)));
             // the program: the live graph, or the crossfade into it (black for a side with
             // nothing to show); the preview shows it while the live graph is the edited one
@@ -1437,6 +1454,8 @@ impl Thread {
                 }
             }
             if time_now && let Some(x) = &timing {
+                x.stamped(&self.queue);
+            } else if resolved && let Some(x) = &timing {
                 x.read(self.status.clone(), period);
             }
             if let Some(t) = target {
@@ -2003,14 +2022,18 @@ mod tests {
     use crate::{BUILTINS, NodeSpec, ShaderNode};
 
     #[test]
-    fn overlapping_node_spans_add_up_to_the_busy_time() {
-        // apart: as measured
-        assert_eq!(overlap(&[(0, 10), (10, 30)], 1000), 1.0);
-        // three side by side over the same 10 ticks, and one alone for 10: 40 ticks of spans, 20 busy
-        assert_eq!(overlap(&[(100, 110), (100, 110), (100, 110), (110, 120)], 1000), 0.5);
-        // one asleep, its ticks from long ago, isn't counted
-        assert_eq!(overlap(&[(5000, 5010), (5000, 5010), (0, 900)], 1000), 0.5);
-        assert_eq!(overlap(&[], 1000), 1.0);
+    fn node_costs_add_up_to_the_busy_time() {
+        // one after the other: each its span
+        assert_eq!(costs(&[(0, 10), (10, 30)], 1000), [10, 20]);
+        // all stamped at once, as their vertices start, then their pixels one after the other: a
+        // cheap one ending last is given what it adds, not the wait behind the dear ones
+        assert_eq!(costs(&[(0, 100), (5, 150), (10, 160)], 1000), [100, 50, 10]);
+        // three side by side over the same 10 ticks, and one alone for 10: 20 busy
+        assert_eq!(costs(&[(100, 110), (100, 110), (100, 110), (110, 120)], 1000).iter().sum::<u64>(), 20);
+        // one asleep, its ticks from long ago, one never stamped, and one ending before it
+        // started: nothing
+        assert_eq!(costs(&[(5000, 5010), (0, 900), (0, 0), (5005, 4000)], 1000), [10, 0, 0, 0]);
+        assert!(costs(&[], 1000).is_empty());
     }
 
     #[test]
@@ -2219,6 +2242,52 @@ mod tests {
         assert!(near(1.0).is_some_and(|v| (v - 1.0).abs() < 1e-3), "a morph of half a beat at 140 BPM gets there");
         assert_eq!(engine.status.watch(0), None, "the generator isn't mapped: nothing published for it");
         assert_eq!(engine.status.clock()[0], 140.0);
+    }
+
+    #[test]
+    fn the_edited_graphs_nodes_are_timed_once_the_gpu_is_done_with_them() {
+        let _gpu = crate::gpu_lock();
+        let Ok(engine) = Engine::start(None) else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let device = engine.device();
+        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            eprintln!("no timestamps on this GPU: skipped");
+            return;
+        }
+        // two dear pictures and a cheap one side by side, blended: the GPU draws them at once
+        let program = |code: &str| Program::new(device, ShaderNode::parse(code).unwrap()).unwrap();
+        let builtin = |id: &str| BUILTINS.iter().find(|b| b.0 == id).unwrap().1;
+        let beams = crate::PRESETS.iter().find(|p| p.0 == "v_beams").unwrap().1;
+        let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![] }, NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 2, inputs: vec![Some(0), Some(1), Some(2)] }];
+        let graph = |output| {
+            let programs = vec![program(beams), program(builtin("gradient")), program(builtin("blend"))];
+            let runner = Runner::new(device, &programs, &nodes, &[], [1920, 1080], engine.wave_texture()).unwrap();
+            for (n, spec) in nodes.iter().enumerate() {
+                runner.set_params(engine.queue(), &programs, n, &programs[spec.program].node.values(|_| None));
+            }
+            let mods = nodes.iter().map(|n| Modulator::new(&programs[n.program].node, &[], Vec::new())).collect();
+            Box::new(Graph { ids: Vec::new(), programs, runner, output, mods, macros: Macros::default(), signals: Vec::new(), probes: Vec::new(), media: Vec::new(), lists: Vec::new(), lines: Vec::new(), lazy: Vec::new(), under: None })
+        };
+        // resolved in the frame that took them, Metal gave the blend's end as the frame before
+        // left it, before its start (it cost nothing); and stamped as their vertices start, all
+        // at once, the spans scaled down alike made the blend cost as much as a V Beams
+        for (key, output) in [(1, None), (2, Some(3))] {
+            engine.send(Command::Install { key, graph: graph(output) });
+            engine.send(Command::Edit(key));
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while engine.status.costed.load(Relaxed) != key && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(engine.status.costed.load(Relaxed), key, "the edited graph timed within 5 s");
+            for _ in 0..3 {
+                let ms: Vec<f32> = engine.status.costs.0[..4].iter().map(|c| f32::from_bits(c.load(Relaxed))).collect();
+                assert!(ms.iter().all(|ms| *ms > 0.0 && *ms < 100.0), "each node costs something: {ms:?} ms");
+                assert!(ms[1].max(ms[3]) < ms[0].min(ms[2]), "the gradient and the blend cost less than a V Beams: {ms:?} ms");
+                std::thread::sleep(TIMING_EVERY);
+            }
+        }
     }
 
     /// A graph of one Gradient node in one flat color (display values).

@@ -23,6 +23,11 @@ Release build, Apple M5 Pro, the two real shows (camera nodes removed), canvas 1
 - The per-node GPU times look wrong on Apple GPUs: nodes in one chain report nearly the same value
   (1.72 / 1.72 / 1.72, 3.32 / 3.27 / 3.26). Likely the passes overlap and each timestamp pair spans
   the chain, so the per-node split (and the "GPU ms per node" log) can't be trusted there.
+  Fixed since: Metal stamps a pass's start when its vertices start, so every span reached back to
+  the frame's start, and the spans were scaled down alike; and a resolve in the timed frame (or the
+  next one, unwaited) ran before the last passes' end stamps, reading the frame before's. The
+  stamps are now resolved once the GPU is done with the frame, and each node is given the time
+  from its end back to the end before it (`runtime::costs`).
 - A 2-node scene still runs ~8 movie and 5 media-list reader threads (the other layers are on), and
   CoreMedia threads come and go: a movie that jumps on every kick opens a new `AVURLAsset` and reader
   per jump (`velo-engine/src/video.rs:150`).
