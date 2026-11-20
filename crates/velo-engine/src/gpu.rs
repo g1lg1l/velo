@@ -1293,6 +1293,61 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
         }
     }
 
+    /// A system-decoded movie looping at 60 Hz in real time: each tick, the frame on the texture
+    /// against the one due, and how long the reader took to have each frame asked for; round
+    /// the seams, printed. `VELO_SEAM_MOVIE=<a 1080p H.264> cargo test -p velo-engine --release
+    /// a_movie_loops -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    #[cfg(any(target_os = "macos", windows))]
+    fn a_movie_loops_without_a_seam() {
+        use std::time::{Duration, Instant};
+        let Some((device, queue)) = gpu() else { return };
+        let path = std::env::var("VELO_SEAM_MOVIE").map_or_else(|_| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/h264.mp4"), std::path::PathBuf::from);
+        let media = std::sync::Arc::new(crate::media::Media::load(&path).unwrap());
+        let mut playing = crate::media::Playing::new(&device, &queue, 0, None, media.clone());
+        let dt = 1.0f32 / 60.0;
+        let (start, mut at) = (Instant::now(), 0.0f64);
+        // each tick: the frame due, the one shown, how long the frame asked for took (none: not in the tick)
+        let mut ticks: Vec<(usize, usize, Option<Duration>)> = Vec::new();
+        for k in 1..=600u32 {
+            std::thread::sleep((start + Duration::from_secs_f64(f64::from(k) / 60.0)).saturating_duration_since(Instant::now()));
+            playing.step(&queue, dt, crate::media::Transport::default());
+            let _ = device.poll(wgpu::PollType::Poll);
+            at += f64::from(dt);
+            let (due, next) = (media.frame_at(at), media.frame_at(at + f64::from(dt)));
+            let asked = Instant::now();
+            let mut took = None;
+            while next != due && asked.elapsed() < Duration::from_secs_f64(1.0 / 60.0) {
+                if playing.ready() {
+                    took = Some(asked.elapsed());
+                    break;
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            ticks.push((due, playing.shown(), took.or((next == due).then_some(Duration::ZERO))));
+        }
+        let ms = |d: Option<Duration>| d.map_or("late".into(), |d| format!("{:.1}", d.as_secs_f64() * 1e3));
+        let seams: Vec<usize> = (1..ticks.len()).filter(|&k| ticks[k].0 < ticks[k - 1].0).collect();
+        for &k in &seams {
+            let around: Vec<String> = (k.saturating_sub(3)..(k + 3).min(ticks.len())).map(|i| format!("{}/{} {}", ticks[i].1, ticks[i].0, ms(ticks[i].2))).collect();
+            println!("seam at tick {k}: shown/due, ms to read the next: {}", around.join(" · "));
+        }
+        let late: Vec<usize> = (0..ticks.len()).filter(|&k| ticks[k].0 != ticks[k].1).collect();
+        let near = |k: usize| seams.iter().any(|&s| k + 2 >= s && k <= s + 2);
+        let worst = |seam: bool| ticks.iter().enumerate().filter(|(k, t)| near(*k) == seam && t.2 != Some(Duration::ZERO)).map(|(_, t)| t.2.map_or(f64::INFINITY, |d| d.as_secs_f64() * 1e3)).fold(0.0, f64::max);
+        println!(
+            "{} ticks, {} seams; ticks showing another frame than due: {} ({} round a seam) {late:?}; slowest read round a seam {:.1} ms, elsewhere {:.1} ms",
+            ticks.len(),
+            seams.len(),
+            late.len(),
+            late.iter().filter(|&&k| near(k)).count(),
+            worst(true),
+            worst(false)
+        );
+        assert!(late.iter().all(|&k| !near(k)), "a frame late round a seam: ticks {late:?}");
+    }
+
     #[test]
     fn layer_stacks_stack_and_masks_keep_or_cut() {
         let _gpu = crate::gpu_lock();

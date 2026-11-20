@@ -16,7 +16,7 @@ use windows::Win32::System::Variant::VT_I8;
 use windows::core::{Error, GUID, HSTRING, Interface, PWSTR};
 
 /// A movie Media Foundation plays: where it is, its frame rate, its picture's size.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Clip {
     pub path: PathBuf,
     pub fps: f64,
@@ -153,6 +153,11 @@ pub struct Decoder {
     offset: f64,
     ended: bool,
 }
+
+// SAFETY: every thread that reads joins COM's multithreaded apartment first ([`start`]), where a
+// source reader may move between threads: a movie's next pass is opened on a thread of its own,
+// then read only by the movie's reader (media.rs)
+unsafe impl Send for Decoder {}
 
 impl Decoder {
     /// Reading from `start` seconds on.

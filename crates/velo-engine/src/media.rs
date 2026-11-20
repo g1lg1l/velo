@@ -443,6 +443,9 @@ struct Reader {
     ready: Mutex<(usize, usize, bool)>,
     stop: AtomicBool,
     uploads: Uploads,
+    /// Playing forward, the frame the loop starts over at and its last (else `usize::MAX`): a
+    /// system-decoded movie's next pass is opened there ahead of time ([`read_video`]).
+    seam: [AtomicUsize; 2],
 }
 
 /// A buffer an upload buffer is: mapped and free for the reader to write a frame into, holding
@@ -573,7 +576,7 @@ impl Playing {
         }
         if playing.media.count() > 1 {
             let uploads = Uploads::new(device, playing.rows());
-            let (shared, media) = (Arc::new(Reader { want: AtomicUsize::new(0), ready: Mutex::new((0, 0, false)), stop: AtomicBool::new(false), uploads }), playing.media.clone());
+            let (shared, media) = (Arc::new(Reader { want: AtomicUsize::new(0), ready: Mutex::new((0, 0, false)), stop: AtomicBool::new(false), uploads, seam: [usize::MAX, usize::MAX].map(AtomicUsize::new) }), playing.media.clone());
             let thread = {
                 let shared = shared.clone();
                 std::thread::Builder::new().name("velo movie".into()).spawn(move || read(&media, &shared))
@@ -590,6 +593,12 @@ impl Playing {
     #[cfg(test)]
     pub fn ready(&self) -> bool {
         self.reader.as_ref().is_some_and(|(reader, _)| reader.ready.lock().is_ok_and(|r| r.2))
+    }
+
+    /// The frame on the texture.
+    #[cfg(test)]
+    pub fn shown(&self) -> usize {
+        self.shown
     }
 
     pub fn step(&mut self, queue: &wgpu::Queue, dt: f32, t: Transport) {
@@ -618,6 +627,11 @@ impl Playing {
         match &self.reader {
             Some((reader, thread)) => {
                 let next = due(self.at + step);
+                // a hair before the loop's start is its end
+                let seam = if t.direction == 0 { [media.frame_in(0.0, from, to), media.frame_in(-1e-9, from, to)] } else { [usize::MAX; 2] };
+                for (at, frame) in reader.seam.iter().zip(seam) {
+                    at.store(frame, Relaxed);
+                }
                 if reader.want.swap(next, Relaxed) != next {
                     thread.unpark();
                 }
@@ -626,6 +640,7 @@ impl Playing {
                     && ready.2
                 {
                     ready.2 = false;
+                    self.shown = ready.0;
                     reader.uploads.copy(&self.device, queue, &self.texture, ready.1);
                 }
             }
@@ -743,14 +758,22 @@ fn read(media: &Media, shared: &Reader) {
 }
 
 /// A system-decoded movie's reader: frames come in order, so the one wanted is read up to;
-/// one behind what's been read (the loop starting over) or far ahead starts reading there.
+/// one behind what's been read or far ahead starts reading there. The loop starting over
+/// doesn't wait for that: while a pass plays its last second, a second reader is opened at the
+/// loop's start on a thread of its own (an HEVC reader takes a few hundred ms to give its first
+/// frame) and its first frame read, and the seam switches to it.
 #[cfg(any(target_os = "macos", windows))]
 fn read_video(clip: &Clip, shared: &Reader) {
     use crate::video::Decoder;
+    type Ahead = (Option<(Decoder, usize)>, Vec<u8>);
     let Ok(mut decoder) = Decoder::new(clip, 0.0) else { return };
     // frame 0 is up already (Playing::new)
     let (mut frame, mut next, mut done) = (Vec::new(), 0usize, 0usize);
     let far = (clip.fps.ceil() as usize * 2).max(2);
+    // the next pass: its reader and the index of the frame it read first (in `primed`), opened
+    // on a thread of its own (`primed` lent to it meanwhile) at the loop's start `ahead_for`
+    let (mut ahead, mut primed): Ahead = (None, Vec::new());
+    let (mut opening, mut ahead_for): (Option<std::thread::JoinHandle<Ahead>>, _) = (None, usize::MAX);
     while !shared.stop.load(Relaxed) {
         let want = shared.want.load(Relaxed);
         if want == done {
@@ -758,22 +781,38 @@ fn read_video(clip: &Clip, shared: &Reader) {
             continue;
         }
         done = want;
+        // the reader a seam leaves, let go once the frame is up: tearing one down takes time too
+        let mut spent = None;
+        let mut got = false;
         if want < next || want > next + far {
-            match Decoder::new(clip, want as f64 / clip.fps) {
-                Ok(d) => (decoder, next) = (d, want),
-                Err(_) => continue,
+            let near = |at: usize| at <= want && want <= at.saturating_add(far);
+            // the seam the next pass was opened for: the pass after opens its own
+            if near(ahead_for) {
+                ahead_for = usize::MAX;
+                // still opening, it is nearer its first frame than a new reader would be
+                if let Some(Ok(opened)) = opening.take().map(std::thread::JoinHandle::join) {
+                    (ahead, primed) = opened;
+                }
+            }
+            match ahead.take_if(|a| near(a.1)) {
+                Some((d, at)) => {
+                    (spent, next) = (Some(std::mem::replace(&mut decoder, d)), at + 1);
+                    // its first frame is the one wanted: up at once
+                    if at == want {
+                        std::mem::swap(&mut frame, &mut primed);
+                        got = true;
+                    }
+                }
+                None => match Decoder::new(clip, want as f64 / clip.fps) {
+                    Ok(d) => (decoder, next) = (d, want),
+                    Err(_) => continue,
+                },
             }
         }
-        // ponytail: a loop starting over opens a new reader (a few ms); two readers
-        // alternating would hide it
-        let mut got = false;
-        while let Some(t) = decoder.next(&mut frame) {
+        while !got && let Some(t) = decoder.next(&mut frame) {
             let index = (t * clip.fps).round() as usize;
             next = index + 1;
-            if index >= want {
-                got = true;
-                break;
-            }
+            got = index >= want;
         }
         if !got {
             continue;
@@ -784,6 +823,32 @@ fn read_video(clip: &Clip, shared: &Reader) {
             shared.uploads.release(ready.1);
         }
         *ready = (want, i, true);
+        drop(ready);
+        drop(spent);
+        // within a second of the loop's last frame, the next pass opened at its start
+        if opening.as_ref().is_some_and(std::thread::JoinHandle::is_finished)
+            && let Some(Ok(opened)) = opening.take().map(std::thread::JoinHandle::join)
+        {
+            (ahead, primed) = opened;
+        }
+        let [first, last] = [0, 1].map(|i| shared.seam[i].load(Relaxed));
+        if ahead_for != first {
+            // opened for loop points since moved (or none)
+            ahead = None;
+            if opening.is_some() || first >= next || next + clip.fps.ceil() as usize <= last {
+                continue;
+            }
+            ahead_for = first;
+            let (clip, mut primed) = (clip.clone(), std::mem::take(&mut primed));
+            let open = move || {
+                let d = Decoder::new(&clip, first as f64 / clip.fps).ok().and_then(|mut d| {
+                    let t = d.next(&mut primed)?;
+                    Some((d, (t * clip.fps).round() as usize))
+                });
+                (d, primed)
+            };
+            opening = std::thread::Builder::new().name("velo movie ahead".into()).spawn(open).ok();
+        }
     }
 }
 

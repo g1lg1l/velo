@@ -27,7 +27,7 @@ use objc2_foundation::{NSDictionary, NSNumber, NSString, NSURL};
 
 /// A movie AVFoundation plays: where it is, its frame rate, and how many quarter turns clockwise
 /// its frames are stored short of upright ([`turns`]).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Clip {
     pub path: PathBuf,
     pub fps: f64,
@@ -142,6 +142,10 @@ pub struct Decoder {
     output: Retained<AVAssetReaderTrackOutput>,
     turns: u8,
 }
+
+// SAFETY: an asset reader and its output work on any thread, one at a time: a movie's next pass
+// is opened on a thread of its own, then read only by the movie's reader (media.rs)
+unsafe impl Send for Decoder {}
 
 impl Decoder {
     /// Reading from `start` seconds on.
