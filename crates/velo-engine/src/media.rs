@@ -1153,24 +1153,27 @@ pub struct Lines {
     /// the line showing, the one before it, how far through the turn it is.
     params: [usize; 3],
     shows: [usize; 3],
-    /// How many items it has.
-    count: usize,
+    /// Each item's first word and how many ([`crate::text::items`]): told for the lines showing,
+    /// so the shader doesn't count them out of every word for every pixel.
+    items: Vec<[f32; 2]>,
 }
 
 impl Lines {
     /// Engine node `node` running `shader` (textlist.wgsl, none without its parameters), a
-    /// list of `count` items.
-    pub fn new(node: usize, shader: &crate::ShaderNode, count: usize) -> Option<Self> {
+    /// list of these items.
+    pub fn new(node: usize, shader: &crate::ShaderNode, items: Vec<[f32; 2]>) -> Option<Self> {
         let at = |param| crate::modulate::slot(shader, param).map(|s| s.0);
-        Some(Self { node, params: [at("order")?, at("clock")?, at("every")?], shows: [at("_now")?, at("_before")?, at("_turn")?], count })
+        Some(Self { node, params: [at("order")?, at("clock")?, at("every")?], shows: [at("_now")?, at("_before")?, at("_turn")?], items })
     }
 
     /// This frame, at `beats` and `time` (seconds). `value` is the list's parameters' values.
     pub fn step(&self, queue: &wgpu::Queue, runner: &crate::gpu::Runner, value: impl Fn(usize) -> f32, beats: f32, time: f32) {
         let [order, clock, every] = self.params.map(value);
-        let (line, before, k) = line_at(if clock.round() as i32 == 1 { time } else { beats }, self.count, order.round() as i32, every);
-        for (param, told) in self.shows.into_iter().zip([line as f32, before.map_or(-1.0, |b| b as f32), k]) {
-            runner.write_param(queue, self.node, param, [told, 0.0, 0.0, 0.0]);
+        let (line, before, k) = line_at(if clock.round() as i32 == 1 { time } else { beats }, self.items.len(), order.round() as i32, every);
+        // (none before the first turn: no words from word -1)
+        let words = |i: Option<usize>| i.and_then(|i| self.items.get(i)).map_or([-1.0, 0.0], |w| *w);
+        for (param, [x, y]) in self.shows.into_iter().zip([words(Some(line)), words(before), [k, 0.0]]) {
+            runner.write_param(queue, self.node, param, [x, y, 0.0, 0.0]);
         }
     }
 }

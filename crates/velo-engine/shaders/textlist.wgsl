@@ -34,51 +34,24 @@
     { "id": "reveal", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 },
     { "id": "position", "type": "vec2", "default": [0.0, 0.0], "min": -1.0, "max": 1.0 },
     { "id": "rotate", "type": "float", "default": 0.0, "min": -1.0, "max": 1.0 },
-    { "id": "_now", "type": "float", "default": 0.0, "min": 0.0, "max": 255.0 },
-    { "id": "_before", "type": "float", "default": -1.0, "min": -1.0, "max": 255.0 },
+    { "id": "_now", "type": "vec2", "default": [0.0, 0.0], "min": -1.0, "max": 65536.0 },
+    { "id": "_before", "type": "vec2", "default": [-1.0, 0.0], "min": -1.0, "max": 65536.0 },
     { "id": "_turn", "type": "float", "default": 1.0, "min": 0.0, "max": 1.0 }
   ]
 }*/
 
 // Its words are the list's items, a word flagged in its record's last float starting each (an
 // item may run over lines); the drawing is text-draw.wgsl's. type_in: the share of each turn spent
-// typing the item in. Which item shows is Velo's to say, as a Media List's file is: the line
-// (_now), the one before it, fading out (_before, -1 on the first turn), and how far through its
-// turn it is (_turn), from order, clock and every.
+// typing the item in. Which item shows is Velo's to say, as a Media List's file is, and so are its
+// words (velo_engine::text::items: counted once, not here for every pixel): the line's first word
+// and how many (_now), the one before it, fading out (_before, word -1 on the first turn), and how
+// far through its turn it is (_turn), from order, clock and every.
 
-// how many items the list has
-fn entries() -> i32 {
-    var n = 0;
-    for (var i = 0; i < nwords; i++) {
-        if i == 0 || num(words + i * 8 + 7) > 0.5 {
-            n += 1;
-        }
-    }
-    return n;
-}
-
-// item k's words: its first (from all's first record) and how many
-fn entry(k: i32, all: vec2i) -> vec2i {
-    var n = -1;
-    var first = 0;
-    for (var i = 0; i < all.y; i++) {
-        if i == 0 || num(all.x + i * 8 + 7) > 0.5 {
-            n += 1;
-            if n == k {
-                first = i;
-            } else if n == k + 1 {
-                return vec2i(first, i - first);
-            }
-        }
-    }
-    return vec2i(first, all.y - first);
-}
-
-// line k drawn at uv, `typed` of its characters in
-fn show_line(k: i32, all: vec2i, typed: f32, uv: vec2f) -> vec4f {
-    let r = entry(k, all);
-    words = all.x + r.x * 8;
-    nwords = r.y;
+// the words `r` (the first, how many) of all the font's, drawn at uv, `typed` of their characters in
+fn show_line(r: vec2f, all: vec2i, typed: f32, uv: vec2f) -> vec4f {
+    let start = clamp(i32(round(r.x)), 0, all.y);
+    words = all.x + start * 8;
+    nwords = clamp(i32(round(r.y)), 0, all.y - start);
     if nwords == 0 {
         return vec4f(0.0);
     }
@@ -94,18 +67,14 @@ fn show_line(k: i32, all: vec2i, typed: f32, uv: vec2f) -> vec4f {
 fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     setup();
     let all = vec2i(words, nwords);
-    let n = entries();
-    if n == 0 {
-        return vec4f(0.0);
-    }
     // Velo counts the turns and picks each one's line (media.rs, Lines): at random is a deck
     // shuffled anew every round, which can't be dealt here, where every pixel works alone
     let k = _turn;
     let typed = select(1.0, clamp(k / type_in, 0.0, 1.0), type_in > 0.0);
-    let now = show_line(clamp(i32(round(_now)), 0, n - 1), all, typed, uv);
+    let now = show_line(_now, all, typed, uv);
     // the first part of each turn crossfades from the one before (none on the first turn)
-    if fade > 0.0 && k < fade && _before >= 0.0 {
-        return mix(show_line(min(i32(round(_before)), n - 1), all, 1.0, uv), now, smoothstep(0.0, 1.0, k / fade));
+    if fade > 0.0 && k < fade && _before.x >= 0.0 {
+        return mix(show_line(_before, all, 1.0, uv), now, smoothstep(0.0, 1.0, k / fade));
     }
     return now;
 }
