@@ -1653,7 +1653,7 @@ pub static OPERATORS: &[Operator] = &[
     Operator {
         id: "binding.add",
         label: "Bind Control",
-        description: "Make a controller's knob, key or pad do something: a macro, a parameter, launching a scene, a variation, blackout, tap tempo. A key of the computer's keyboard is a control too: {\"Key\": \"4\"} (a letter, a digit, F1 to F12), with Trigger or Toggle. It replaces that control's and that target's old binding.",
+        description: "Make a controller's knob, key or pad do something: a macro, a parameter, launching a scene, a variation, blackout, tap tempo. A key of the computer's keyboard is a control too: {\"Key\": \"4\"} (a letter, a digit, F1 to F12), with Trigger or Toggle; so is an OSC address outside /velo/: {\"Osc\": \"/1/fader1\"}. Momentary holds a macro, a parameter, blackout or freeze at its top end while a note, a CC or an OSC address is held. It replaces that control's and that target's old binding.",
         example: r#"{"control": {"Midi": {"port": null, "channel": 0, "msg": {"Cc": 21}}}, "target": {"Macro": 0}, "behavior": {"Absolute": {"takeover": "Pickup"}}}"#,
         undo: true,
         poll: always,
@@ -1680,6 +1680,19 @@ pub static OPERATORS: &[Operator] = &[
                         return Err("a key presses: its behavior is Trigger or Toggle".into());
                     }
                 }
+                Control::Osc(address) => {
+                    // Velo's own addresses act already
+                    if !address.starts_with('/') || address.starts_with("/velo/") || address.contains(char::is_whitespace) {
+                        return Err(r#"an OSC address starts with / and is outside /velo/ ("/1/fader1")"#.into());
+                    }
+                    if matches!(b.behavior, Behavior::Relative { .. }) {
+                        return Err("an OSC address sends its value: its behavior isn't Relative".into());
+                    }
+                }
+            }
+            let held = matches!(b.control, Control::Midi { msg: MidiMsg::Note(_) | MidiMsg::Cc(_), .. } | Control::Osc(_));
+            if b.behavior == Behavior::Momentary && !(held && matches!(b.target, Target::Macro(_) | Target::Param { .. } | Target::Blackout | Target::Freeze)) {
+                return Err("Momentary holds a macro, a parameter, blackout or freeze, from a note, a CC or an OSC address".into());
             }
             if matches!(b.behavior, Behavior::Relative { step, .. } if !(step > 0.0 && step <= 1.0)) {
                 return Err("an encoder's step is a share of the travel, above 0 and at most 1".into());

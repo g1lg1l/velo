@@ -614,47 +614,41 @@ impl App {
                         kit::hint(ui, t, tr!("Nothing bound yet. Press L, click a control, then move a knob, hit a pad or press a key."));
                     }
                     for (i, (b, name)) in bindings.iter().zip(&names).enumerate() {
-                        // a key has no channel, port or dialect: its row is its name and Remove
+                        // a key or an OSC address has no channel or port
                         let midi = match &b.control {
-                            Control::Midi { port, channel, msg } => Some((port, channel, msg)),
-                            Control::Key(_) => None,
+                            Control::Midi { port, channel, .. } => Some((port, channel)),
+                            _ => None,
                         };
                         // the control and its channel, what it turns on the right; under them what it's bound to
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(midi::control_label(&b.control)).font(Theme::mono(t.text_sm)).color(t.accent));
-                            if let Some((_, channel, _)) = midi {
+                            if let Some((_, channel)) = midi {
                                 ui.label(RichText::new(tr!("ch {}", channel + 1)).small().color(t.fg_muted));
                             }
                             kit::right(ui, |ui| {
                                 if kit::icon_button(ui, t, icons::X, tr!("Remove this binding"), false).clicked() {
                                     remove = Some(i);
                                 }
-                                let Some((port, _, msg)) = midi else { return };
-                                match port {
-                                    Some(p) => {
+                                match midi {
+                                    Some((Some(p), _)) => {
                                         if kit::button(ui, t, None, tr!("Any port"), false).on_hover_text(tr!("Bound to {}: make it answer the same control on any port", p)).clicked() {
                                             any_port = Some(i);
                                         }
                                     }
-                                    None => {
+                                    Some((None, _)) => {
                                         ui.label(RichText::new(tr!("any port")).small().color(t.fg_muted));
                                     }
+                                    None => {}
                                 }
-                                // a CC on a knob or an endless encoder (learn guesses; this settles it)
-                                if matches!(msg, velo_core::MidiMsg::Cc(_)) && matches!(b.target, velo_core::Target::Macro(_) | velo_core::Target::Param { .. }) {
-                                    let now = match b.behavior {
-                                        velo_core::Behavior::Relative { mode, .. } => midi::encoder_name(mode),
-                                        _ => tr!("Knob").to_string(),
-                                    };
-                                    let r = kit::button(ui, t, None, &format!("{now}  {}", icons::CARET_DOWN), false);
+                                // a knob, an endless encoder, a pad that toggles or one held (learn guesses; this settles it)
+                                let choices = midi::behaviors(b);
+                                if choices.len() > 1 {
+                                    let r = kit::button(ui, t, None, &format!("{}  {}", midi::behavior_name(b.behavior), icons::CARET_DOWN), false);
                                     kit::menu(t, &r).show(|ui| {
-                                        let mut items = vec![tr!("Knob").to_string()];
-                                        items.extend(velo_core::RelMode::ALL.iter().map(|m| midi::encoder_name(*m)));
+                                        let items: Vec<String> = choices.iter().map(|c| midi::behavior_name(*c)).collect();
                                         let list: Vec<(&str, &str)> = items.iter().map(|s| ("", s.as_str())).collect();
-                                        match kit::choose(ui, t, &list, None) {
-                                            Some(0) => behave = Some((i, midi::behavior_for(&b.target, *msg))),
-                                            Some(k) => behave = Some((i, velo_core::Behavior::Relative { mode: velo_core::RelMode::ALL[k - 1], step: 1.0 / 128.0 })),
-                                            None => {}
+                                        if let Some(k) = kit::choose(ui, t, &list, choices.iter().position(|c| *c == b.behavior)) {
+                                            behave = Some((i, choices[k]));
                                         }
                                     });
                                 }

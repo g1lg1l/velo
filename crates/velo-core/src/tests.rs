@@ -756,6 +756,31 @@ fn a_key_is_a_control_that_presses() {
 }
 
 #[test]
+fn momentary_holds_what_has_two_ends_and_an_osc_address_is_a_control() {
+    let mut s = session();
+    let note = json!({ "Midi": { "port": null, "channel": 0, "msg": { "Note": 36 } } });
+    let bind = |control: &Value, target: Value, behavior: Value| json!({ "control": control, "target": target, "behavior": behavior });
+    ok(&mut s, "binding.add", bind(&note, json!("Blackout"), json!("Momentary")));
+    ok(&mut s, "binding.add", bind(&json!({ "Osc": "/1/push1" }), json!({ "Macro": 0 }), json!("Momentary")));
+    ok(&mut s, "binding.add", bind(&json!({ "Osc": "/1/fader1" }), json!({ "Macro": 1 }), json!({ "Absolute": { "takeover": "Pickup" } })));
+    assert_eq!(s.project.binding(&Target::Macro(0)).map(|b| (&b.control, b.behavior)), Some((&Control::Osc("/1/push1".into()), Behavior::Momentary)));
+    // nothing to hold: a launch, a program change, a key; Velo's own addresses act already
+    let before = s.project.clone();
+    assert!(s.run("binding.add", bind(&note, json!({ "LaunchScene": 0 }), json!("Momentary"))).is_err());
+    assert!(s.run("binding.add", bind(&json!({ "Midi": { "port": null, "channel": 0, "msg": "ProgramChange" } }), json!("Freeze"), json!("Momentary"))).is_err());
+    assert!(s.run("binding.add", bind(&json!({ "Key": "4" }), json!("Freeze"), json!("Momentary"))).is_err());
+    for address in ["/velo/blackout", "fader", "/1/a b", ""] {
+        assert!(s.run("binding.add", bind(&json!({ "Osc": address }), json!("Freeze"), json!("Toggle"))).is_err(), "{address:?}");
+    }
+    assert!(s.run("binding.add", bind(&json!({ "Osc": "/enc" }), json!({ "Macro": 2 }), json!({ "Relative": { "mode": "TwosComplement", "step": 0.1 } }))).is_err());
+    assert_eq!(s.project, before);
+    // saved and loaded, in a format a format-7 Velo refuses by its number
+    let text = ron::ser::to_string(&s.project).unwrap();
+    assert!(text.starts_with("(format:8,") && text.contains(r#"control:Osc("/1/fader1")"#) && text.contains("behavior:Momentary"), "{text}");
+    assert_eq!(ron::from_str::<Project>(&text).unwrap(), s.project);
+}
+
+#[test]
 fn a_format_4_project_opens_with_its_bindings_as_they_were() {
     // format 4: before keys were controls. Nothing to change, only the number
     let old = r#"(format: 4, scenes: [(id: "s_1", name: "Drop", nodes: [], edges: [])], bindings: [

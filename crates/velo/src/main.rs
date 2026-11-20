@@ -42,6 +42,7 @@ mod widgets;
 use shell::Tone;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -149,8 +150,10 @@ struct Settings {
     ai: ai::Prefs,
     /// Where AI Image nodes get their pictures.
     imagegen: imagegen::Prefs,
-    /// OSC in: on or off, its port.
+    /// OSC in (on or off, its port) and out.
     osc: osc::Prefs,
+    /// MIDI feedback: the controllers' lights follow Velo (opt-in: an output is the app's alone on Windows).
+    midi_feedback: bool,
     /// Auto-BPM: the beat clock follows the music's tempo while it's sure of it.
     auto_bpm: bool,
     /// Ableton Link on (in builds with it).
@@ -388,6 +391,9 @@ struct App {
     gens: imagegen::Gens,
     /// The OSC port, while it's on.
     osc: Option<osc::Osc>,
+    /// OSC out, while it sends, and each address of the sender's own as it last came (0..1).
+    osc_out: osc::Out,
+    osc_heard: HashMap<String, f32>,
     /// Auto-BPM's last estimate taken, the one before, and when it last set the clock.
     auto: shell::Auto,
     /// The render thread's last frame times (ms), for the HUD's graph.
@@ -482,6 +488,8 @@ impl App {
             chat: chat::Chat::default(),
             gens: imagegen::Gens::default(),
             osc: None,
+            osc_out: osc::Out::default(),
+            osc_heard: HashMap::new(),
             auto: shell::Auto::default(),
             frame_times: std::collections::VecDeque::new(),
             info: String::new(),
@@ -628,7 +636,7 @@ impl App {
         }
         // VELO_DEMO_OSC=port: OSC on (end-to-end tests)
         if let Some(port) = std::env::var("VELO_DEMO_OSC").ok().and_then(|p| p.parse().ok()) {
-            app.settings.osc = osc::Prefs { enabled: true, port, ops: true };
+            app.settings.osc = osc::Prefs { enabled: true, port, ops: true, ..Default::default() };
         }
         // VELO_DEMO_AUTO_BPM: auto-BPM on (end-to-end tests)
         if std::env::var_os("VELO_DEMO_AUTO_BPM").is_some() {
@@ -4031,6 +4039,8 @@ impl App {
             chat: chat::Chat::default(),
             gens: imagegen::Gens::default(),
             osc: None,
+            osc_out: osc::Out::default(),
+            osc_heard: HashMap::new(),
             auto: shell::Auto::default(),
             frame_times: std::collections::VecDeque::new(),
             info: String::new(),

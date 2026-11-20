@@ -36,7 +36,7 @@ Abridged from a real file:
 
 ```ron
 (
-    format: 7,
+    format: 8,
     name: "Untitled",
     canvas: (width: 1920, height: 1080, fps: 60),
     scenes: [(
@@ -96,7 +96,7 @@ Abridged from a real file:
 - `shared` is the shared signal graph (graph.md §3): scene-shaped (its `id` is always `"shared"`, whatever a hand-edited file says; its `launch` means nothing), only its signal nodes run. Left out while it has no nodes, groups or notes.
 - `media` holds an Image or Video node's file (or folder of frames) and a Text node's font file, as an absolute path; `text` holds a Text node's words.
 - UI-only data lives inline and the engine ignores it: node positions, a node's emoji `icon`, a scene's cable `ties` (each `(id, pos, cables)`, a cable named by where it ends: a wire by its input, `"n_ab12/0"`, a signal's line by the node it moves and its source, `"n_cd34 n_ef56/2"`).
-- A binding's `control` is a MIDI message or, from format 5, a key of the computer's keyboard by its name (`Key("A")`, `Key("4")`, `Key("F5")`; control.md §2).
+- A binding's `control` is a MIDI message or, from format 5, a key of the computer's keyboard by its name (`Key("A")`, `Key("4")`, `Key("F5")`; control.md §2), and from format 8 an OSC address (`Osc("/1/fader1")`). From format 8 its `behavior` may be `Momentary`.
 - Empty lists and untouched macros are left out; maps are sorted, so saves give small diffs.
 
 ## 4. Saving safely
@@ -126,3 +126,4 @@ A file parses into the current model (new fields have defaults), then `Project::
 | 4 | 5 | Nothing in the file: a binding's control may now be a key (`Key("4")`), which format 4 has no name for. An older Velo refuses a format 5 file and never misreads it: by its number ("saved by a newer Velo") when no key is bound, and as not a valid project when one is, since it stops at the word it doesn't know before it gets to the number |
 | 5 | 6 | Nothing in the file: a project may now hold `shared` signals and mappings reading them (`"shared:n_ab12/0"`), which format 5 has no idea of. A format-5 Velo refuses a format 6 file by its number (it would skip `shared` and leave those mappings moving nothing) |
 | 6 | 7 | Nothing in the file: a scene may now hold Shared nodes (`velo.shared`), each with a `link` to an output of the shared signals. A format-6 Velo refuses a format 7 file by its number (it would load them as nodes of a kind it doesn't know, reading nothing) |
+| 7 | 8 | Nothing in the file: a binding may now be `Momentary`, or have an OSC address for its control (`Osc("/1/fader1")`), which format 7 has no name for. A format-7 Velo refuses a format 8 file and never misreads it: by its number when no binding has them, as not a valid project when one does (as format 4 does a key) |
