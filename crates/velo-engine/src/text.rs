@@ -25,6 +25,43 @@ const FINE: u32 = 4;
 /// Floats in each record: the header, a section (a font in a case), a word, a glyph.
 pub const RECORD: usize = 8;
 
+/// The words of `text` as they're laid out: whether each starts a line and an item, the word, the
+/// spaces after it. Each item's lines (an empty one is an empty line), the first word of each but
+/// the very first starting a line, of each item an item; a word is a run of letters and the
+/// spaces after it, and a line starting with spaces starts with an empty one.
+fn split(text: &str) -> impl Iterator<Item = (bool, bool, &str, &str)> {
+    velo_core::text_items(text).into_iter().enumerate().flat_map(|(k, item)| {
+        let lines: Vec<&str> = if item.is_empty() { vec![""] } else { item.lines().collect() };
+        lines.into_iter().enumerate().flat_map(move |(l, line)| {
+            let mut rest = Some(line);
+            std::iter::from_fn(move || {
+                let r = rest?;
+                let (word, after) = r.split_at(r.find(char::is_whitespace).unwrap_or(r.len()));
+                let (gap, next) = after.split_at(after.find(|c: char| !c.is_whitespace()).unwrap_or(after.len()));
+                let starts = r.len() == line.len();
+                rest = (!next.is_empty()).then_some(next);
+                Some(((k > 0 || l > 0) && starts, k > 0 && l == 0 && starts, word, gap))
+            })
+        })
+    })
+}
+
+/// Each of a Text List's items: its first word in its section's and how many it has, as [`set`]
+/// lays them out in every font and case. What its shader would otherwise count, every pixel, from
+/// the first word on.
+pub fn items(text: &str) -> Vec<[f32; 2]> {
+    let mut items: Vec<[f32; 2]> = Vec::new();
+    for (i, (_, new_item, ..)) in split(text).enumerate() {
+        if i == 0 || new_item {
+            items.push([i as f32, 0.0]);
+        }
+        if let Some(last) = items.last_mut() {
+            last[1] += 1.0;
+        }
+    }
+    items
+}
+
 /// `text` set in the bundled fonts and `file` (a font, if any): the picture text.wgsl reads.
 ///
 /// The layout, in floats from the top left, in units unless said: the header (texels a unit
@@ -49,39 +86,21 @@ pub fn set(text: &str, file: Option<&str>) -> Result<image::RgbaImage, String> {
         let scaled = font.as_scaled(PxScale::from(UNIT * GLYPHS));
         for (upper, words) in [text.to_string(), text.to_uppercase()].iter().enumerate() {
             let (mut records, mut glyphs, mut index) = (Vec::new(), Vec::new(), 0);
-            // each item's lines (an empty one is an empty line), the first word of each but the
-            // very first starting a line, of each item an item
-            let lines = velo_core::text_items(words).into_iter().enumerate().flat_map(|(k, item)| {
-                let lines: Vec<&str> = if item.is_empty() { vec![""] } else { item.lines().collect() };
-                lines.into_iter().enumerate().map(move |(l, line)| (k > 0 || l > 0, k > 0 && l == 0, line))
-            });
-            for (new_line, new_item, line) in lines {
-                // a word is a run of letters and the spaces after it; a line starting with
-                // spaces starts with an empty one
-                let mut rest = line;
-                loop {
-                    let (word, after) = rest.split_at(rest.find(char::is_whitespace).unwrap_or(rest.len()));
-                    let (gap, next) = after.split_at(after.find(|c: char| !c.is_whitespace()).unwrap_or(after.len()));
-                    let (first, mut pen, mut prev, mut n) = (glyphs.len(), 0.0, None, 0);
-                    for c in word.chars() {
-                        let id = scaled.glyph_id(c);
-                        pen += prev.map_or(0.0, |p| scaled.kern(p, id));
-                        if let Some(cell) = atlas.cell(f, font, id) {
-                            glyphs.push([(pen + cell.x) / UNIT, cell.y / UNIT, cell.w as f32 / UNIT, cell.h as f32 / UNIT, cell.at[0] as f32, cell.at[1] as f32, n as f32, index as f32]);
-                        }
-                        pen += scaled.h_advance(id);
-                        (prev, n, index) = (Some(id), n + 1, index + 1);
+            for (new_line, new_item, word, gap) in split(words) {
+                let (first, mut pen, mut prev, mut n) = (glyphs.len(), 0.0, None, 0);
+                for c in word.chars() {
+                    let id = scaled.glyph_id(c);
+                    pen += prev.map_or(0.0, |p| scaled.kern(p, id));
+                    if let Some(cell) = atlas.cell(f, font, id) {
+                        glyphs.push([(pen + cell.x) / UNIT, cell.y / UNIT, cell.w as f32 / UNIT, cell.h as f32 / UNIT, cell.at[0] as f32, cell.at[1] as f32, n as f32, index as f32]);
                     }
-                    let spaces = gap.chars().count();
-                    let advance: f32 = gap.chars().map(|c| scaled.h_advance(scaled.glyph_id(c))).sum();
-                    index += spaces;
-                    let starts = rest.len() == line.len();
-                    records.push([first as f32, (glyphs.len() - first) as f32, pen / UNIT, n as f32, advance / UNIT, spaces as f32, f32::from(u8::from(new_line && starts)), f32::from(u8::from(new_item && starts))]);
-                    rest = next;
-                    if rest.is_empty() {
-                        break;
-                    }
+                    pen += scaled.h_advance(id);
+                    (prev, n, index) = (Some(id), n + 1, index + 1);
                 }
+                let spaces = gap.chars().count();
+                let advance: f32 = gap.chars().map(|c| scaled.h_advance(scaled.glyph_id(c))).sum();
+                index += spaces;
+                records.push([first as f32, (glyphs.len() - first) as f32, pen / UNIT, n as f32, advance / UNIT, spaces as f32, f32::from(u8::from(new_line)), f32::from(u8::from(new_item))]);
             }
             let at = table.len();
             let glyphs_at = at + records.len() * RECORD;
@@ -280,5 +299,21 @@ mod tests {
         // unmarked, a line is an item; an empty item is an empty line
         assert_eq!(starts("A\nB"), [(0.0, 0.0), (1.0, 1.0)]);
         assert_eq!(starts(&velo_core::join_items(&["A", "", "C"])).len(), 3);
+        // each item's words, as the records flag them, in every font and case
+        for text in [velo_core::join_items(&["A\nB", "C D", "", "  E"]), "A\nB C\n\nD".into(), String::new()] {
+            let t = table(&set(&text, None).unwrap());
+            for section in 1..=t[2] as usize {
+                let s = &t[RECORD * section..RECORD * (section + 1)];
+                let mut flagged: Vec<[f32; 2]> = Vec::new();
+                for i in 0..s[1] as usize {
+                    if i == 0 || t[s[0] as usize + i * RECORD + 7] > 0.5 {
+                        flagged.push([i as f32, 0.0]);
+                    }
+                    flagged.last_mut().unwrap()[1] += 1.0;
+                }
+                assert_eq!(items(&text), flagged, "{text:?}, section {section}");
+            }
+            assert_eq!(items(&text).len(), velo_core::text_items(&text).len(), "{text:?}");
+        }
     }
 }

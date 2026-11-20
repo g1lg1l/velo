@@ -435,7 +435,7 @@ fn build(
         .enumerate()
         .filter_map(|(n, (id, _))| {
             let list = scene.node(id).filter(|l| l.kind == TEXT_LIST)?;
-            Lines::new(n, &programs[specs[n].program].node, velo_core::text_items(list.text.as_deref().unwrap_or_default()).len())
+            Lines::new(n, &programs[specs[n].program].node, crate::text::items(list.text.as_deref().unwrap_or_default()))
         })
         .collect();
     let shaders = specs.iter().map(|spec| programs[spec.program].node.clone()).collect();
