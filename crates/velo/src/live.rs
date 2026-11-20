@@ -999,12 +999,11 @@ pub enum Input {
     Computer,
     /// The system's default input device.
     Default,
-    Named(String),
+    /// A device by name, and the first of its channels heard (0 for 1–2, 2 for 3–4…; none
+    /// saved, 1–2).
+    Named(String, #[serde(default)] u16),
     /// One app's sound (macOS 14.2+): its bundle on disk, its name.
-    App {
-        id: String,
-        name: String,
-    },
+    App { id: String, name: String },
     /// An audio file (an MP3) by its path, played in a loop on the default output: music to
     /// work with when nothing else is playing.
     File(String),
@@ -1028,6 +1027,8 @@ pub struct AudioState {
     pub hearing: Hearing,
     /// Input devices, for the menu.
     pub devices: Vec<String>,
+    /// The open input's channels: a device with more than two offers its pairs.
+    pub channels: u16,
     /// Apps that use audio, for the menu, every couple of seconds.
     pub apps: Vec<apps::App>,
     /// The music's tempo as last heard (auto-BPM), once a second.
@@ -1314,7 +1315,7 @@ fn listen(input: Option<Input>, links: &Links, stop: &AtomicBool, state: &Mutex<
         Input::File(path) => return file_loop(path, links, stop, state),
         Input::Computer => Source::Computer,
         Input::Default => Source::DefaultInput,
-        Input::Named(name) => Source::Named(name.clone()),
+        Input::Named(name, first) => Source::Named(name.clone(), *first),
         Input::App { id, name } => Source::App { id: id.clone(), name: name.clone() },
     };
     let app = match &input {
@@ -1327,7 +1328,7 @@ fn listen(input: Option<Input>, links: &Links, stop: &AtomicBool, state: &Mutex<
         look_at_apps(&mut looked, state);
         match capture::open(&source) {
             Ok(mut cap) => {
-                set(&|s| (s.name, s.hearing) = (cap.name.clone(), Hearing::Waiting));
+                set(&|s| (s.name, s.hearing, s.channels) = (cap.name.clone(), Hearing::Waiting, cap.channels));
                 hear(&mut cap, &source, app, &mut looked, links, stop, state);
                 if cap.broken.load(Relaxed) {
                     set(&|s| s.hearing = Hearing::Failed(tr!("{} went away: waiting for it to come back", cap.name)));
@@ -1625,6 +1626,13 @@ mod tests {
         let mut heard = [7.0; 600];
         late.pass(&mut heard, usize::MAX);
         assert_eq!((heard[0], heard[499], heard[500]), (0.0, 6.0, 7.0), "silence from before anything was heard, then 5 and 6 as they come round");
+    }
+
+    #[test]
+    fn a_devices_pair_is_kept_and_a_device_saved_before_pairs_listens_to_1_and_2() {
+        let input = Input::Named("Scarlett 18i20".into(), 2);
+        assert_eq!(ron::from_str::<Input>(&ron::to_string(&input).unwrap()).unwrap(), input);
+        assert_eq!(ron::from_str::<Input>(r#"Named("Scarlett 18i20")"#).unwrap(), Input::Named("Scarlett 18i20".into(), 0));
     }
 
     #[test]

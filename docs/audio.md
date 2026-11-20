@@ -30,7 +30,7 @@ Computer audio per platform (through cpal):
 
 **Hot-plug.** A device that goes away is asked for again every second and reconnects by itself; the visuals keep running on silence meanwhile. When the system's default output or input changes, the input that follows it switches too.
 
-The capture is mixed down to mono. Not yet: picking channels on a multichannel interface, several inputs at once.
+The capture is a pair of channels mixed down to mono: 1–2 to start. On a device with more than two, the audio menu's **Channels** picks another pair (3–4, 5–6…, an odd last one alone), saved with the device; a pair the device hasn't is heard as 1–2. The other channels are left out rather than mixed in, so an 8-channel card's silent inputs don't turn the music down 12 dB. Not yet: several inputs at once.
 
 ## 2. Threads and data flow
 

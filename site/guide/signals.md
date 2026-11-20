@@ -23,7 +23,7 @@ Click the audio chip in the top bar, or the input in an Audio In's inspector (th
 
 - **Computer audio**: whatever the computer plays, with no cables or virtual devices. This is the default.
 - **Default input**: the system's microphone or line in.
-- **Devices**: every input device, such as an audio interface, a mixer with USB audio or a microphone.
+- **Devices**: every input device, such as an audio interface, a mixer with USB audio or a microphone. Velo listens to its inputs 1 and 2. On an interface with more inputs, pick the pair the music comes in on under **Channels** (Inputs 3–4, say); it's kept with the device.
 - **One app** (macOS 14.2 and later): just one app's sound, say Spotify, so notifications and calls stay out. Velo waits for the app while it's closed.
 - **Play an MP3…**: a song from a file, played in a loop through your speakers. Handy to build a show when nothing else is playing.
 
