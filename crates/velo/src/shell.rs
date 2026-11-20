@@ -747,7 +747,11 @@ impl App {
             // the program to other apps on this computer, or to the network, as well
             ui.separator();
             kit::menu_title(ui, t, tr!("SHARE"));
-            let ways = [(Share::Spout, "Spout", tr!("To apps on this computer: Resolume, TouchDesigner, OBS, MadMapper")), (Share::Ndi, "NDI", tr!("To any computer on the network with an NDI receiver (OBS, vMix, NDI Studio Monitor)"))];
+            let ways = [
+                (Share::Syphon, "Syphon", tr!("To apps on this Mac: Resolume, MadMapper, VDMX, OBS, TouchDesigner, Millumin")),
+                (Share::Spout, "Spout", tr!("To apps on this computer: Resolume, TouchDesigner, OBS, MadMapper")),
+                (Share::Ndi, "NDI", tr!("To any computer on the network with an NDI receiver (OBS, vMix, NDI Studio Monitor)")),
+            ];
             for (kind, name, about) in ways.into_iter().filter(|w| w.0.available()) {
                 let on = sharing == Some(kind);
                 if ui.selectable_label(on, format!("{}  {}", icons::BROADCAST, name)).on_hover_text(about).clicked() {

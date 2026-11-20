@@ -23,6 +23,10 @@ snap = "1.1.1"
 # NDI's runtime, loaded when sharing starts (already in the tree through wgpu)
 libloading = "0.8.9"
 
+# Syphon on macOS: its framework's source (third_party/syphon) and Velo's bridge, compiled in
+[build-dependencies]
+cc = "1.10.0"
+
 # general video (H.264, HEVC, ProRes) through AVFoundation, decoded by the system
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6.5"

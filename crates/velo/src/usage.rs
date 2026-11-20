@@ -230,7 +230,8 @@ fn total_memory() -> Option<u64> {
     Some(kb * 1024)
 }
 
-/// ponytail: CPU only; the resident size needs mach's task_info, worth it when someone's on a Mac
+/// The CPU time, and the memory as Activity Monitor counts it (the footprint: on Apple GPUs, which
+/// share the memory, the textures too).
 #[cfg(target_os = "macos")]
 fn read() -> Option<(f64, Option<u64>)> {
     // SAFETY: getrusage fills the struct it's given
@@ -239,7 +240,12 @@ fn read() -> Option<(f64, Option<u64>)> {
         (libc::getrusage(libc::RUSAGE_SELF, &mut usage) == 0).then_some(usage)?
     };
     let seconds = |t: libc::timeval| t.tv_sec as f64 + t.tv_usec as f64 / 1e6;
-    Some((seconds(usage.ru_utime) + seconds(usage.ru_stime), None))
+    // SAFETY: proc_pid_rusage fills a rusage_info_v2 for RUSAGE_INFO_V2
+    let footprint = unsafe {
+        let mut info = std::mem::zeroed::<libc::rusage_info_v2>();
+        (libc::proc_pid_rusage(libc::getpid(), libc::RUSAGE_INFO_V2, (&raw mut info).cast()) == 0).then_some(info.ri_phys_footprint)
+    };
+    Some((seconds(usage.ru_utime) + seconds(usage.ru_stime), footprint))
 }
 
 #[cfg(target_os = "macos")]
@@ -279,7 +285,7 @@ mod tests {
         assert!(usage.cpu.is_some_and(|c| (0.0..=100.0).contains(&c)), "{:?}", usage.cpu);
         assert_eq!(usage.trails.fps, [60.0, 59.0]);
         assert_eq!(usage.trails.cpu.len(), 1, "a share once there's a rate");
-        if cfg!(any(windows, target_os = "linux")) {
+        if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
             assert!(usage.memory.is_some_and(|m| m > 1 << 20), "{:?}", usage.memory);
             assert!(usage.memory_total > usage.memory, "{:?} of {:?}", usage.memory, usage.memory_total);
             assert!(usage.trails.memory.iter().all(|s| (0.0..=1.0).contains(s)));

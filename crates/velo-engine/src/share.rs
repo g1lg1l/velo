@@ -8,6 +8,8 @@
 pub enum Share {
     Spout,
     Ndi,
+    /// To apps on this Mac (Resolume, MadMapper, VDMX, OBS…), as their own Syphon server.
+    Syphon,
 }
 
 impl Share {
@@ -16,6 +18,7 @@ impl Share {
         match self {
             Share::Spout => cfg!(windows),
             Share::Ndi => true,
+            Share::Syphon => cfg!(target_os = "macos"),
         }
     }
 }
@@ -33,6 +36,89 @@ pub fn open(kind: Share, name: &str) -> Result<Box<dyn Sender>, String> {
         #[cfg(not(windows))]
         Share::Spout => Err("Spout is Windows only".into()),
         Share::Ndi => ndi::Ndi::new(name).map(|n| Box::new(n) as Box<dyn Sender>),
+        #[cfg(target_os = "macos")]
+        Share::Syphon => syphon::Syphon::new(name).map(|s| Box::new(s) as Box<dyn Sender>),
+        #[cfg(not(target_os = "macos"))]
+        Share::Syphon => Err("Syphon is macOS only".into()),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub mod syphon {
+    //! A Syphon server of Velo's own (src/syphon_bridge.m over third_party/syphon, compiled in
+    //! by build.rs): each frame read back is copied into its IOSurface and published.
+
+    use std::ffi::{CString, c_char, c_void};
+
+    unsafe extern "C" {
+        fn velo_syphon_start(name: *const c_char) -> *mut c_void;
+        fn velo_syphon_publish(server: *mut c_void, pixels: *const u8, width: usize, height: usize, stride: usize) -> i32;
+        fn velo_syphon_stop(server: *mut c_void);
+        #[cfg(test)]
+        fn velo_syphon_client_sees(server: *mut c_void, publish: extern "C" fn(*mut c_void), context: *mut c_void, ms: i32) -> u32;
+    }
+
+    pub struct Syphon(*mut c_void);
+
+    // SAFETY: the server is used by the one thread holding it (the share's); Syphon's own work
+    // runs on its dispatch queues
+    unsafe impl Send for Syphon {}
+
+    impl Syphon {
+        /// A server other apps list as `name`.
+        pub fn new(name: &str) -> Result<Self, String> {
+            let name = CString::new(name).map_err(|e| e.to_string())?;
+            // SAFETY: a C string for the call's length
+            let server = unsafe { velo_syphon_start(name.as_ptr()) };
+            if server.is_null() { Err("the Syphon server didn't start".into()) } else { Ok(Self(server)) }
+        }
+    }
+
+    impl super::Sender for Syphon {
+        fn send(&mut self, pixels: &[u8], [w, h]: [u32; 2], stride: u32) -> Result<(), String> {
+            let (w, h, stride) = (w as usize, h as usize, stride as usize);
+            if w == 0 || h == 0 || stride < w * 4 || pixels.len() < stride * (h - 1) + w * 4 {
+                return Err("a frame smaller than it says".into());
+            }
+            // SAFETY: the rows are in `pixels`, checked above; the server is alive until dropped
+            let sent = unsafe { velo_syphon_publish(self.0, pixels.as_ptr(), w, h, stride) };
+            if sent == 1 { Ok(()) } else { Err("Syphon couldn't take a frame of that size".into()) }
+        }
+    }
+
+    impl Drop for Syphon {
+        fn drop(&mut self) {
+            // SAFETY: made by velo_syphon_start, stopped once
+            unsafe { velo_syphon_stop(self.0) };
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::Sender;
+        use super::*;
+
+        #[test]
+        fn a_client_sees_the_frames_sent() {
+            let mut server = Syphon::new("Velo test").unwrap();
+            // 4×2, rows padded to 32 bytes as a read-back's are: blue, opaque
+            let mut pixels = vec![0u8; 32 * 2];
+            for row in pixels.chunks_mut(32) {
+                for px in row[..16].chunks_mut(4) {
+                    px.copy_from_slice(&[255, 0, 0, 255]);
+                }
+            }
+            server.send(&pixels, [4, 2], 32).unwrap();
+            extern "C" fn again(context: *mut c_void) {
+                // SAFETY: the test's (server, pixels), alive for the call
+                let (server, pixels) = unsafe { &mut *context.cast::<(Syphon, Vec<u8>)>() };
+                let _ = server.send(pixels, [4, 2], 32);
+            }
+            let mut both = (server, pixels);
+            let first = unsafe { velo_syphon_client_sees(both.0.0, again, (&raw mut both).cast(), 3000) };
+            assert_eq!(first.to_le_bytes(), [255, 0, 0, 255], "a client gets the frame, BGRA");
+            assert!(both.0.send(&[0; 4], [4, 2], 32).is_err(), "too short a frame is refused");
+        }
     }
 }
 

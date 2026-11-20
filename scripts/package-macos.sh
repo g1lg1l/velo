@@ -11,6 +11,8 @@ app=dmg/Velo.app
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" dist
 cp target/release/velo target/release/velo-mcp "$app/Contents/MacOS/"
 cp assets/icons/macos/velo.icns "$app/Contents/Resources/velo.icns"
+# the Syphon framework's licence: its source is built in (third_party/syphon)
+cp third_party/syphon/License.txt "$app/Contents/Resources/Syphon License.txt"
 # the usage strings make macOS ask for (and name Velo in) the audio permissions (spike S3)
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

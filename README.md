@@ -190,3 +190,5 @@ Velo is free and always will be. If it's useful to you, [a coffee on Ko-fi](http
 ## License
 
 The app (`crates/velo`) is [GPL-3.0-or-later](LICENSE-GPL), because it ships with Ableton Link. The libraries (`velo-core`, `velo-engine`, `velo-audio`, `velo-mcp`) are [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
+
+On macOS Velo builds in the [Syphon framework](https://github.com/Syphon/Syphon-Framework)'s source (`third_party/syphon`), copyright Tom Butterworth and Anton Marini, under its own BSD licence ([`third_party/syphon/License.txt`](third_party/syphon/License.txt)), which Velo.app carries in its resources.

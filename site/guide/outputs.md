@@ -30,10 +30,11 @@ If a projector is unplugged, the picture keeps running; Velo tells you, and reco
 
 With no node selected, the inspector shows the **Canvas**: the size and frame rate every output renders at, Full HD at 60 frames a second unless you change it. Pick a preset or type the width, height and FPS.
 
-## Spout and NDI
+## Syphon, Spout and NDI
 
 Under **SHARE** in the Output menu:
 
+- **Syphon** (Mac) sends the picture to other apps on this Mac: Resolume, MadMapper, VDMX, OBS, TouchDesigner, Millumin. It shows up there as a Syphon server called Velo, nothing to install.
 - **Spout** (Windows) sends the picture to other apps on this computer: Resolume, TouchDesigner, OBS, MadMapper. It shows up there as a Spout source called Velo, about a frame late.
 - **NDI** sends it to any computer on the network with an NDI receiver: OBS, vMix, NDI Studio Monitor. It needs the free NDI runtime installed on this computer.
 

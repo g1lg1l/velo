@@ -1031,6 +1031,7 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("OSC can't listen on port {}: {}", "OSC non può ascoltare sulla porta {}: {}"),
     ("OSC", "OSC"),
     ("Listen for OSC", "Ascolta OSC"),
+    ("To apps on this Mac: Resolume, MadMapper, VDMX, OBS, TouchDesigner, Millumin", "Alle app su questo Mac: Resolume, MadMapper, VDMX, OBS, TouchDesigner, Millumin"),
     ("5-hour limit", "Limite di 5 ore"),
     ("Weekly limit", "Limite settimanale"),
     ("Usage limit", "Limite di utilizzo"),

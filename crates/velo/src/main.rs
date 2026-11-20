@@ -562,9 +562,14 @@ impl App {
         {
             app.demo_drop = Some((scene.id.clone(), false));
         }
-        // VELO_DEMO_SHARE=spout|ndi: the program shared that way from the start (tests)
+        // VELO_DEMO_SHARE=spout|ndi|syphon: the program shared that way from the start (tests)
         if let (Ok(way), Some(live)) = (std::env::var("VELO_DEMO_SHARE"), &mut app.live) {
-            live.share(Some(if way == "ndi" { velo_engine::share::Share::Ndi } else { velo_engine::share::Share::Spout }));
+            use velo_engine::share::Share;
+            live.share(Some(match way.as_str() {
+                "ndi" => Share::Ndi,
+                "syphon" => Share::Syphon,
+                _ => Share::Spout,
+            }));
         }
         // VELO_DEMO_AUTOPILOT=bars|<n>s: the autopilot on, a scene every that many bars or seconds (tests)
         if let Ok(every) = std::env::var("VELO_DEMO_AUTOPILOT") {
