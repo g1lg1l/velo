@@ -6013,6 +6013,99 @@ mod midi_tests {
     }
 
     #[test]
+    fn momentary_holds_while_held_and_feedback_sends_only_changes_never_echoes() {
+        let mut h = Ui::new();
+        let bind = |h: &mut Ui, msg: serde_json::Value, target: serde_json::Value, behavior: serde_json::Value| {
+            h.app.run("binding.add", json!({ "control": { "Midi": { "port": null, "channel": 0, "msg": msg } }, "target": target, "behavior": behavior }));
+        };
+        // held: on while the pad is down, off at its note-off, a note-on at 0, a CC under the middle
+        bind(&mut h, json!({ "Note": 36 }), json!({ "Macro": 0 }), json!("Momentary"));
+        bind(&mut h, json!({ "Cc": 40 }), json!({ "Macro": 1 }), json!("Momentary"));
+        h.midi(0, MidiMsg::Note(36), 100);
+        assert_eq!(h.macro_value(0), 1.0);
+        h.midi(0, MidiMsg::Note(36), 0);
+        assert_eq!(h.macro_value(0), 0.0, "let go");
+        h.midi(0, MidiMsg::Cc(40), 127);
+        h.midi(0, MidiMsg::Cc(40), 127);
+        assert_eq!(h.macro_value(1), 1.0, "held, not flipped back");
+        h.midi(0, MidiMsg::Cc(40), 0);
+        assert_eq!(h.macro_value(1), 0.0);
+        // feedback, once asked for and the controller's output is open: everything once, then only changes
+        h.frame(Vec::new());
+        assert!(h.app.midi.sent().is_empty(), "off until asked for");
+        h.app.settings.midi_feedback = true;
+        *h.app.midi.outs.lock().unwrap() = vec!["Knobs".into()];
+        h.frame(Vec::new());
+        assert_eq!(h.app.midi.sent(), [[0x90, 36, 0], [0xB0, 40, 0]]);
+        h.frame(Vec::new());
+        assert!(h.app.midi.sent().is_empty(), "only what changes");
+        // a toggle: the press isn't echoed back; once let go, the pad is lit to say it's on
+        bind(&mut h, json!({ "Note": 37 }), json!({ "Macro": 2 }), json!("Toggle"));
+        h.frame(Vec::new());
+        assert_eq!(h.app.midi.sent(), [[0x90, 37, 0]]);
+        h.midi(0, MidiMsg::Note(37), 127);
+        assert_eq!((h.macro_value(2), h.app.midi.sent()), (1.0, vec![]), "what came in isn't sent back");
+        h.midi(0, MidiMsg::Note(37), 0);
+        assert_eq!(h.app.midi.sent(), [[0x90, 37, 127]]);
+        // a knob: its own move isn't echoed; a change from elsewhere (the mouse, an agent) is sent
+        bind(&mut h, json!({ "Cc": 21 }), json!({ "Macro": 3 }), json!({ "Absolute": { "takeover": "Jump" } }));
+        h.frame(Vec::new());
+        h.app.midi.sent();
+        h.midi(0, MidiMsg::Cc(21), 64);
+        assert!((h.macro_value(3) - 64.0 / 127.0).abs() < 1e-6 && h.app.midi.sent().is_empty());
+        h.app.run("macro.set", json!({ "index": 3, "value": 1.0 }));
+        h.frame(Vec::new());
+        assert_eq!(h.app.midi.sent(), [[0xB0, 21, 127]]);
+        // a port of another controller gets nothing; off again, nothing more goes out
+        h.app.run("binding.add", json!({ "control": { "Midi": { "port": "Pads", "channel": 0, "msg": { "Note": 50 } } }, "target": "Freeze", "behavior": "Toggle" }));
+        h.app.settings.midi_feedback = false;
+        h.app.run("macro.set", json!({ "index": 3, "value": 0.0 }));
+        h.frame(Vec::new());
+        assert!(h.app.midi.sent().is_empty());
+        // on again: everything once more (the controller may have been reset meanwhile)
+        h.app.settings.midi_feedback = true;
+        h.frame(Vec::new());
+        assert_eq!(h.app.midi.sent().len(), 4);
+    }
+
+    #[test]
+    fn an_osc_address_is_learned_and_drives_what_its_bound_to() {
+        use crate::osc::{Arg, Message};
+        let mut h = Ui::new();
+        let m = |address: &str, value: f64| Message { address: address.into(), args: vec![Arg::Float(value)], at: Instant::now() };
+        assert!(!h.app.apply_osc(&m("/1/fader1", 0.5), 1.0), "unknown until bound");
+        // learn: a fader moved two steps binds it as a knob
+        h.key(Key::L);
+        h.click(h.widget("Macro 1 0 %").center());
+        h.app.apply_osc(&m("/1/fader1", 0.51), 1.0);
+        assert!(h.app.session.project.bindings.is_empty(), "less than two steps");
+        h.app.apply_osc(&m("/1/fader1", 0.6), 1.0);
+        let b = h.app.session.project.bindings.first().expect("bound").clone();
+        assert_eq!((b.control, b.behavior), (Control::Osc("/1/fader1".into()), Behavior::Absolute { takeover: Takeover::Pickup }));
+        assert_eq!(h.macro_value(0), 0.0, "the learning move moved nothing");
+        // a button pressed binds as a pad: it flips the macro
+        h.click(h.widget("Macro 2 0 %").center());
+        h.app.apply_osc(&m("/1/push1", 1.0), 1.0);
+        assert_eq!(h.app.session.project.binding(&Target::Macro(1)).map(|b| b.behavior), Some(Behavior::Toggle));
+        h.key(Key::Escape);
+        // the fader picks the macro up once it gets there, then follows
+        assert!(h.app.apply_osc(&m("/1/fader1", 0.3), 2.0));
+        assert_eq!(h.macro_value(0), 0.0, "soft takeover: not yet");
+        h.app.apply_osc(&m("/1/fader1", 0.0), 2.0);
+        h.app.apply_osc(&m("/1/fader1", 0.25), 2.0);
+        assert!((h.macro_value(0) - 0.25).abs() < 1e-6, "{}", h.macro_value(0));
+        // the button: a press flips, a release doesn't; held as Momentary, its release lets go
+        h.app.apply_osc(&m("/1/push1", 0.0), 2.0);
+        h.app.apply_osc(&m("/1/push1", 1.0), 2.0);
+        h.app.apply_osc(&m("/1/push1", 0.0), 2.0);
+        assert_eq!(h.macro_value(1), 1.0);
+        h.app.run("binding.add", json!({ "control": { "Osc": "/1/push1" }, "target": { "Macro": 1 }, "behavior": "Momentary" }));
+        h.app.apply_osc(&m("/1/push1", 1.0), 2.0);
+        h.app.apply_osc(&m("/1/push1", 0.0), 2.0);
+        assert_eq!(h.macro_value(1), 0.0);
+    }
+
+    #[test]
     fn a_key_bound_to_a_scene_launches_it_where_the_keymap_would_launch_another() {
         let Ok(engine) = velo_engine::Engine::start(None) else {
             eprintln!("no GPU adapter here: skipped");
@@ -6037,10 +6130,18 @@ mod midi_tests {
             }
         };
         until(&mut h, "the first scene live", &first);
+        // the first scene's pad, lit while it plays
+        h.app.run("binding.add", json!({ "control": { "Midi": { "port": null, "channel": 0, "msg": { "Note": 36 } } }, "target": { "LaunchScene": 0 }, "behavior": "Trigger" }));
+        h.app.settings.midi_feedback = true;
+        *h.app.midi.outs.lock().unwrap() = vec!["Knobs".into()];
+        h.frame(Vec::new());
+        assert_eq!(h.app.midi.sent(), [[0x90, 36, 127]], "the playing scene's pad lit");
         // 1 is the keymap's "launch scene 1"; this project makes it launch scene 2
         h.app.run("binding.add", json!({ "control": { "Key": "1" }, "target": { "LaunchScene": 1 }, "behavior": "Trigger" }));
         h.key(Key::Num1);
         until(&mut h, "scene 2 launched by the project's key", &second);
+        h.frame(Vec::new());
+        assert_eq!(h.app.midi.sent(), [[0x90, 36, 0]], "dark once another plays");
         // the keymap's 1 would have left the first scene on; and B, bound to nothing, is still Blackout
         h.key(Key::B);
         assert!(h.app.live.as_ref().unwrap().blackout);

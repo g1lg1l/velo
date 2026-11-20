@@ -110,7 +110,7 @@ pub const CANVAS: [ParamInfo; 3] = [canvas_param("Width", (16.0, 8192.0, 1920.0)
 // ---------------------------------------------------------------------------
 
 /// The project file format: bumped, with a migration, whenever saved files change shape.
-pub const FORMAT: u32 = 7;
+pub const FORMAT: u32 = 8;
 
 /// The shared signal graph's id (docs/graph.md §3): what operators name in `scene` to edit it, and
 /// what a mapping's source starts with when it reads one of its outputs ("shared:n_ab12/0").
@@ -168,6 +168,8 @@ impl Project {
     /// reading it ("shared:n_ab12/0"): a format-5 Velo refuses the file by its number.
     /// 6 → 7: nothing to change. A scene may now hold Shared nodes, each linked to an output of
     /// the shared signal graph ([`Node::link`]): a format-6 Velo refuses the file by its number.
+    /// 7 → 8: nothing to change. A binding may now be Momentary, or have an OSC address for its
+    /// control: a format-7 Velo refuses the file by its number.
     pub fn migrate(&mut self) {
         // whatever a hand-edited file calls it, the shared graph is the shared graph
         (self.shared.id, self.shared.name) = (SHARED.into(), shared_graph().name);
@@ -393,7 +395,8 @@ pub struct Binding {
 }
 
 /// Which physical control: a MIDI message on a port (by name; `None` is any port, so a
-/// project moves between machines) and a channel (0..15), or a key of the computer's keyboard.
+/// project moves between machines) and a channel (0..15), a key of the computer's keyboard, or
+/// an OSC address of the sender's own.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Control {
     Midi {
@@ -404,6 +407,9 @@ pub enum Control {
     /// A key pressed alone, by the name on it: "A" to "Z", "0" to "9", "F1" to "F12". It only
     /// presses, so its behavior is Trigger or Toggle.
     Key(String),
+    /// An OSC address outside Velo's own `/velo/` ("/1/fader1"): its first argument is the value,
+    /// 0 to 1; rising past a half is a press, falling under it a release.
+    Osc(String),
 }
 
 impl Control {
@@ -460,6 +466,9 @@ pub enum Behavior {
     Trigger,
     /// Each press flips it (a value between its ends, blackout on and off).
     Toggle,
+    /// At its top end while held, at its bottom once let go (a note-off, a note-on at 0, a CC
+    /// under the middle).
+    Momentary,
 }
 
 /// How an endless encoder says how far it turned (the three dialects controllers use).

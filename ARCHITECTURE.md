@@ -80,7 +80,7 @@ Values travel by index (the node, then each parameter in its header's order), ne
 | Compile | Builds graphs with the engine's device | Only the newest build of each scene is made |
 | Media, one reader per movie | Decode files; read movie frames as they come due | |
 | Share | Sends frames to Spout or NDI | |
-| MIDI, OSC | Stamp each message and queue it for the UI | |
+| MIDI, OSC | Stamp each message and queue it for the UI; send MIDI feedback and OSC out as the UI queues them | |
 | Agents, AI | The MCP server; the AI providers | |
 
 Early prototypes, spikes S1 to S4, settled the output thread (S1), the look (S2), the analysis (S3) and the node canvas (S4). Their code now lives in the app; comments still name them.

@@ -30,6 +30,10 @@ The first message that means something wins: a knob has to move two steps, a pad
 
 A **program change** launches scenes too: program 1 the first scene, program 2 the second, and so on.
 
+### Hold instead of flip
+
+A pad on a macro, a value, blackout or freeze flips it with each press. Make it **Momentary** in the bindings list and it holds instead: on while you keep the pad down, off the moment you let go. A pad held on Blackout is a flash to black; one on a macro that drives a strobe is a strobe for as long as you hold it.
+
 ### Soft takeover
 
 When a scene launches, its macros jump to where that scene keeps them, but your knobs stay where they are. A knob bound to a macro waits until you turn it to where the macro is, then takes over, so nothing jumps. A knob bound to a value takes over at once. Learn sets this for you.
@@ -40,13 +44,23 @@ Endless encoders work too. Learn spots the two common kinds; the MIDI menu switc
 
 ## The bindings list
 
-Click the arrow beside the **MIDI** chip: it lists the open ports and every binding, with its control, channel and target. A binding learned on one port can be made to listen on any port, or removed there. Keys are in the same list, by their name.
+Click the arrow beside the **MIDI** chip: it lists the open ports and every binding, with its control, channel and target. A binding learned on one port can be made to listen on any port, or removed there. Its menu switches what the control is: a knob, one of the encoder kinds, a pad that flips (**Toggle**) or one you hold (**Momentary**). Keys and OSC addresses are in the same list, by their name.
 
-Bindings are saved with the project, by port name. Unplug a controller and its bindings stay; plug it back and they work again.
+Bindings are saved with the project, by port name. Unplug a controller and its bindings stay; plug it back and they work again. A project with a Momentary or an OSC binding doesn't open in an older Velo: update that one first.
+
+## Controller lights
+
+Velo can light your controller to match what it's doing. Turn on **Light the controllers** in **Preferences → Control**:
+
+- a pad bound to a macro, a value, blackout or freeze is lit while it's on;
+- the pad of the scene that's playing is lit, and goes dark when another one takes over;
+- a knob or an encoder gets its value back, so an LED ring or a motor fader shows where the macro is, even when the mouse, a variation or the AI moved it.
+
+Velo sends to the controller's output with the same name as its input, and only when something changes. It never sends a control back what you just did with it. Set your controller's pads to momentary (not toggle) in its own editor: Velo keeps the on and off.
 
 ## OSC
 
-Turn OSC on in **Preferences → OSC**. It shows this computer's address and the port to send to (9000 unless you change it) and the last address it heard. Velo listens on every network interface, so a phone with TouchOSC on the same network can drive it.
+Turn OSC on in **Preferences → Control**. It shows this computer's address and the port to send to (9000 unless you change it) and the last address it heard. Velo listens on every network interface, so a phone with TouchOSC on the same network can drive it.
 
 | Address | Arguments | Does |
 |---|---|---|
@@ -65,6 +79,25 @@ Turn OSC on in **Preferences → OSC**. It shows this computer's address and the
 `/velo/op/` reaches every command in Velo: the same operators the command palette (<kbd>Ctrl</kbd> <kbd>K</kbd>) runs. That makes OSC the simplest way to script Velo from another language or a live-coding setup.
 
 Velo listens for OSC from the whole network, so anyone on the venue's Wi-Fi can send to it. The other addresses only play the show, but `/velo/op/` can change or delete anything in it, so it stays off until you turn on **Run any command** in Preferences → Control.
+
+### Your own addresses
+
+A layout you already have doesn't need Velo's addresses: learn its own. In learn mode, click a control, then move a fader or press a button on the phone. Velo binds that address (`/1/fader1`, say) as it would a MIDI knob or pad: a fader sets the value, a button flips it, or holds it once you make it Momentary in the bindings list. Bind one to a macro and it moves everything the macro drives; bind it to a value of a signal node (a Math's **value**, a Gain's **gain**) and an app on the network shapes how the scene moves.
+
+### Sending OSC
+
+Velo can send OSC too, to another app or back to the phone. Turn on **Send OSC** in Preferences → Control, give it a computer's name or address and a port, and list the values to send, one address a line:
+
+| Address | Sends |
+|---|---|
+| `/velo/scene/live` | The name of the scene that's playing |
+| `/velo/tempo/bpm` | The tempo |
+| `/velo/tempo/beat` | The beat, counted |
+| `/velo/scene/macro/1` to `/8` | A macro of the scene that's playing, 0 to 1 |
+| `/velo/param/<node>/<param>` | A value, 0 to 1 along its range |
+| `/velo/signal/<node>` | A signal node's output, from the shared signals or the scene you're editing |
+
+Each goes out as it changes, or all of them so many times a second if you set **Times a second**. The macro addresses are the ones Velo listens to, so a TouchOSC fader on `/velo/scene/macro/1` follows the macro when something else moves it.
 
 ## Keys
 

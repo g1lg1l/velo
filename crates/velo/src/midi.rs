@@ -1,7 +1,8 @@
 //! MIDI control (docs/control.md): every input port, re-scanned each second for hot-plug, on a
 //! thread of its own; each message is stamped when it arrives and queued for the UI, which
 //! applies the project's bindings once a frame (continuous controls coalesced to their last
-//! value, every press counted), and learns new ones.
+//! value, every press counted), and learns new ones. Asked to, the same thread sends each
+//! controller its bindings' state back (feedback: its LEDs follow Velo).
 //! From Ravune (03cb268), adapted for Velo.
 //!
 //! Bindings act through operators (macros and parameters are document data, so undo and saving
@@ -10,6 +11,7 @@
 //! next frame's sync sends, a UI frame (≤ 16 ms) after they arrived.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -132,11 +134,12 @@ pub fn note_name(n: u8) -> String {
     format!("{}{}", NAMES[usize::from(n % 12)], i32::from(n / 12) - 2)
 }
 
-/// A control as its badge says it: "CC 21", "Note C1", "Program", "Key 4".
+/// A control as its badge says it: "CC 21", "Note C1", "Program", "Key 4", "/1/fader1".
 pub fn control_label(c: &Control) -> String {
     let msg = match c {
         Control::Midi { msg, .. } => msg,
         Control::Key(name) => return tr!("Key {}", name),
+        Control::Osc(address) => return address.clone(),
     };
     match msg {
         MidiMsg::Cc(n) => tr!("CC {}", n),
@@ -171,6 +174,70 @@ pub fn press_behavior(target: &Target) -> Behavior {
     match target {
         Target::Macro(_) | Target::Param { .. } | Target::Blackout | Target::Freeze => Behavior::Toggle,
         _ => Behavior::Trigger,
+    }
+}
+
+/// What a binding can be switched to in the bindings list: a knob or an encoder for a CC on a
+/// value, a knob for an OSC address on one, Toggle or Momentary for a pad on anything with two
+/// ends. Nothing to choose for the rest.
+pub fn behaviors(b: &Binding) -> Vec<Behavior> {
+    let value = matches!(b.target, Target::Macro(_) | Target::Param { .. });
+    if !value && !matches!(b.target, Target::Blackout | Target::Freeze) {
+        return Vec::new();
+    }
+    let (knob, encoder) = match &b.control {
+        Control::Midi { msg: MidiMsg::Cc(_), .. } => (value, value),
+        Control::Midi { msg: MidiMsg::Note(_), .. } => (false, false),
+        Control::Osc(_) => (value, false),
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if knob {
+        out.push(behavior_for(&b.target, MidiMsg::Cc(0)));
+    }
+    if encoder {
+        out.extend(RelMode::ALL.map(|mode| Behavior::Relative { mode, step: 1.0 / 128.0 }));
+    }
+    out.extend([Behavior::Toggle, Behavior::Momentary]);
+    out
+}
+
+/// A behavior as the bindings list names it.
+pub fn behavior_name(b: Behavior) -> String {
+    match b {
+        Behavior::Absolute { .. } => tr!("Knob").to_string(),
+        Behavior::Relative { mode, .. } => encoder_name(mode),
+        Behavior::Trigger => tr!("Trigger").to_string(),
+        Behavior::Toggle => tr!("Toggle").to_string(),
+        Behavior::Momentary => tr!("Momentary").to_string(),
+    }
+}
+
+/// What a control bound to `target` shows (0..1), given where the target is along its travel
+/// and which scene is on the output: a knob its value; a pad lit while its target is on, or
+/// while its scene plays. None: nothing to show (a variation, a tap).
+pub fn shows(target: &Target, behavior: Behavior, travel: Option<f32>, live: Option<usize>) -> Option<f32> {
+    match (target, behavior) {
+        (Target::LaunchScene(i), _) => Some(f32::from(u8::from(live == Some(*i)))),
+        (_, Behavior::Absolute { .. } | Behavior::Relative { .. }) => travel,
+        _ => travel.map(|k| if k >= 0.5 { 1.0 } else { 0.0 }),
+    }
+}
+
+/// The messages that show `level` (0..1) on a control: a note's velocity, a CC's value, a
+/// 14-bit controller's two halves. A program change shows nothing.
+pub fn show(port: &Arc<str>, channel: u8, msg: MidiMsg, level: f32) -> Vec<(Key, [u8; 3])> {
+    let (ch, level) = (channel & 15, level.clamp(0.0, 1.0));
+    let v = (level * 127.0).round() as u8;
+    let at = |m: MidiMsg| (port.clone(), channel, m);
+    match msg {
+        MidiMsg::Note(n) => vec![(at(msg), [0x90 | ch, n, v])],
+        MidiMsg::Cc(n) => vec![(at(msg), [0xB0 | ch, n, v])],
+        MidiMsg::Cc14(n) => {
+            let fine = (level * 16383.0).round() as u16;
+            vec![(at(MidiMsg::Cc(n)), [0xB0 | ch, n, (fine >> 7) as u8]), (at(MidiMsg::Cc(n + 32)), [0xB0 | ch, n + 32, (fine & 127) as u8])]
+        }
+        MidiMsg::ProgramChange => Vec::new(),
     }
 }
 
@@ -234,6 +301,9 @@ impl Follower {
     }
 }
 
+/// A message for a controller's output: its port, then the bytes.
+type Out = (Arc<str>, [u8; 3]);
+
 /// The MIDI input from the UI's side: the queue the port thread fills, the ports it has open,
 /// and what the UI remembers between frames.
 pub struct Midi {
@@ -250,6 +320,14 @@ pub struct Midi {
     /// last moved a value (a pause ends its undo step).
     pub seen: f64,
     moved: f64,
+    /// Feedback (docs/control.md §2): asked for, the outputs the port thread has open for it,
+    /// the queue to them (its far end the port thread's, or the tests'), and what each control
+    /// shows now, as it last sent it or as Velo last sent it.
+    feedback: Arc<AtomicBool>,
+    pub(crate) outs: Arc<Mutex<Vec<Arc<str>>>>,
+    out_tx: Sender<Out>,
+    out_rx: Option<Receiver<Out>>,
+    fed: HashMap<Key, u8>,
 }
 
 impl Default for Midi {
@@ -257,16 +335,33 @@ impl Default for Midi {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
         let (sync_tx, sync_rx) = mpsc::channel();
-        Self { tx, rx, sync_tx, sync_rx, clock_seen: None, ports: Arc::default(), last: HashMap::new(), seen: f64::NEG_INFINITY, moved: f64::NEG_INFINITY }
+        let (out_tx, out_rx) = mpsc::channel();
+        Self {
+            tx,
+            rx,
+            sync_tx,
+            sync_rx,
+            clock_seen: None,
+            ports: Arc::default(),
+            last: HashMap::new(),
+            seen: f64::NEG_INFINITY,
+            moved: f64::NEG_INFINITY,
+            feedback: Arc::default(),
+            outs: Arc::default(),
+            out_tx,
+            out_rx: Some(out_rx),
+            fed: HashMap::new(),
+        }
     }
 }
 
 impl Midi {
     /// Opens every port, now and whenever one is plugged in, on a thread that stops with this.
     pub fn start(ctx: &egui::Context) -> Self {
-        let midi = Self::default();
+        let mut midi = Self::default();
         let (tx, sync, ports, ctx) = (midi.tx.clone(), midi.sync_tx.clone(), midi.ports.clone(), ctx.clone());
-        let _ = std::thread::Builder::new().name("velo midi".into()).spawn(move || watch(&tx, &sync, &ports, &ctx));
+        let (out, outs, feedback) = (midi.out_rx.take().expect("a new queue"), midi.outs.clone(), midi.feedback.clone());
+        let _ = std::thread::Builder::new().name("velo midi".into()).spawn(move || watch(&tx, &sync, &ports, &ctx, &out, &outs, &feedback));
         midi
     }
 
@@ -274,6 +369,12 @@ impl Midi {
     #[cfg(test)]
     pub fn sender(&self) -> Sender<Event> {
         self.tx.clone()
+    }
+
+    /// What feedback sent the controllers since the last call.
+    #[cfg(test)]
+    pub fn sent(&self) -> Vec<[u8; 3]> {
+        self.out_rx.as_ref().map(|rx| rx.try_iter().map(|(_, bytes)| bytes).collect()).unwrap_or_default()
     }
 
     /// The open ports' names, as last scanned.
@@ -288,10 +389,12 @@ impl Midi {
 }
 
 /// The port thread: a scan a second, connecting new ports and closing gone ones (dropping a
-/// connection closes it). Ends once the UI's side is gone.
-fn watch(tx: &Sender<Event>, sync: &Sender<Sync>, ports: &Arc<Mutex<Vec<String>>>, ctx: &egui::Context) {
-    use midir::{Ignore, MidiInput, MidiInputConnection};
+/// connection closes it), and in between sending feedback as it comes. Ends once the UI's side
+/// is gone.
+fn watch(tx: &Sender<Event>, sync: &Sender<Sync>, ports: &Arc<Mutex<Vec<String>>>, ctx: &egui::Context, out: &Receiver<Out>, outs: &Mutex<Vec<Arc<str>>>, feedback: &AtomicBool) {
+    use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
     let mut open: Vec<(String, MidiInputConnection<()>)> = Vec::new();
+    let mut sends: Vec<(Arc<str>, MidiOutputConnection)> = Vec::new();
     while Arc::strong_count(ports) > 1 {
         if let Ok(scanner) = MidiInput::new("Velo") {
             let found: Vec<_> = scanner.ports().into_iter().filter_map(|p| Some((scanner.port_name(&p).ok()?, p))).collect();
@@ -325,7 +428,37 @@ fn watch(tx: &Sender<Event>, sync: &Sender<Sync>, ports: &Arc<Mutex<Vec<String>>
                 *p = open.iter().map(|(n, _)| n.clone()).collect();
             }
         }
-        std::thread::sleep(Duration::from_secs(1));
+        // feedback goes to each input's controller by its output of the same name, opened only
+        // once asked for (on Windows an open output is Velo's alone)
+        let on = feedback.load(Relaxed);
+        sends.retain(|(name, _)| on && open.iter().any(|(n, _)| **n == **name));
+        if on && let Ok(scanner) = MidiOutput::new("Velo") {
+            for port in scanner.ports() {
+                let Ok(name) = scanner.port_name(&port) else { continue };
+                if !open.iter().any(|(n, _)| *n == name) || sends.iter().any(|(n, _)| **n == *name) {
+                    continue;
+                }
+                if let Ok(Ok(connection)) = MidiOutput::new("Velo").map(|o| o.connect(&port, "velo-out")) {
+                    sends.push((name.into(), connection));
+                }
+            }
+        }
+        if let Ok(mut o) = outs.lock() {
+            *o = sends.iter().map(|(n, _)| n.clone()).collect();
+        }
+        // until the next scan, what the UI sends goes out as it comes
+        let scan = Instant::now() + Duration::from_secs(1);
+        while let Some(left) = scan.checked_duration_since(Instant::now()) {
+            match out.recv_timeout(left) {
+                Ok((port, bytes)) => {
+                    if let Some((_, c)) = sends.iter_mut().find(|(n, _)| *n == port) {
+                        let _ = c.send(&bytes);
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            }
+        }
     }
 }
 
@@ -388,12 +521,43 @@ impl App {
             self.midi.seen = now;
         }
         for input in inputs {
+            // the control shows what it sent: feedback never sends it back
+            self.midi.fed.insert((input.port.clone(), input.channel, input.msg), input.value);
             if self.learn_from(&input) {
                 continue;
             }
             let bound: Vec<Binding> = self.session.project.bindings.iter().filter(|b| matches(&b.control, &input)).cloned().collect();
             for b in bound {
                 self.fire(&b, &input, now);
+            }
+        }
+        self.feedback();
+    }
+
+    /// MIDI out (docs/control.md §2), when asked for: each binding's state back to its
+    /// controller, so its LEDs follow Velo whatever moved it. Only what differs from what the
+    /// control shows goes out.
+    fn feedback(&mut self) {
+        let on = self.settings.midi_feedback;
+        self.midi.feedback.store(on, Relaxed);
+        let Some(outs) = self.midi.outs.try_lock().ok().map(|o| o.clone()) else { return };
+        // an output opened anew shows nothing yet: everything goes out to it once
+        self.midi.fed.retain(|k, _| on && outs.contains(&k.0));
+        if !on || outs.is_empty() {
+            return;
+        }
+        let live = self.live.as_ref().and_then(|l| l.live_scene()).and_then(|id| self.session.project.scenes.iter().position(|s| s.id == id));
+        let mut out = Vec::new();
+        for b in &self.session.project.bindings {
+            let Control::Midi { port, channel, msg } = &b.control else { continue };
+            let Some(level) = shows(&b.target, b.behavior, self.travel(&b.target), live) else { continue };
+            for o in outs.iter().filter(|o| port.as_deref().is_none_or(|p| p == o.as_ref())) {
+                out.extend(show(o, *channel, *msg, level));
+            }
+        }
+        for (key, bytes) in out {
+            if self.midi.fed.insert(key.clone(), bytes[2]) != Some(bytes[2]) {
+                let _ = self.midi.out_tx.send((key.0, bytes));
             }
         }
     }
@@ -430,7 +594,7 @@ impl App {
     }
 
     /// What learn found for the control that waited: bound, and said.
-    fn bind(&mut self, binding: Binding) {
+    pub(crate) fn bind(&mut self, binding: Binding) {
         let text = tr!("{} now drives {}", control_label(&binding.control), self.target_name(&binding.target));
         self.run("binding.add", json!(binding));
         self.say(Tone::Done, text);
@@ -564,6 +728,14 @@ impl App {
                 let last = if input.fine.is_some() { None } else { input.prev.map(|p| f32::from(p) / 127.0) };
                 if takeover == Takeover::Jump || picks_up(last, k, current) {
                     self.set_travel(&b.target, k, now);
+                }
+            }
+            // on while held (a note on, a CC from the middle up); a tap within one frame is over
+            // before the next sync, so it shows nothing
+            Behavior::Momentary => {
+                let held = |v: u8| if matches!(input.msg, MidiMsg::Note(_)) { v > 0 } else { v >= 64 };
+                if input.prev.map(held) != Some(held(input.value)) {
+                    self.set_travel(&b.target, f32::from(u8::from(held(input.value))), now);
                 }
             }
             _ => self.press(b, input, now),
@@ -832,5 +1004,28 @@ mod tests {
         assert_eq!(behavior_for(&Target::Blackout, MidiMsg::Note(1)), Behavior::Toggle);
         assert_eq!(behavior_for(&Target::LaunchScene(2), MidiMsg::Note(1)), Behavior::Trigger);
         assert_eq!(behavior_for(&Target::TapTempo, MidiMsg::Cc(1)), Behavior::Trigger);
+    }
+
+    #[test]
+    fn feedback_shows_values_toggles_and_the_playing_scene() {
+        let scene = Target::LaunchScene(2);
+        assert_eq!(shows(&scene, Behavior::Trigger, None, Some(2)), Some(1.0), "the playing scene's pad is lit");
+        assert_eq!(shows(&scene, Behavior::Trigger, None, Some(0)), Some(0.0));
+        assert_eq!(shows(&Target::Macro(0), Behavior::Absolute { takeover: Takeover::Pickup }, Some(0.3), None), Some(0.3), "a knob, its value");
+        assert_eq!(shows(&Target::Macro(0), Behavior::Toggle, Some(0.7), None), Some(1.0), "a pad, on or off");
+        assert_eq!(shows(&Target::Variation(1), Behavior::Trigger, None, Some(1)), None, "nothing to show");
+        let port: Arc<str> = "Pads".into();
+        assert_eq!(show(&port, 9, MidiMsg::Note(36), 1.0)[0].1, [0x99, 36, 127]);
+        assert_eq!(show(&port, 0, MidiMsg::Cc(21), 0.5)[0].1, [0xB0, 21, 64]);
+        let fine: Vec<[u8; 3]> = show(&port, 0, MidiMsg::Cc14(7), 1.0).into_iter().map(|m| m.1).collect();
+        assert_eq!(fine, [[0xB0, 7, 127], [0xB0, 39, 127]], "a 14-bit fader, both halves");
+        assert!(show(&port, 0, MidiMsg::ProgramChange, 1.0).is_empty());
+        // what the bindings list offers: a CC on a macro is a knob, an encoder or a pad; a note a pad
+        let bind = |control: Control, target: Target| Binding { control, target, behavior: Behavior::Toggle };
+        let cc = Control::Midi { port: None, channel: 0, msg: MidiMsg::Cc(1) };
+        assert_eq!(behaviors(&bind(cc.clone(), Target::Macro(0))).len(), 6);
+        assert_eq!(behaviors(&bind(Control::Midi { port: None, channel: 0, msg: MidiMsg::Note(1) }, Target::Blackout)), [Behavior::Toggle, Behavior::Momentary]);
+        assert_eq!(behaviors(&bind(Control::Osc("/1/fader1".into()), Target::Macro(0))).len(), 3);
+        assert!(behaviors(&bind(cc, Target::LaunchScene(0))).is_empty() && behaviors(&bind(Control::Key("4".into()), Target::Freeze)).is_empty());
     }
 }
