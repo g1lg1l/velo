@@ -245,7 +245,7 @@ struct HeaderInput {
 const RESERVED: [&str; 8] = ["g", "smp", "prev", "wave", "past_frame", "velo_params", "main_image", "uv"];
 
 /// What a node with a history reads its first input's past frames with (gpu::Runner keeps them,
-/// half the canvas each way): `n` frames back, 0 this one, between two frames for a fraction.
+/// a quarter of the canvas each way): `n` frames back, 0 this one, between two frames for a fraction.
 const PAST_FRAME: &str = "fn past_frame(uv: vec2f, n: f32) -> vec4f {
     let count = velo_past.y;
     let back = clamp(n, 0.0, count - 1.0);

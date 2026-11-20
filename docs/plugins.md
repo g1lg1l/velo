@@ -54,7 +54,7 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
 | `feedback` | `true`: the node reads its own previous frame as `prev` |
 | `audio` | `true`: the node reads the audio texture as `wave` |
 | `buffers` | Up to four pictures the node keeps from frame to frame, `[{ "id": "a", "scale": 0.5 }]` (`scale` of the canvas each way, 0.0625 to 1, 1 when missing). Each is drawn by a pass of its own, `fn buffer_a(uv: vec2f, px: vec2f) -> vec4f`, in the order written, before `main_image`. Every pass reads every buffer by its id: the ones before it as drawn this frame, itself and the ones after as drawn last frame; `main_image` reads all as of this frame. One nothing has drawn in yet is zeros |
-| `history` | `true`: Velo keeps the first input's last 32 frames (at half the canvas each way) for `past_frame` |
+| `history` | `true`: Velo keeps the first input's last 120 frames (two seconds at 60 fps, at a quarter of the canvas each way: 124 MB at 1080p) for `past_frame` |
 | `amount` | For effects: `"manual"` (the shader uses `amount` itself) or `"none"` (no amount knob) |
 
 Unknown keys are an error, so a typo doesn't pass silently.
@@ -72,7 +72,7 @@ Unknown keys are an error, so a typo doesn't pass silently.
 | `smp` | The sampler: `textureSample(src, smp, uv)` |
 | `prev` | The node's previous frame, with `"feedback": true` |
 | `wave` | The audio texture, with `"audio": true` |
-| `past_frame(uv, n)` | With `"history": true`, the first input `n` frames back (0 is this frame, up to 31; a fraction is between two frames) |
+| `past_frame(uv, n)` | With `"history": true`, the first input `n` frames back (0 is this frame, up to 119; a fraction is between two frames) |
 
 The ids `g`, `smp`, `prev`, `wave`, `uv`, `main_image`, `past_frame`, `velo_params` and anything starting with `velo_` are reserved. Errors are reported at the line of your file, not of the wrapped one.
 

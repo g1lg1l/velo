@@ -1,12 +1,12 @@
 /*{
   "name": "Time Machine",
   "category": "effect",
-  "description": "The picture as it was some frames ago (up to 31, kept at half size); with a map, each part as far back as the map is bright there: slit-scan, time smeared along a gradient or a shape",
+  "description": "The picture as it was some frames ago (up to 119, two seconds at 60 fps, kept at a quarter size); with a map, each part as far back as the map is bright there: slit-scan, time smeared along a gradient or a shape",
   "inputs": [{ "id": "src", "type": "texture" }, { "id": "map", "type": "texture" }],
   "history": true,
   "params": [
     { "id": "music", "type": "float", "default": 0.0, "min": 0.0, "max": 1.0 },
-    { "id": "frames", "type": "float", "default": 12.0, "min": 0.0, "max": 31.0 },
+    { "id": "frames", "type": "float", "default": 12.0, "min": 0.0, "max": 119.0 },
     { "id": "invert", "type": "bool", "default": false }
   ]
 }*/
