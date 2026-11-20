@@ -58,7 +58,7 @@ fn main() {
     let source = if has("--mic") {
         Source::DefaultInput
     } else if let Some(name) = value("--device") {
-        Source::Named(name)
+        Source::Named(name, 0)
     } else {
         Source::Computer
     };

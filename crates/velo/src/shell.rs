@@ -1876,7 +1876,11 @@ fn audio_words(state: &AudioState, current: Option<&Input>) -> (String, String) 
     };
     match (&state.hearing, &app) {
         (Hearing::Failed(e), Some(name)) => (tr!("Waiting for {}", name), e.clone()),
-        (Hearing::Nothing, Some(name)) => (tr!("{} is silent", name), tr!("Nothing plays in {}. If something does: macOS System Settings → Privacy & Security → Screen & System Audio Recording, allow Velo, then reopen it.", name)),
+        // only macOS asks for a permission first
+        (Hearing::Nothing, Some(name)) if cfg!(target_os = "macos") => {
+            (tr!("{} is silent", name), tr!("Nothing plays in {}. If something does: macOS System Settings → Privacy & Security → Screen & System Audio Recording, allow Velo, then reopen it.", name))
+        }
+        (Hearing::Nothing, Some(name)) => (tr!("{} is silent", name), tr!("Nothing plays in {}", name)),
         (hearing, _) => match hearing {
             Hearing::Live => (state.name.clone(), tr!("Listening to {}", state.name)),
             Hearing::Waiting if cfg!(target_os = "macos") => (tr!("Waiting for permission…").to_string(), tr!("Waiting for the input to start (on macOS, for your permission)").to_string()),
@@ -1902,8 +1906,23 @@ fn audio_menu(ui: &mut Ui, t: &Theme, state: &AudioState, current: Option<&Input
         ui.separator();
     }
     let mut inputs: Vec<(&str, Input, String)> = vec![("", Input::Computer, format!("{}  {}", icons::SPEAKER_HIGH, tr!("Computer audio"))), ("", Input::Default, format!("{}  {}", icons::MICROPHONE, tr!("Default input")))];
-    inputs.extend(state.devices.iter().map(|name| (tr!("DEVICES"), Input::Named(name.clone()), format!("{}  {name}", icons::MICROPHONE))));
-    // one app's sound (macOS 14.2+): the apps that use audio, the one picked even while it's closed
+    // the device listened to keeps its pair
+    let first = |name: &str| match current {
+        Some(Input::Named(n, first)) if n == name => *first,
+        _ => 0,
+    };
+    inputs.extend(state.devices.iter().map(|name| (tr!("DEVICES"), Input::Named(name.clone(), first(name)), format!("{}  {name}", icons::MICROPHONE))));
+    // a multichannel interface: which pair of its inputs (music often comes in on 3–4 or later),
+    // an odd last one alone
+    if let Some(Input::Named(name, _)) = current
+        && state.channels > 2
+    {
+        inputs.extend((0..state.channels).step_by(2).map(|k| {
+            let label = if k + 1 < state.channels { tr!("Inputs {}–{}", k + 1, k + 2) } else { tr!("Input {}", k + 1) };
+            (tr!("CHANNELS"), Input::Named(name.clone(), k), format!("{}  {label}", icons::PLUGS))
+        }));
+    }
+    // one app's sound (macOS 14.2+, Windows 11): the apps that use audio, the one picked even while it's closed
     let mut apps: Vec<(String, String, bool)> = state.apps.iter().map(|a| (a.id.clone(), a.name.clone(), a.playing)).collect();
     if let Some(Input::App { id, name }) = current
         && !apps.iter().any(|a| &a.0 == id)
@@ -1918,7 +1937,8 @@ fn audio_menu(ui: &mut Ui, t: &Theme, state: &AudioState, current: Option<&Input
     }
     inputs.push((tr!("AUDIO FILE"), Input::File(String::new()), format!("{}  {}", icons::FOLDER_OPEN, tr!("Play an MP3…"))));
     let items: Vec<(&str, &str)> = inputs.iter().map(|(group, _, label)| (*group, label.as_str())).collect();
-    if let Some(i) = kit::choose(ui, t, &items, inputs.iter().position(|(_, input, _)| current == Some(input))) {
+    // the last that matches: a device's pair over the device
+    if let Some(i) = kit::choose(ui, t, &items, inputs.iter().rposition(|(_, input, _)| current == Some(input))) {
         pick = Some(inputs.swap_remove(i).1);
     }
     if pick == Some(Input::File(String::new())) {

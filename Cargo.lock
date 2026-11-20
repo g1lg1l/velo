@@ -4498,6 +4498,8 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "rtrb",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

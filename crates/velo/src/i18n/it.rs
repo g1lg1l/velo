@@ -572,6 +572,8 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Twist", "Torsione"),
     ("Hue step", "Passo di tinta"),
     ("DEVICES", "DISPOSITIVI"),
+    ("CHANNELS", "CANALI"),
+    ("Inputs {}–{}", "Ingressi {}–{}"),
     ("A picture in WGSL: one of its presets (Plasma, Fire, Lasers…) or your own code, its knobs from its header.", "Un'immagine in WGSL: uno dei suoi preset (Plasma, Fuoco, Laser…) o il tuo codice, i controlli dalla sua intestazione."),
     ("An effect in WGSL on what comes in: one of its presets (Glitch, VHS, LED Wall…) or your own code.", "Un effetto in WGSL su quello che entra: uno dei suoi preset (Glitch, VHS, LED Wall…) o il tuo codice."),
     ("Up to sixteen pictures in one: a blend mode, its intensity, a key for dark backgrounds.", "Fino a sedici immagini in una: un metodo di fusione, la sua intensità, una chiave per gli sfondi scuri."),
@@ -1125,6 +1127,7 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Images", "Immagini"),
     ("Waiting for {}", "In attesa di {}"),
     ("{} is silent", "{} è in silenzio"),
+    ("Nothing plays in {}", "In {} non suona nulla"),
     (
         "Nothing plays in {}. If something does: macOS System Settings → Privacy & Security → Screen & System Audio Recording, allow Velo, then reopen it.",
         "In {} non suona nulla. Se invece suona: Impostazioni di Sistema di macOS → Privacy e sicurezza → Registrazione schermo e audio di sistema, consenti Velo, poi riaprilo.",
