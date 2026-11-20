@@ -27,7 +27,7 @@ const DOWNLOADS: &str = "https://github.com/g1lg1l/velo/releases/download";
 /// What a download may be.
 const MAX_BYTES: u64 = 256 << 20;
 
-fn get(url: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn get(url: &str) -> Result<Vec<u8>, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         // an update is tens of MB: minutes on a slow line, but a dead one fails fast
         .timeout_global(Some(Duration::from_secs(600)))
@@ -76,17 +76,16 @@ fn asset_suffix(exe: &Path) -> Option<&'static str> {
     }
 }
 
-/// The program in a release zip, wherever it sits in it, written into `to`. Nothing else, and
-/// nothing from outside the zip's own folders.
-fn unzip_binary(bytes: &[u8], to: &Path) -> Result<(), String> {
+/// The file called `name` in a zip (a release's program, ffmpeg's), wherever it sits in it,
+/// written into `to`. Nothing else, and nothing from outside the zip's own folders.
+pub(crate) fn unzip_file(bytes: &[u8], name: &str, to: &Path) -> Result<(), String> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let name = binary();
     for i in 0..zip.len() {
         let mut file = zip.by_index(i).map_err(|e| e.to_string())?;
         if file.enclosed_name().and_then(|p| Some(p.file_name()?.to_string_lossy().into_owned())).is_none_or(|n| n != name) {
             continue;
         }
-        let mut out = std::fs::File::create(to.join(&name)).map_err(|e| e.to_string())?;
+        let mut out = std::fs::File::create(to.join(name)).map_err(|e| e.to_string())?;
         std::io::copy(&mut file, &mut out).map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -146,7 +145,7 @@ fn stage(url: &str, exe: PathBuf) -> Result<Staged, String> {
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     if url.ends_with(".zip") {
-        unzip_binary(&bytes, &staging)?;
+        unzip_file(&bytes, &binary(), &staging)?;
     } else {
         // tar keeps the Unix permissions and the Mac bundle; every Linux and macOS has it
         let tarball = staging.join("update.tar.gz");
@@ -416,7 +415,7 @@ mod tests {
             }
             zip.finish().unwrap();
         }
-        unzip_binary(bytes.get_ref(), &staging).unwrap();
+        unzip_file(bytes.get_ref(), &name, &staging).unwrap();
         assert!(!staging.join("README.md").exists() && !root.join(format!("evil-{name}")).exists(), "only the program, only from inside the zip");
         swap(&staging, &target).unwrap();
         let read = |path: &Path| std::fs::read_to_string(path).unwrap();

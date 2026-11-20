@@ -32,6 +32,8 @@ arboard = { version = "3.7.0", default-features = false }
 ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 roxmltree = "0.21.2"
 zip = { version = "9.1.2", default-features = false, features = ["deflate-flate2"] }
+# the SHA-256 of an ffmpeg Velo fetches for recording: already in the tree through rustls
+ring = "0.17.14"
 # MIDI controllers (as in Ravune): CoreMIDI, WinMM, ALSA
 midir = "0.11.1"
 # Ableton Link (tempo and phase with Live, DJ apps and phones on the network): Ableton's own

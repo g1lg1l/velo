@@ -4469,6 +4469,7 @@ dependencies = [
  "midir",
  "png",
  "rfd",
+ "ring",
  "ron",
  "roxmltree",
  "rusty_link",

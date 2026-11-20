@@ -2,7 +2,8 @@
 //! (runtime.rs), go to ffmpeg at the project's frame rate as H.264 (the GPU's encoder on a Mac);
 //! the audio Velo hears ([`Tap`], handed over by the audio thread) is kept in a WAV beside it and
 //! put in when the recording stops, as late as the speakers play it. ffmpeg isn't bundled: the
-//! one the user installed is found (Homebrew's, MacPorts', or on the PATH).
+//! app gives the one to use, installed ([`ffmpeg`] finds it: Homebrew's, MacPorts', on the PATH)
+//! or fetched when the user agreed to (crates/velo/src/ffmpeg.rs).
 
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
@@ -20,6 +21,8 @@ pub struct Spec {
     pub fps: u32,
     /// The audio, when it's wanted: what the audio thread hands over.
     pub audio: Option<Arc<Tap>>,
+    /// The ffmpeg that encodes it.
+    pub ffmpeg: PathBuf,
 }
 
 /// Where the audio thread hands over what it hears, while a recording takes it (nothing is
@@ -164,7 +167,7 @@ pub struct Recorder {
 impl Recorder {
     /// `told` gets the movie's path when it's done, or why it failed.
     pub fn new(spec: Spec, told: Arc<Mutex<Option<Result<PathBuf, String>>>>) -> Result<Self, String> {
-        let ffmpeg = ffmpeg().ok_or("Recording needs ffmpeg: install it (brew install ffmpeg, winget install ffmpeg, or your system's package)")?;
+        let ffmpeg = spec.ffmpeg.clone();
         let heard = spec.audio.as_ref().map(|tap| {
             let (to, heard) = mpsc::channel();
             if let Ok(mut slot) = tap.to.lock() {
@@ -357,7 +360,7 @@ mod tests {
         let path = dir.join("take.mp4");
         let tap = Arc::new(Tap::default());
         let told = Arc::new(Mutex::new(None));
-        let mut recorder = Recorder::new(Spec { path: path.clone(), size: [64, 32], fps: 30, audio: Some(tap.clone()) }, told.clone()).unwrap();
+        let mut recorder = Recorder::new(Spec { path: path.clone(), size: [64, 32], fps: 30, audio: Some(tap.clone()), ffmpeg: ffmpeg.clone() }, told.clone()).unwrap();
         assert!(tap.wanted());
         // 64×32, rows padded to 256 bytes as a read-back's are
         let pixels = vec![200u8; 256 * 32];

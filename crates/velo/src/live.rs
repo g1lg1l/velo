@@ -615,10 +615,11 @@ impl Live {
         self.engine.send(Command::Share(kind));
     }
 
-    /// The program recorded to `path` at `size` and `fps`, with what's heard (`sound`), or the recording
-    /// stopped (`None`); the engine says how it went in its status's `recorded`.
-    pub fn record(&mut self, to: Option<(std::path::PathBuf, [u32; 2], u32, bool)>) {
-        let spec = to.map(|(path, size, fps, sound)| velo_engine::record::Spec { path, size, fps, audio: sound.then(|| self.audio.links.tap.clone()) });
+    /// The program recorded to `path` at `size` and `fps`, with what's heard (`sound`), by
+    /// `ffmpeg`, or the recording stopped (`None`); the engine says how it went in its status's
+    /// `recorded`.
+    pub fn record(&mut self, to: Option<(std::path::PathBuf, [u32; 2], u32, bool, std::path::PathBuf)>) {
+        let spec = to.map(|(path, size, fps, sound, ffmpeg)| velo_engine::record::Spec { path, size, fps, audio: sound.then(|| self.audio.links.tap.clone()), ffmpeg });
         self.engine.send(Command::Record(spec));
     }
 

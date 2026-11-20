@@ -46,7 +46,7 @@ The share sends the program at full size, whatever the display does.
 
 The sound Velo hears goes in too: the computer's, an app's, a microphone's or the audio file's, put as late as **Speaker lag** says, so it lines up with the pictures as it did in the room. Untick **With the sound Velo hears** for a silent movie.
 
-Recording needs [ffmpeg](https://ffmpeg.org): `brew install ffmpeg` on a Mac, `winget install ffmpeg` on Windows, your package manager on Linux. On a Mac it encodes on the GPU. Quitting Velo while it records finishes the movie first.
+Recording needs [ffmpeg](https://ffmpeg.org). Velo uses the one on the computer if there is one (`brew install ffmpeg` on a Mac, `winget install ffmpeg` on Windows, your package manager on Linux). If there isn't, the first **Record the output** asks before downloading one: about 28 MB on a Mac, 119 MB on Windows, 33 MB on Linux (x86-64), a pinned build checked against its published checksum, kept in Velo's own folder and used from then on. Nothing is downloaded unless you say so. On a Mac it encodes on the GPU. Quitting Velo while it records finishes the movie first.
 
 ## On stage
 

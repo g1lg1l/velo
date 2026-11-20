@@ -763,7 +763,7 @@ impl App {
             ui.separator();
             kit::menu_title(ui, t, tr!("RECORD"));
             let r = ui.add(egui::Button::selectable(recording, format!("{}  {}", icons::FILM_STRIP, if recording { tr!("Stop recording") } else { tr!("Record the output") })).shortcut_text(keys("stage.record")));
-            if r.on_hover_text(tr!("The output as a movie (MP4) in your Movies folder, at the canvas's size and frame rate. Needs ffmpeg")).clicked() {
+            if r.on_hover_text(tr!("The output as a movie (MP4) in your Movies folder, at the canvas's size and frame rate. Needs ffmpeg: Velo offers to download it")).clicked() {
                 stage = Some("stage.record");
             }
             ui.add_enabled_ui(!recording, |ui| {

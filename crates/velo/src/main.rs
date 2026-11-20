@@ -15,6 +15,7 @@ mod ai;
 mod canvas;
 mod chat;
 mod code;
+mod ffmpeg;
 mod files;
 mod host;
 mod icons;
@@ -440,6 +441,8 @@ struct App {
     recovery: Option<Project>,
     /// The output being recorded: to which file, since when.
     recording: Option<(PathBuf, std::time::Instant)>,
+    /// No ffmpeg to record with: asking to fetch it, or fetching it.
+    ffmpeg: ffmpeg::Fetch,
     /// When the ui last ran with the window hidden.
     hidden_pass: Option<std::time::Instant>,
 }
@@ -512,6 +515,7 @@ impl App {
             quitting: None,
             recovery: files::take_recovery(),
             recording: None,
+            ffmpeg: ffmpeg::Fetch::default(),
             hidden_pass: None,
         };
         // opened by itself, Velo always starts on the start screen, unsaved work from last time
@@ -561,6 +565,10 @@ impl App {
             && let Some(scene) = app.session.project.scenes.get(n.saturating_sub(1))
         {
             app.demo_drop = Some((scene.id.clone(), false));
+        }
+        // VELO_DEMO_FFMPEG: the question asked when there's no ffmpeg to record with (docs)
+        if std::env::var_os("VELO_DEMO_FFMPEG").is_some() {
+            app.ffmpeg = ffmpeg::Fetch::Asking;
         }
         // VELO_DEMO_SHARE=spout|ndi|syphon: the program shared that way from the start (tests)
         if let (Ok(way), Some(live)) = (std::env::var("VELO_DEMO_SHARE"), &mut app.live) {
@@ -2338,12 +2346,15 @@ impl App {
     /// Records the output to a new movie in the Movies folder (Videos elsewhere), or stops it.
     fn toggle_record(&mut self) {
         let name = self.file_name();
+        let found = if self.recording.is_none() { ffmpeg::find() } else { None };
         let Some(live) = &mut self.live else { return };
         if self.recording.take().is_some() {
             live.record(None);
             self.say(Tone::Action, tr!("Finishing the recording…"));
             return;
         }
+        // none on the computer: Velo asks to fetch one, and records once it's in
+        let Some(ffmpeg) = found else { return self.offer_ffmpeg() };
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
         let dir = home.map(|h| h.join(if cfg!(target_os = "macos") { "Movies" } else { "Videos" }).join("Velo"));
         let Some(dir) = dir.filter(|d| std::fs::create_dir_all(d).is_ok()) else {
@@ -2352,7 +2363,7 @@ impl App {
         };
         let Some(path) = (1..10_000).map(|n| dir.join(format!("{name} {n}.mp4"))).find(|p| !p.exists()) else { return };
         let canvas = &self.session.project.canvas;
-        live.record(Some((path.clone(), [canvas.width, canvas.height], canvas.fps.max(1), !self.settings.record_mute)));
+        live.record(Some((path.clone(), [canvas.width, canvas.height], canvas.fps.max(1), !self.settings.record_mute, ffmpeg)));
         self.recording = Some((path, std::time::Instant::now()));
         self.say(Tone::Action, if self.settings.record_mute { tr!("Recording the output, without sound") } else { tr!("Recording the output and its sound") });
     }
@@ -3807,6 +3818,7 @@ impl App {
         self.rename_dialog(&ctx);
         self.palette_ui(&ctx);
         self.file_modals(&ctx);
+        self.ffmpeg_modal(&ctx);
         self.toast_ui(&ctx);
         self.splash_ui(&ctx);
         // learn mode says what it waits for, over whatever the mouse is on
@@ -4050,6 +4062,7 @@ impl App {
             quitting: None,
             recovery: None,
             recording: None,
+            ffmpeg: ffmpeg::Fetch::default(),
             hidden_pass: None,
         }
     }
