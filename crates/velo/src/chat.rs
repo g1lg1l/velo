@@ -127,11 +127,25 @@ pub struct Conversation {
     /// What the reply on its way used so far.
     #[serde(skip)]
     tokens: Option<Tokens>,
+    /// How full the model's context is (tokens the conversation takes, and holds), as its CLI
+    /// last said.
+    context: Context,
+    /// The account's usage limits, as its CLI last said them.
+    #[serde(skip)]
+    limits: Vec<ai::Limit>,
     /// The project before the last reply, and after it while nothing else changed it.
     #[serde(skip)]
     before: Option<Project>,
     #[serde(skip)]
     after: Option<Project>,
+}
+
+/// How full a conversation's model context is: the tokens it takes now, and how many it holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Context {
+    used: Option<u64>,
+    window: Option<u64>,
 }
 
 /// What a worker found out for the panel.
@@ -341,6 +355,14 @@ impl Conversation {
                 Event::Session(id) => self.session = Some(id),
                 Event::History(h) => self.history = h,
                 Event::Usage(more) => *self.tokens.get_or_insert_default() += more,
+                Event::Context { used, window } => {
+                    self.context.used = used.or(self.context.used);
+                    self.context.window = window.or(self.context.window);
+                }
+                Event::Limit(limit) => {
+                    self.limits.retain(|l| l.window != limit.window);
+                    self.limits.push(limit);
+                }
                 Event::Text(text) => self.items.push(Item::Text { text, shown: 0 }),
                 Event::Tool(id, label) => {
                     let step = Step { id, label, state: StepState::Running, error: None };
@@ -869,6 +891,7 @@ impl App {
         let dt = self.chat.typed.replace(Instant::now()).map_or(0.0, |at| at.elapsed().as_secs_f32()).min(0.1);
         let width = ui.available_width();
         let changed = self.chat.chats[current].after.as_ref().is_some_and(|a| *a == self.session.project);
+        let project = &self.session.project;
         let c = &mut self.chat.chats[current];
         let open = &mut self.chat.open;
         let last_end = c.items.iter().rposition(|i| matches!(i, Item::End { .. }));
@@ -932,7 +955,7 @@ impl App {
                     // a row (AI Elements' Tool), and the commands under it when open
                     let key = (c.updated, n);
                     let is_open = open.contains(&key);
-                    if steps_row(ui, t, steps, is_open).clicked() {
+                    if steps_row(ui, t, steps, is_open, project).clicked() {
                         if is_open {
                             open.remove(&key);
                         } else {
@@ -943,7 +966,7 @@ impl App {
                         let list = Frame::new().inner_margin(egui::Margin { left: 18, right: 4, top: 0, bottom: 2 }).show(ui, |ui| {
                             ui.spacing_mut().item_spacing.y = 4.0;
                             for step in steps.iter() {
-                                step_line(ui, t, step);
+                                step_line(ui, t, step, project);
                             }
                         });
                         let rect = list.response.rect;
@@ -967,34 +990,43 @@ impl App {
                 }
                 Item::End { seconds, steps, tokens } => {
                     ui.horizontal(|ui| {
-                        let done = if *steps > 0 { tr!("{} s · {} steps", seconds, steps) } else { tr!("{} s", seconds) };
-                        ui.label(RichText::new(done).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        // how long, how many commands, what it used: one strip, its parts apart
+                        let mut parts = vec![(Some(icons::TIMER), format!("{seconds} s"), String::new(), tr!("How long the reply took").to_string())];
+                        if *steps > 0 {
+                            parts.push((Some(icons::LIGHTNING), steps.to_string(), (if *steps == 1 { tr!("step") } else { tr!("steps") }).into(), tr!("The commands it ran in Velo").into()));
+                        }
+                        let buttons = 2.0 + if said { 26.0 } else { 0.0 } + if Some(n) == last_end { 150.0 } else { 0.0 };
+                        strip(ui, t, &parts, ui.available_width() - buttons);
                         kit::right(ui, |ui| {
-                            if said && kit::icon_button(ui, t, icons::COPY, tr!("Copy the reply"), false).clicked() {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            if said && quiet(ui, t, Some(icons::COPY), "").on_hover_text(tr!("Copy the reply")).clicked() {
                                 actions.copy = Some((current, n));
                             }
                             // a reply whose command failed: the same message once more
                             if let Some(m) = retry.as_ref().filter(|_| Some(n) == last_end && !retry_on_card)
-                                && kit::action(ui, t, kit::Variant::Outline, Some(icons::ARROW_CLOCKWISE), tr!("Retry")).on_hover_text(tr!("Send the same message again")).clicked()
+                                && quiet(ui, t, Some(icons::ARROW_CLOCKWISE), tr!("Retry")).on_hover_text(tr!("Send the same message again")).clicked()
                             {
                                 actions.send = Some((m.text.clone(), m.pictures.clone()));
                             }
-                            if Some(n) == last_end && changed && kit::action(ui, t, kit::Variant::Ghost, Some(icons::ARROW_U_UP_LEFT), tr!("Undo")).on_hover_text(tr!("Take back everything this reply changed")).clicked() {
+                            if Some(n) == last_end && changed && quiet(ui, t, Some(icons::ARROW_U_UP_LEFT), tr!("Undo")).on_hover_text(tr!("Take back everything this reply changed")).clicked() {
                                 actions.undo = Some(current);
                             }
                         });
                     });
-                    // what it used, on a line of its own: the buttons above take the row's right
+                    // what it used, grouped on a strip of its own under them. What came from the
+                    // cache costs about a tenth: apart, so the big number doesn't read as the bill
                     if let Some(used) = tokens {
-                        // what came from the cache costs about a tenth: apart, so the big number doesn't
-                        // read as the bill
-                        let fresh = used.read.saturating_sub(used.cached);
-                        let mut line =
-                            if used.cached > 0 { tr!("{} new · {} cached · {} out", ai::short(fresh), ai::short(used.cached), ai::short(used.written)) } else { tr!("{} tokens in, {} out", ai::short(used.read), ai::short(used.written)) };
-                        if let Some(d) = used.dollars {
-                            line = format!("{line} · ${d:.2}");
+                        let mut parts = vec![(None, ai::short(used.read.saturating_sub(used.cached)), tr!("new").to_string(), tr!("Tokens the model read anew").to_string())];
+                        if used.cached > 0 {
+                            parts.push((None, ai::short(used.cached), tr!("cached").into(), tr!("Tokens read again from the cache: about a tenth of the price").into()));
                         }
-                        ui.label(RichText::new(line).font(Theme::mono(t.text_xs)).color(t.fg_muted)).on_hover_text(tr!("Tokens the model read anew, read again from the cache (about a tenth of the price) and wrote"));
+                        parts.push((None, ai::short(used.written), tr!("written").into(), tr!("Tokens the model wrote").into()));
+                        if let Some(d) = used.dollars {
+                            parts.push((None, format!("${d:.2}"), String::new(), tr!("What the reply cost, as the provider says").into()));
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| strip(ui, t, &parts, ui.available_width()));
                     }
                 }
             }
@@ -1007,7 +1039,7 @@ impl App {
                 Some(s) if s.label.starts_with("snapshot") => tr!("Looking at the preview").to_string(),
                 Some(s) if s.label == "listen" => tr!("Listening").to_string(),
                 Some(s) if s.label.starts_with("generate image") || s.label.starts_with("generation status") => tr!("Asking for pictures").to_string(),
-                Some(s) if !s.label.contains('.') => tr!("Reading the project").to_string(),
+                Some(s) if !s.label.split(' ').next().is_some_and(|w| w.contains('.')) => tr!("Reading the project").to_string(),
                 Some(s) => tr!("Building · {}", s.label.split_whitespace().next().unwrap_or("")),
                 None => tr!("Thinking").to_string(),
             };
@@ -1280,6 +1312,13 @@ impl App {
         }
         let thumbs: Vec<Option<TextureHandle>> = self.chat.pictures.clone().iter().map(|p| self.thumb(&ctx, p)).collect();
         let sees = self.settings.ai.provider.sees_images(&self.settings.ai);
+        // how full this conversation's context is, and the account's limits as the provider's
+        // CLI last said them (a local model has neither)
+        let provider = self.settings.ai.provider;
+        let gauge = (provider != Provider::Local).then(|| {
+            let limits = self.chat.chats.iter().filter(|c| c.provider == provider && !c.limits.is_empty()).max_by_key(|c| c.updated).map(|c| c.limits.clone()).unwrap_or_default();
+            (self.chat.chats[self.chat.current].context, limits)
+        });
         let (mut clicked, mut enter, mut attach, mut remove) = (false, false, false, None);
         let frame = Frame::new().fill(t.bg_card).stroke(stroke).corner_radius(CornerRadius::same(16)).inner_margin(egui::Margin { left: 14, right: 10, top: 12, bottom: 10 }).show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1318,7 +1357,9 @@ impl App {
                 attach = kit::icon_button(ui, t, icons::PLUS, tr!("Attach pictures (or drop or paste them)"), false).clicked();
                 let effort = (self.settings.ai.provider != Provider::Local).then(|| effort_name(&self.settings.ai.effort));
                 let effort_w = effort.map_or(0.0, |e| bar_width(ui, t, e, true, false) + 4.0);
-                self.provider_menu(ui, t, effort_w);
+                // the context's gauge takes its room by the send button
+                let gauge_w = gauge.as_ref().map_or(0.0, |(context, limits)| gauge_width(ui, t, *context, limits));
+                self.provider_menu(ui, t, effort_w + gauge_w);
                 if let Some(effort) = effort {
                     self.effort_menu(ui, t, effort);
                 }
@@ -1337,6 +1378,11 @@ impl App {
                         arrow(ui.painter(), c, ink, false);
                     }
                     clicked = b.on_hover_text(if running { tr!("Stop") } else { tr!("Send (Enter)") }).clicked();
+                    if let Some((context, limits)) = &gauge {
+                        ui.add_space(6.0);
+                        usage_gauge(ui, t, *context, limits);
+                        ui.add_space(6.0);
+                    }
                 });
             });
         });
@@ -1915,9 +1961,247 @@ fn menu_choice(ui: &mut Ui, t: &Theme, chosen: bool, name: &str, note: &str, dot
     r.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+/// A value from a command's settings, short: a number with two decimals at most, a list of
+/// them, a word.
+fn short_value(v: &Value) -> String {
+    match v {
+        Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |f| format!("{}", (f * 100.0).round() / 100.0)),
+        Value::String(s) => s.chars().take(40).collect(),
+        Value::Array(a) => a.iter().map(short_value).collect::<Vec<_>>().join(", "),
+        other => other.to_string(),
+    }
+}
+
+/// A command as people say it, from its label (`ai::label`): what was done (the operator's or
+/// the tool's name) and to what (nodes by their names in `project`).
+fn describe(label: &str, project: &Project) -> (String, String) {
+    let (head, rest) = label.split_once(' ').unwrap_or((label, ""));
+    let name = |id: &str| project.graphs().flat_map(|s| &s.nodes).find(|n| n.id == id).map_or_else(|| id.to_string(), |n| n.name.clone());
+    let kind = |id: &str| velo_core::node_kind(id).map(|k| crate::i18n::t(k.label).to_string());
+    if head.contains('.') {
+        let title = velo_core::find(head).map_or_else(|| head.to_string(), |o| crate::i18n::t(o.label).to_string());
+        let p: Value = serde_json::from_str(rest).unwrap_or_default();
+        let end = |k: &str| p[k][0].as_str().map(name);
+        let some = |parts: Vec<Option<String>>| parts.into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let detail = match head {
+            "edge.connect" => match (end("from"), end("to")) {
+                (Some(a), Some(b)) => format!("{a} → {b}"),
+                (a, b) => a.or(b).unwrap_or_default(),
+            },
+            "node.add" => match (p["name"].as_str(), p["kind"].as_str().and_then(kind)) {
+                (Some(n), Some(k)) if n != k => format!("{n} · {k}"),
+                (Some(n), _) => n.into(),
+                (None, k) => k.unwrap_or_default(),
+            },
+            "node.set_param" => some(vec![p["node"].as_str().map(name), p["param"].as_str().map(|q| format!("{q} = {}", short_value(&p["value"])))]),
+            "mapping.add" | "mapping.set" => some(vec![p["node"].as_str().map(name), p["param"].as_str().map(String::from), p["source"].as_str().map(|s| format!("← {s}"))]),
+            _ => some(["name", "node", "scene", "param", "source"].iter().map(|k| p[*k].as_str().map(|v| if *k == "node" { name(v) } else { v.to_string() })).collect()),
+        };
+        return (title, detail);
+    }
+    // a shell command (Codex's own), or a tool: its name, and after a · what it was asked about
+    if let Some(command) = label.strip_prefix("shell ") {
+        return (tr!("Ran a command").into(), command.into());
+    }
+    let (tool, about) = label.split_once(" · ").unwrap_or((label, ""));
+    let title = match tool {
+        "query project" => tr!("Read the project"),
+        "list nodes" => tr!("Read the node catalog"),
+        "describe node" => tr!("Read a node's guide"),
+        "search operators" => tr!("Looked up commands"),
+        "use recipe" => tr!("Used a recipe"),
+        "snapshot" => tr!("Looked at the preview"),
+        "listen" => tr!("Listened to the music"),
+        "generate image" => tr!("Asked for pictures"),
+        "generation status" => tr!("Checked on the pictures"),
+        "undo" => tr!("Took back a step"),
+        "checkpoint" => tr!("Marked a step"),
+        "video frames" => tr!("Looked at a video"),
+        other => {
+            let mut c = other.chars();
+            return (c.next().map_or_else(String::new, |f| f.to_uppercase().chain(c).collect()), about.into());
+        }
+    };
+    (title.into(), kind(about).unwrap_or_else(|| about.into()))
+}
+
+/// How long until `unix` (seconds), short: "2 h 10 min", "25 min".
+fn until(unix: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let m = unix.saturating_sub(now).div_ceil(60);
+    match (m / 60 / 24, m / 60, m % 60) {
+        (d, _, _) if d > 0 => tr!("{} d {} h", d, m / 60 % 24),
+        (_, 0, m) => tr!("{} min", m),
+        (_, h, m) => tr!("{} h {} min", h, m),
+    }
+}
+
+/// What the gauge says beside its ring: the tokens left (or so far, with no window known).
+fn gauge_left(context: Context) -> Option<String> {
+    match (context.used, context.window) {
+        (Some(u), Some(w)) => Some(ai::short(w.saturating_sub(u))),
+        (Some(u), None) => Some(ai::short(u)),
+        _ => None,
+    }
+}
+
+/// The limit the gauge shows on a chip: the nearest to running out once past half, and how far.
+fn gauge_limit(limits: &[ai::Limit]) -> Option<(String, f32)> {
+    let l = limits.iter().filter(|l| l.hit || l.used.is_some_and(|k| k >= 0.5)).max_by(|a, b| a.used.unwrap_or(1.0).total_cmp(&b.used.unwrap_or(1.0)))?;
+    let k = if l.hit { 1.0 } else { l.used.unwrap_or(0.0) };
+    Some((format!("{} {}%", if l.window == "five_hour" || l.window == "300" { "5h" } else { "7d" }, (k * 100.0).round()), k))
+}
+
+/// How wide the gauge is, with the room round it: what the row leaves the buttons before it.
+fn gauge_width(ui: &Ui, t: &Theme, context: Context, limits: &[ai::Limit]) -> f32 {
+    if context.used.is_none() && limits.is_empty() {
+        return 0.0;
+    }
+    let text = |s: String| ui.painter().layout_no_wrap(s, Theme::mono(t.text_xs - 1.0), t.fg_muted).size().x;
+    let ring = if context.window.is_some() && context.used.is_some() { 13.0 + 5.0 } else { 0.0 };
+    let left = gauge_left(context).map_or(0.0, |s| text(s) + 5.0 + 9.0 + 5.0);
+    let limit = gauge_limit(limits).map_or(0.0, |(s, _)| text(s) + 10.0 + 5.0);
+    ring + left + limit + 12.0
+}
+
+/// How full the model's context is, as a ring with what's left beside it, and the account's
+/// usage limit nearest to running out (on a chip, once past half); everything on hover. Drawn
+/// right to left, beside the send button.
+fn usage_gauge(ui: &mut Ui, t: &Theme, context: Context, limits: &[ai::Limit]) {
+    let share = context.used.zip(context.window).map(|(u, w)| (u as f32 / w.max(1) as f32).clamp(0.0, 1.0));
+    if context.used.is_none() && limits.is_empty() {
+        return;
+    }
+    let tone = |k: f32| {
+        if k >= 0.95 {
+            t.error
+        } else if k >= 0.8 {
+            t.warn
+        } else {
+            t.accent
+        }
+    };
+    let mut said = Vec::new();
+    match (context.used, context.window) {
+        (Some(u), Some(w)) => said.push(tr!("Context: {} of {} tokens, {} left", ai::short(u), ai::short(w), ai::short(w.saturating_sub(u)))),
+        (Some(u), None) => said.push(tr!("Context: {} tokens so far", ai::short(u))),
+        _ => {}
+    }
+    for l in limits {
+        let mut line = match (l.hit, l.used) {
+            (true, _) => tr!("{}: reached", l.name()),
+            (false, Some(k)) => tr!("{}: {}% used", l.name(), (k * 100.0).round()),
+            (false, None) => tr!("{}: fine", l.name()),
+        };
+        if let Some(at) = l.resets {
+            line = tr!("{} · starts again in {}", line, until(at));
+        }
+        said.push(line);
+    }
+    let r = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+            // (right to left: the ring nearest the button, what's left before it, the limit first)
+            if let Some(k) = share {
+                let (rect, _) = ui.allocate_exact_size(vec2(13.0, 13.0), Sense::hover());
+                let c = rect.center();
+                ui.painter().circle_stroke(c, 5.0, Stroke::new(1.5, Theme::mix(t.line, t.fg_text, 0.15)));
+                if k > 0.0 {
+                    let arc: Vec<Pos2> = (0..=32).map(|i| c + egui::Vec2::angled(-std::f32::consts::FRAC_PI_2 + i as f32 / 32.0 * k * std::f32::consts::TAU) * 5.0).collect();
+                    ui.painter().add(egui::Shape::line(arc, Stroke::new(1.5, tone(k))));
+                }
+            }
+            if let Some(left) = gauge_left(context) {
+                ui.label(RichText::new(left).font(Theme::mono(t.text_xs - 1.0)).color(t.fg_muted));
+                // apart from the buttons before it
+                let (line, _) = ui.allocate_exact_size(vec2(9.0, 16.0), Sense::hover());
+                ui.painter().vline(line.center().x, line.y_range(), Stroke::new(1.0, t.line));
+            }
+            // the limit nearest to running out, once it's past half
+            if let Some((text, k)) = gauge_limit(limits) {
+                let galley = ui.painter().layout_no_wrap(text, Theme::mono(t.text_xs), tone(k));
+                let (rect, _) = ui.allocate_exact_size(galley.size() + vec2(10.0, 4.0), Sense::hover());
+                ui.painter().rect(rect, CornerRadius::same((rect.height() / 2.0) as u8), tone(k).gamma_multiply(0.12), Stroke::new(1.0, tone(k).gamma_multiply(0.4)), StrokeKind::Inside);
+                ui.painter().galley(rect.min + vec2(5.0, 2.0), galley, tone(k));
+            }
+        })
+        .response;
+    r.on_hover_text(said.join("\n"));
+}
+
+/// A reply's numbers on one quiet strip: each part an icon, a value and what it is (muted), thin
+/// lines between them, each saying more on hover. Past `width` the strip ends with what fits
+/// (the rest on hover over its end).
+fn strip(ui: &mut Ui, t: &Theme, parts: &[(Option<&str>, String, String, String)], width: f32) {
+    let galleys: Vec<_> = parts
+        .iter()
+        .map(|(icon, value, what, _)| {
+            let mut job = LayoutJob::default();
+            if let Some(icon) = icon {
+                job.append(icon, 0.0, TextFormat::simple(FontId::proportional(t.text_xs), t.fg_muted));
+            }
+            job.append(value, if icon.is_some() { 3.0 } else { 0.0 }, TextFormat::simple(Theme::mono(t.text_xs - 0.5), t.fg_text.gamma_multiply(0.85)));
+            if !what.is_empty() {
+                job.append(what, 3.0, TextFormat::simple(FontId::proportional(t.text_xs - 0.5), t.fg_muted));
+            }
+            ui.painter().layout_job(job)
+        })
+        .collect();
+    const PAD: f32 = 7.0;
+    let height = galleys.iter().map(|g| g.size().y).fold(0.0, f32::max) + 6.0;
+    // as many as fit
+    let (mut w, mut shown) = (0.0, 0);
+    for g in &galleys {
+        if w + g.size().x + 2.0 * PAD > width.max(60.0) && shown > 0 {
+            break;
+        }
+        w += g.size().x + 2.0 * PAD;
+        shown += 1;
+    }
+    let (rect, _) = ui.allocate_exact_size(vec2(w, height), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::same((height / 2.0) as u8), Theme::mix(t.bg_panel, t.fg_text, 0.035));
+    let mut x = rect.left();
+    for (i, g) in galleys.iter().take(shown).enumerate() {
+        let part = Rect::from_min_size(pos2(x, rect.top()), vec2(g.size().x + 2.0 * PAD, height));
+        if i > 0 {
+            painter.vline(part.left(), part.y_range().shrink(5.0), Stroke::new(1.0, t.line));
+        }
+        painter.galley(pos2(part.left() + PAD, part.center().y - g.size().y / 2.0), g.clone(), t.fg_text);
+        let mut hover = parts[i].3.clone();
+        if i + 1 == shown && shown < parts.len() {
+            for (_, value, what, _) in &parts[shown..] {
+                hover = format!("{hover}\n{value} {what}");
+            }
+        }
+        ui.interact(part, ui.scope_id().with(("strip", i, rect.min.x.to_bits(), rect.min.y.to_bits())), Sense::hover()).on_hover_text(hover);
+        x = part.right();
+    }
+}
+
+/// A quiet button that reads as text: a small icon and a word, muted, lit on hover; no border.
+fn quiet(ui: &mut Ui, t: &Theme, icon: Option<&str>, label: &str) -> egui::Response {
+    let mut job = LayoutJob::default();
+    let font = FontId::proportional(t.text_xs);
+    if let Some(icon) = icon {
+        job.append(icon, 0.0, TextFormat::simple(FontId::proportional(t.text_xs + 1.0), Color32::WHITE));
+    }
+    if !label.is_empty() {
+        job.append(label, if icon.is_some() { 4.0 } else { 0.0 }, TextFormat::simple(font, Color32::WHITE));
+    }
+    let galley = ui.painter().layout_job(job);
+    let (rect, r) = ui.allocate_exact_size(galley.size() + vec2(10.0, 6.0), Sense::click());
+    let k = kit::hover(ui, t, &r);
+    if k > 0.0 {
+        ui.painter().rect_filled(rect, t.radius_sm, Theme::mix(t.bg_panel, t.fg_text, 0.06 * k));
+    }
+    ui.painter().galley(rect.center() - galley.size() / 2.0, galley, Theme::mix(t.fg_muted, t.fg_text, k));
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// A reply's commands as one row (AI Elements' Tool, closed): their state, how many, the
-/// latest, and a caret that opens the list.
-fn steps_row(ui: &mut Ui, t: &Theme, steps: &[Step], open: bool) -> egui::Response {
+/// latest as people say it, and a caret that opens the list.
+fn steps_row(ui: &mut Ui, t: &Theme, steps: &[Step], open: bool, project: &Project) -> egui::Response {
     let failed = steps.iter().filter(|s| s.state == StepState::Failed).count();
     let state = if failed > 0 {
         StepState::Failed
@@ -1926,41 +2210,56 @@ fn steps_row(ui: &mut Ui, t: &Theme, steps: &[Step], open: bool) -> egui::Respon
     } else {
         StepState::Done
     };
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 30.0), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
     let k = kit::hover(ui, t, &resp);
-    ui.painter().rect_filled(rect, t.radius_md, Theme::mix(t.bg_panel, t.fg_text, 0.03 + 0.03 * k));
+    if k > 0.0 {
+        ui.painter().rect_filled(rect, t.radius_md, Theme::mix(t.bg_panel, t.fg_text, 0.04 * k));
+    }
     let y = rect.center().y;
-    paint_state(ui, t, pos2(rect.left() + 15.0, y), state);
+    paint_state(ui, t, pos2(rect.left() + 16.0, y), state);
     let painter = ui.painter();
     let count = if steps.len() == 1 { tr!("1 step").to_string() } else { tr!("{} steps", steps.len()) };
-    let count = if failed > 0 { tr!("{} · {} failed", count, failed) } else { count };
-    let (said, _) = kit::fit_text(painter, pos2(rect.left() + 30.0, y), Align2::LEFT_CENTER, count, t.small(), if failed > 0 { t.error } else { t.fg_text }, rect.width() - 60.0);
-    // the latest command, as far as it fits
+    let (said, _) = kit::fit_text(painter, pos2(rect.left() + 32.0, y), Align2::LEFT_CENTER, count, t.small(), t.fg_text, rect.width() - 70.0);
+    let mut x = said.right() + 8.0;
+    // the ones that failed, on a red chip
+    if failed > 0 {
+        let galley = painter.layout_no_wrap(tr!("{} failed", failed), FontId::proportional(t.text_xs), t.error);
+        let chip = Rect::from_min_size(pos2(x, y - galley.size().y / 2.0 - 2.0), galley.size() + vec2(12.0, 4.0));
+        painter.rect(chip, CornerRadius::same((chip.height() / 2.0) as u8), t.error.gamma_multiply(0.12), Stroke::new(1.0, t.error.gamma_multiply(0.35)), StrokeKind::Inside);
+        painter.galley(chip.min + vec2(6.0, 2.0), galley, t.error);
+        x = chip.right() + 8.0;
+    }
+    // the latest command, as people say it, as far as it fits
     if let Some(last) = steps.last() {
-        kit::fit_text(painter, pos2(said.right() + 8.0, y), Align2::LEFT_CENTER, &last.label, Theme::mono(t.text_xs), t.fg_muted, rect.right() - 26.0 - said.right() - 8.0);
+        let (title, detail) = describe(&last.label, project);
+        let line = if detail.is_empty() { title } else { format!("{title} · {detail}") };
+        kit::fit_text(painter, pos2(x, y), Align2::LEFT_CENTER, &line, FontId::proportional(t.text_xs + 0.5), t.fg_muted, rect.right() - 26.0 - x);
     }
     kit::icon_turned(painter, pos2(rect.right() - 14.0, y), icons::CARET_DOWN, 12.0, Theme::mix(t.fg_muted, t.fg_text, k), if open { 0.0 } else { -std::f32::consts::FRAC_PI_2 });
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// One command in an open row: its state, its operator, what it was given, what went wrong.
-fn step_line(ui: &mut Ui, t: &Theme, step: &Step) {
-    let (op, args) = step.label.split_once(' ').unwrap_or((&step.label, ""));
+/// One command in an open row: its state, what it did and to what (as people say it; the
+/// command itself on hover), what went wrong.
+fn step_line(ui: &mut Ui, t: &Theme, step: &Step, project: &Project) {
+    let (title, detail) = describe(&step.label, project);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        let (rect, _) = ui.allocate_exact_size(vec2(14.0, 16.0), Sense::hover());
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (rect, _) = ui.allocate_exact_size(vec2(14.0, 18.0), Sense::hover());
         paint_state(ui, t, rect.center(), step.state);
         let mut job = LayoutJob::default();
-        job.append(op, 0.0, TextFormat::simple(Theme::mono(t.text_xs), if step.state == StepState::Failed { t.error } else { t.fg_text }));
-        job.append(args, 6.0, TextFormat::simple(Theme::mono(t.text_xs), t.fg_muted));
-        let r = ui.add(Label::new(job).truncate());
-        if !args.is_empty() {
-            r.on_hover_text(&step.label);
+        job.append(&title, 0.0, TextFormat::simple(FontId::proportional(t.text_xs + 1.0), if step.state == StepState::Failed { t.error } else { t.fg_text }));
+        if !detail.is_empty() {
+            job.append(&detail, 8.0, TextFormat::simple(FontId::proportional(t.text_xs + 1.0), t.fg_muted));
         }
+        let r = ui.add(Label::new(job).truncate().sense(Sense::hover()));
+        r.on_hover_ui(|ui| {
+            ui.label(RichText::new(&step.label).font(Theme::mono(t.text_xs)).color(t.fg_muted));
+        });
     });
     if let Some(error) = &step.error {
-        Frame::new().inner_margin(egui::Margin { left: 20, right: 0, top: 0, bottom: 2 }).show(ui, |ui| {
-            ui.add(Label::new(mono(t, error).color(t.error.gamma_multiply(0.85))).wrap().selectable(true));
+        Frame::new().fill(t.error.gamma_multiply(0.08)).corner_radius(t.radius_sm).inner_margin(egui::Margin { left: 8, right: 8, top: 5, bottom: 5 }).outer_margin(egui::Margin { left: 22, right: 0, top: 0, bottom: 2 }).show(ui, |ui| {
+            ui.add(Label::new(mono(t, error).color(t.error.gamma_multiply(0.9))).wrap().selectable(true));
         });
     }
 }
@@ -2068,6 +2367,26 @@ mod tests {
 
     fn said(text: &str) -> Item {
         Item::User(Message { text: text.into(), pictures: Vec::new() })
+    }
+
+    #[test]
+    fn commands_are_said_in_words_with_the_nodes_names() {
+        let mut session = velo_core::Session::default();
+        session.run("scene.add", json!({ "name": "Drop" })).unwrap();
+        session.run("node.add", json!({ "kind": "velo.mesh", "name": "Monolith" })).unwrap();
+        session.run("node.add", json!({ "kind": "velo.output" })).unwrap();
+        let ids: Vec<String> = session.project.scenes[0].nodes.iter().map(|n| n.id.clone()).collect();
+        let p = &session.project;
+        let connect = format!("edge.connect {}", json!({ "from": [ids[0], 0], "to": [ids[1], 0] }));
+        assert_eq!(describe(&connect, p), ("Connect".into(), "Monolith → Output".into()));
+        assert_eq!(describe(r#"node.add {"kind":"velo.mesh","name":"Monolith"}"#, p).1, "Monolith · Mesh");
+        let set = format!("node.set_param {}", json!({ "node": ids[0], "param": "spin", "value": 0.123_456 }));
+        assert_eq!(describe(&set, p).1, "Monolith · spin = 0.12");
+        assert_eq!(describe("query project", p), ("Read the project".into(), String::new()));
+        assert_eq!(describe("describe node · velo.mesh", p), ("Read a node's guide".into(), "Mesh".into()));
+        assert_eq!(describe("shell ls -la", p), ("Ran a command".into(), "ls -la".into()));
+        // a node gone since: its id
+        assert_eq!(describe(r#"edge.connect {"from":["n_gone",0],"to":["n_also",0]}"#, p).1, "n_gone → n_also");
     }
 
     #[test]

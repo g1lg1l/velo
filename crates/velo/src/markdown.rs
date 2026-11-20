@@ -6,7 +6,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use eframe::egui::text::{LayoutJob, TextFormat};
-use eframe::egui::{self, Color32, FontId, Frame, Galley, Label, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
+use eframe::egui::{self, Color32, FontId, Frame, Galley, Label, Pos2, Rect, RichText, Sense, Stroke, Ui, pos2, vec2};
 
 use crate::theme::Theme;
 use crate::{icons, kit};
@@ -195,21 +195,29 @@ fn spans(text: &str) -> Vec<Span> {
 }
 
 type Links = Vec<(std::ops::Range<usize>, String)>;
+/// Where a text's inline code is (char ranges).
+type Chips = Vec<std::ops::Range<usize>>;
 
-/// The text laid out, its bold parts alone (for the second pass) and where its links are
-/// (char ranges).
-fn lay_out(ui: &Ui, t: &Theme, text: &str, size: f32, color: Color32, all_bold: bool, width: f32) -> (Arc<Galley>, Option<Arc<Galley>>, Links) {
+/// The room on each side of an inline code's chip, and round it.
+const CHIP_PAD: f32 = 4.0;
+
+/// The text laid out, its bold parts alone (for the second pass), where its links are and its
+/// inline code (char ranges).
+fn lay_out(ui: &Ui, t: &Theme, text: &str, size: f32, color: Color32, all_bold: bool, width: f32) -> (Arc<Galley>, Option<Arc<Galley>>, Links, Chips) {
     let line = (size * 1.55).round();
     let (mut job, mut bold) = (LayoutJob::default(), LayoutJob::default());
-    let mut links = Vec::new();
+    let (mut links, mut chips) = (Vec::new(), Vec::new());
     let mut at = 0;
     let mut any_bold = false;
+    let mut after_code = false;
     for span in spans(text) {
         let mut f = TextFormat { font_id: FontId::proportional(size), color, line_height: Some(line), italics: span.italic, ..Default::default() };
+        // inline code: a chip drawn behind it (`text`), with room either side for its edges
+        let room = if span.code || after_code { CHIP_PAD } else { 0.0 };
+        after_code = span.code;
         if span.code {
             f.font_id = Theme::mono(size - 1.5);
-            f.background = t.bg_control;
-            f.expand_bg = 1.0;
+            chips.push(at..at + span.text.chars().count());
         }
         if span.strike {
             f.strikethrough = Stroke::new(1.0, color);
@@ -230,19 +238,49 @@ fn lay_out(ui: &Ui, t: &Theme, text: &str, size: f32, color: Color32, all_bold: 
         if !strong {
             b.color = Color32::TRANSPARENT;
         }
-        job.append(&span.text, 0.0, f);
-        bold.append(&span.text, 0.0, b);
+        job.append(&span.text, room, f);
+        bold.append(&span.text, room, b);
     }
     job.wrap.max_width = width;
     bold.wrap.max_width = width;
     let painter = ui.painter();
-    (painter.layout_job(job), any_bold.then(|| painter.layout_job(bold)), links)
+    (painter.layout_job(job), any_bold.then(|| painter.layout_job(bold)), links, chips)
 }
 
-/// One run of text: selectable, its bold drawn twice, its links opening in the browser.
+/// The chips behind inline code (char `ranges` of `galley`), one a row each runs on.
+fn chips(t: &Theme, galley: &Galley, ranges: &[std::ops::Range<usize>], at: Pos2, size: f32) -> Vec<egui::Shape> {
+    let mut boxes: Vec<(usize, f32, Rect)> = Vec::new();
+    let mut base = 0;
+    for row in &galley.rows {
+        for (k, g) in row.glyphs.iter().enumerate() {
+            let Some(c) = ranges.iter().position(|range| range.contains(&(base + k))) else { continue };
+            let (left, right) = (row.pos.x + g.pos.x, row.pos.x + g.pos.x + g.advance_width);
+            match boxes.last_mut() {
+                Some((chip, y, b)) if *chip == c && *y == row.pos.y => b.max.x = right,
+                _ => boxes.push((c, row.pos.y, Rect::from_min_max(pos2(left, row.pos.y), pos2(right, row.pos.y + row.size.y)))),
+            }
+        }
+        base += row.glyphs.len() + usize::from(row.ends_with_newline);
+    }
+    boxes
+        .into_iter()
+        .map(|(_, _, b)| {
+            let b = Rect::from_center_size(b.center() + at.to_vec2(), vec2(b.width() + 2.0 * (CHIP_PAD - 1.0), size + 4.0));
+            egui::Shape::Rect(egui::epaint::RectShape::new(b, 4.0, Theme::mix(t.bg_control, t.fg_text, 0.04), Stroke::new(1.0, t.line), egui::StrokeKind::Inside))
+        })
+        .collect()
+}
+
+/// One run of text: selectable, its bold drawn twice, its links opening in the browser, its
+/// inline code on chips.
 fn text(ui: &mut Ui, t: &Theme, text: &str, size: f32, color: Color32, all_bold: bool) {
-    let (galley, bold, links) = lay_out(ui, t, text, size, color, all_bold, ui.available_width());
+    let (galley, bold, links, code) = lay_out(ui, t, text, size, color, all_bold, ui.available_width());
+    // (the chips go under the text: their place is kept before it's drawn)
+    let under = ui.painter().add(egui::Shape::Noop);
     let r = ui.add(Label::new(galley.clone()).selectable(true));
+    if !code.is_empty() {
+        ui.painter().set(under, egui::Shape::Vec(chips(t, &galley, &code, r.rect.min, size)));
+    }
     if let Some(bold) = bold {
         ui.painter().galley(r.rect.min + vec2(0.5, 0.0), bold, color);
     }
@@ -358,8 +396,12 @@ pub fn show(ui: &mut Ui, t: &Theme, markdown: &str, id: impl Hash + std::fmt::De
                         egui::Grid::new(id.with(("table", n))).striped(true).spacing(vec2(14.0, 6.0)).show(ui, |ui| {
                             for (r, row) in rows.iter().enumerate() {
                                 for cell in row {
-                                    let (galley, bold, _) = lay_out(ui, t, cell, size - 1.0, t.fg_text, r == 0, f32::INFINITY);
-                                    let resp = ui.add(Label::new(galley).selectable(true));
+                                    let (galley, bold, _, code) = lay_out(ui, t, cell, size - 1.0, t.fg_text, r == 0, f32::INFINITY);
+                                    let under = ui.painter().add(egui::Shape::Noop);
+                                    let resp = ui.add(Label::new(galley.clone()).selectable(true));
+                                    if !code.is_empty() {
+                                        ui.painter().set(under, egui::Shape::Vec(chips(t, &galley, &code, resp.rect.min, size - 1.0)));
+                                    }
                                     if let Some(bold) = bold {
                                         ui.painter().galley(resp.rect.min + vec2(0.5, 0.0), bold, t.fg_text);
                                     }

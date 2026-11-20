@@ -207,6 +207,58 @@ pub enum Event {
     History(Vec<Value>),
     /// What the reply used so far, to add up.
     Usage(Tokens),
+    /// How full the model's context is: the tokens the conversation takes now, and how many it
+    /// holds; either where the CLI says it.
+    Context {
+        used: Option<u64>,
+        window: Option<u64>,
+    },
+    /// One of the account's usage limits, as the CLI last reported it.
+    Limit(Limit),
+}
+
+/// A usage limit of the account a CLI runs on (Claude's 5-hour and weekly ones, Codex's).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Limit {
+    /// Which: `five_hour`, `seven_day`… (Claude Code's names), or its length in minutes (Codex).
+    pub window: String,
+    /// How much of it is used, 0..1, where said.
+    pub used: Option<f32>,
+    /// When it starts again, Unix seconds.
+    pub resets: Option<u64>,
+    /// Reached: replies wait until it resets.
+    pub hit: bool,
+}
+
+impl Limit {
+    /// Its name, as people say it.
+    pub fn name(&self) -> &'static str {
+        match self.window.as_str() {
+            "five_hour" | "300" => tr!("5-hour limit"),
+            w if w.starts_with("seven_day") || w == "10080" => tr!("Weekly limit"),
+            _ => tr!("Usage limit"),
+        }
+    }
+}
+
+/// A Unix time a CLI gave (in seconds, or milliseconds), in seconds.
+fn unix(v: &Value) -> Option<u64> {
+    let t = v.as_f64().or_else(|| v.as_str()?.parse().ok())?;
+    Some(if t > 1e11 { t / 1000.0 } else { t } as u64)
+}
+
+/// A share a CLI gave (0..1, or a percentage), 0..1.
+fn share(v: &Value) -> Option<f32> {
+    let k = v.as_f64()? as f32;
+    Some(if k > 1.0 { k / 100.0 } else { k }.clamp(0.0, 1.0))
+}
+
+/// `key` anywhere in `v`, a few levels down at most.
+fn find_key<'a>(v: &'a Value, key: &str, depth: u8) -> Option<&'a Value> {
+    match v {
+        Value::Object(o) => o.get(key).or_else(|| (depth > 0).then(|| o.values().find_map(|v| find_key(v, key, depth - 1))).flatten()),
+        _ => None,
+    }
 }
 
 /// What a reply used: tokens the model read (of them, `cached` came from the provider's cache,
@@ -355,7 +407,12 @@ pub fn label(name: &str, input: &Value) -> String {
             }
             format!("{id} {props}")
         }
-        _ => name.replace('_', " "),
+        // a tool, with what it was asked about (after a ·)
+        _ => {
+            let about = ["kind", "name", "query", "prompt", "node"].iter().find_map(|k| input[*k].as_str()).map(|a| a.chars().take(60).collect::<String>());
+            let name = name.replace('_', " ");
+            about.map_or(name.clone(), |a| format!("{name} · {a}"))
+        }
     }
 }
 
@@ -365,7 +422,18 @@ pub fn claude_line(line: &str) -> Vec<Event> {
     let mut out = Vec::new();
     match v["type"].as_str() {
         Some("system") if v["subtype"] == "init" => out.extend(v["session_id"].as_str().map(|id| Event::Session(id.into()))),
+        // how far the account's limits are used, where Claude Code says it
+        Some("rate_limit_event") => {
+            let i = &v["rate_limit_info"];
+            out.push(Event::Limit(Limit { window: i["rateLimitType"].as_str().unwrap_or_default().into(), used: share(&i["utilization"]), resets: unix(&i["resetsAt"]), hit: i["status"] == "rejected" }));
+        }
         Some("assistant") => {
+            // each call's input is the whole conversation so far: how full the context is
+            let u = &v["message"]["usage"];
+            let used = count(&u["input_tokens"]) + count(&u["cache_creation_input_tokens"]) + count(&u["cache_read_input_tokens"]);
+            if used > 0 {
+                out.push(Event::Context { used: Some(used), window: None });
+            }
             for block in v["message"]["content"].as_array().into_iter().flatten() {
                 match block["type"].as_str() {
                     Some("text") => out.extend(block["text"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| Event::Text(s.into()))),
@@ -393,6 +461,11 @@ pub fn claude_line(line: &str) -> Vec<Event> {
             if read > 0 {
                 out.push(Event::Usage(Tokens { read, cached: count(&u["cache_read_input_tokens"]), written: count(&u["output_tokens"]), dollars: v["total_cost_usd"].as_f64() }));
             }
+            // how much the model holds
+            let window = v["modelUsage"].as_object().and_then(|m| m.values().filter_map(|u| u["contextWindow"].as_u64()).filter(|w| *w > 0).max());
+            if window.is_some() {
+                out.push(Event::Context { used: None, window });
+            }
             if v["is_error"] == true {
                 out.push(Event::Problem(v["result"].as_str().unwrap_or("Claude Code stopped").trim().into()));
             }
@@ -405,6 +478,33 @@ pub fn claude_line(line: &str) -> Vec<Event> {
 /// One line of `codex exec --json`.
 pub fn codex_line(line: &str) -> Vec<Event> {
     let Ok(v) = serde_json::from_str::<Value>(line) else { return Vec::new() };
+    let mut told = codex_limits(&v);
+    told.extend(codex_event(&v));
+    told
+}
+
+/// The account's limits and the context, where a line of Codex's says them (its token counts
+/// carry them; not every version sends them in exec's output).
+fn codex_limits(v: &Value) -> Vec<Event> {
+    let mut out = Vec::new();
+    if let Some(limits) = find_key(v, "rate_limits", 3) {
+        for which in ["primary", "secondary"] {
+            let l = &limits[which];
+            if l.is_object() {
+                let resets = unix(&l["resets_at"]).or_else(|| l["resets_in_seconds"].as_u64().map(|s| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |n| n.as_secs()) + s));
+                out.push(Event::Limit(Limit { window: l["window_minutes"].as_u64().map_or_else(|| which.to_string(), |m| m.to_string()), used: share(&l["used_percent"]), resets, hit: false }));
+            }
+        }
+    }
+    let window = find_key(v, "model_context_window", 3).and_then(Value::as_u64);
+    let used = find_key(v, "last_token_usage", 3).map(|u| count(&u["input_tokens"])).filter(|u| *u > 0);
+    if window.is_some() || used.is_some() {
+        out.push(Event::Context { used, window });
+    }
+    out
+}
+
+fn codex_event(v: &Value) -> Vec<Event> {
     let item = &v["item"];
     let id = || item["id"].as_str().unwrap_or_default().to_string();
     match (v["type"].as_str(), item["type"].as_str()) {
@@ -869,6 +969,26 @@ mod tests {
         sum += Tokens { read: 10, cached: 8, written: 20, dollars: Some(0.5) };
         assert_eq!(sum, Tokens { read: 11, cached: 8, written: 22, dollars: Some(0.5) });
         assert_eq!([short(820), short(12_400), short(1_250_000)], ["820", "12.4k", "1.2M"]);
+    }
+
+    #[test]
+    fn the_context_and_the_accounts_limits_are_read() {
+        // each call's input is the conversation so far; the run's end says what the model holds
+        let call = r#"{"type":"assistant","message":{"usage":{"input_tokens":10,"cache_creation_input_tokens":2000,"cache_read_input_tokens":40000,"output_tokens":5},"content":[]}}"#;
+        assert_eq!(claude_line(call), [Event::Context { used: Some(42_010), window: None }]);
+        let end = r#"{"type":"result","usage":{},"modelUsage":{"claude-opus-5-5":{"contextWindow":200000},"claude-haiku-5-5":{"contextWindow":0}}}"#;
+        assert_eq!(claude_line(end), [Event::Context { used: None, window: Some(200_000) }]);
+        let limit = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","rateLimitType":"five_hour","utilization":0.82,"resetsAt":1900000000}}"#;
+        assert_eq!(claude_line(limit), [Event::Limit(Limit { window: "five_hour".into(), used: Some(0.82), resets: Some(1_900_000_000), hit: false })]);
+        // Codex, where its line carries them
+        let codex = r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000},"model_context_window":272000},"rate_limits":{"primary":{"used_percent":40.0,"window_minutes":300,"resets_at":1900000000}}}"#;
+        let told = codex_line(codex);
+        assert!(told.contains(&Event::Limit(Limit { window: "300".into(), used: Some(0.4), resets: Some(1_900_000_000), hit: false })), "{told:?}");
+        assert!(told.contains(&Event::Context { used: Some(30_000), window: Some(272_000) }), "{told:?}");
+        assert_eq!(Limit { window: "seven_day_opus".into(), used: None, resets: None, hit: false }.name(), "Weekly limit");
+        // a tool's step says what it was asked about
+        assert_eq!(label("mcp__velo__describe_node", &json!({ "kind": "velo.mesh" })), "describe node · velo.mesh");
+        assert_eq!(label("mcp__velo__query_project", &json!({})), "query project");
     }
 
     #[test]

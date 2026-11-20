@@ -307,6 +307,8 @@ pub struct State {
     landings: Vec<Landing>,
     /// A wire let go of nowhere, springing back into its port.
     loose: Option<Loose>,
+    /// The dragged cable's middle, hanging and swinging as it's moved (screen point, velocity).
+    sag: Option<(Pos2, Vec2)>,
     /// The nodes a dragged wire can't go into: faded while it's dragged, and back after.
     dim: Vec<String>,
     /// The scene the selection belongs to.
@@ -1003,6 +1005,29 @@ fn near_polyline(p: Pos2, pts: &[Pos2], reach: f32) -> bool {
 }
 
 /// The point a fraction `k` of the way along a polyline.
+/// Where a polyline turns as it passes `p`: its point nearest `p`, when the way in (from `reach`
+/// before it) and the way out (to `reach` after) differ by more than about 20°.
+fn bent(pts: &[Pos2], p: Pos2, reach: f32) -> Option<Pos2> {
+    // the nearest point on it, and how far along it that is
+    let (mut best, mut at, mut walked, mut total) = (f32::MAX, p, 0.0, 0.0);
+    for w in pts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let len = a.distance(b);
+        let k = if len > 0.0 { ((p - a).dot(b - a) / (len * len)).clamp(0.0, 1.0) } else { 0.0 };
+        let q = a + (b - a) * k;
+        if q.distance(p) < best {
+            (best, at, walked) = (q.distance(p), q, total + len * k);
+        }
+        total += len;
+    }
+    if best > reach || walked < reach * 0.5 || total - walked < reach * 0.5 {
+        return None;
+    }
+    let point = |d: f32| along(pts, (d / total.max(1e-6)).clamp(0.0, 1.0));
+    let (into, out) = (at - point(walked - reach), point(walked + reach) - at);
+    (into.length() > 1e-3 && out.length() > 1e-3 && into.normalized().dot(out.normalized()) < 0.94).then_some(at)
+}
+
 fn along(pts: &[Pos2], k: f32) -> Pos2 {
     let lengths: Vec<f32> = pts.windows(2).map(|w| w[0].distance(w[1])).collect();
     let mut left = lengths.iter().sum::<f32>() * k.clamp(0.0, 1.0);
@@ -2111,13 +2136,21 @@ impl App {
             .collect();
         // a cable's line, through the ties holding it: a trace, or a curve (the toolbar's switch)
         let curved = !self.settings.circuit_cables;
-        let route = |key: &str, a: Pos2, b: Pos2| {
+        // where a cable passes its ties: its own place in each bundle, left to right
+        let through = |key: &str| {
             // (a tie of one cable is a bend in it: a point it passes, not a bundle to run straight through)
             let mut through: Vec<(Pos2, f32)> =
                 ties.iter().filter_map(|(at, held, gap)| held.iter().position(|c| c == key).map(|k| (*at + vec2(0.0, (k as f32 - (held.len() - 1) as f32 / 2.0) * gap), if held.len() == 1 { BEND_RUN } else { TIE_RUN }))).collect();
             through.sort_by(|p, q| p.0.x.total_cmp(&q.0.x));
+            through
+        };
+        let route = |key: &str, a: Pos2, b: Pos2| {
+            let through = through(key);
             if curved { routed(a, b, &through, cam.zoom) } else { traced(a, b, &through, cam.zoom) }
         };
+        // a tie shows as a small dot of its cable's colour, and only where the cable turns there
+        // (a bundle it runs straight through, or a curve it passes smoothly, shows none)
+        let bends = |key: &str, pts: &[Pos2]| -> Vec<Pos2> { through(key).into_iter().filter_map(|(p, _)| bent(pts, p, (BEND_RUN + 8.0) * cam.zoom)).collect() };
         // every wire on screen as a polyline (off-screen ones: None)
         let wires: Vec<Option<(usize, Vec<Pos2>)>> = scene
             .edges
@@ -2835,9 +2868,16 @@ impl App {
                 if v > 0.05 {
                     painter.add(Shape::line(pts.clone(), Stroke::new(w * (2.0 + 4.0 * v), t.cat_signal.gamma_multiply(0.12 * v))));
                 }
-                painter.extend(Shape::dashed_line(pts, Stroke::new(w * (1.0 + v), Theme::mix(Theme::mix(t.line, t.cat_signal, 0.8), t.fg_text, 0.5 * v).gamma_multiply(fade)), 6.0 * cam.zoom, 4.0 * cam.zoom));
+                let dash = Theme::mix(Theme::mix(t.line, t.cat_signal, 0.8), t.fg_text, 0.5 * v).gamma_multiply(fade);
+                painter.extend(Shape::dashed_line(pts, Stroke::new(w * (1.0 + v), dash), 6.0 * cam.zoom, 4.0 * cam.zoom));
+                for at in bends(&velo_core::Tie::wire(&edge.to), pts) {
+                    painter.circle_filled(at, w * (1.0 + v) * 1.3, dash);
+                }
             } else {
                 painter.add(Shape::line(pts.clone(), Stroke::new(w, color.gamma_multiply(fade))));
+                for at in bends(&velo_core::Tie::wire(&edge.to), pts) {
+                    painter.circle_filled(at, w * 1.3, color.gamma_multiply(fade));
+                }
             }
         }
         for (_, at) in st.pulses.iter_mut().filter(|(_, at)| at.is_nan()) {
@@ -2933,6 +2973,9 @@ impl App {
             let color = Theme::mix(t.cat_signal.gamma_multiply(0.8), t.fg_text, lit).gamma_multiply(fade);
             let stroke = Stroke::new((1.5 + 1.0 * v + f32::from(u8::from(hot || chosen))) * cam.zoom.sqrt(), color);
             painter.extend(Shape::dashed_line(curve, stroke, 6.0 * cam.zoom, 4.0 * cam.zoom));
+            for at in bends(&velo_core::Tie::line(&n.id, source), curve) {
+                painter.circle_filled(at, stroke.width * 1.3, color);
+            }
             // what goes through it: lights crawling to the card, brighter as it's louder
             if v > 0.05 || hot || chosen {
                 for k in 0..4 {
@@ -2956,7 +2999,8 @@ impl App {
                 map_label = Some((pointer.unwrap_or_else(|| along(curve, 0.5)), text));
             }
         }
-        // the ties: a capsule standing across each bundle, lit while pointed at or slid
+        // the ties: drawn on their cables (small dots where they bend them); the capsule standing
+        // across the bundle shows only while it's pointed at, slid or chosen
         for (k, (at, held, gap)) in ties.iter().enumerate().filter(|(_, (_, held, _))| !held.is_empty()) {
             let tie = &scene.ties[k];
             let chosen = st.tie.as_ref() == Some(&tie.id);
@@ -2966,10 +3010,9 @@ impl App {
             let round = CornerRadius::same((r.width() / 2.0) as u8);
             if hot > 0.0 {
                 painter.rect_filled(r.expand(4.0), CornerRadius::same((r.width() / 2.0 + 4.0) as u8), (if chosen { t.accent } else { t.fg_text }).gamma_multiply(0.1 * hot));
+                let ring = if chosen { t.accent } else { Theme::mix(Theme::mix(t.line, t.fg_text, 0.45), t.fg_text, hot) };
+                painter.rect_stroke(r, round, Stroke::new(1.5, ring.gamma_multiply(hot)), StrokeKind::Inside);
             }
-            painter.rect_filled(r, round, t.bg_card);
-            let ring = if chosen { t.accent } else { Theme::mix(Theme::mix(t.line, t.fg_text, 0.45), t.fg_text, hot) };
-            painter.rect_stroke(r, round, Stroke::new(1.5, ring), StrokeKind::Inside);
             // near it or chosen: the × that takes it off
             let near = pointer.is_some_and(|p| r.expand(22.0).contains(p)) || chosen;
             let show = ui.ctx().animate_bool_with_time(id().with(("untie", tie.id.as_str())), near && st.drag.is_none(), t.motion);
@@ -3187,13 +3230,42 @@ impl App {
             goo(&painter, (socket, bubble * k), pointer.map(|p| (p, TIP * zs)), drag_color);
         }
         // the wire being dragged: its end at the pointer, the bubble showing where it'd go
+        if st.drag.is_none() {
+            st.sag = None;
+        }
         if let (Some(drag), Some(p)) = (&st.drag, pointer) {
             let p = slot_socket.map_or(p, |(socket, k)| p.lerp(socket, 0.6 * k));
-            let line = match drag {
-                Drag::Wire { from, .. } | Drag::Signal { from, .. } => index.get(from.0.as_str()).map(|&a| bezier(port(a, from.1, true), p, cam.zoom)),
-                Drag::Back { into } => index.get(into.0.as_str()).map(|&b| bezier(p, port(b, into.1, false), cam.zoom)),
+            let ends = match drag {
+                Drag::Wire { from, .. } | Drag::Signal { from, .. } => index.get(from.0.as_str()).map(|&a| (port(a, from.1, true), p)),
+                Drag::Back { into } => index.get(into.0.as_str()).map(|&b| (p, port(b, into.1, false))),
                 _ => None,
             };
+            // held with Shift: rigid, as it'll lie once plugged in; else soft, hanging between its
+            // ends and swinging as it's moved
+            let line = ends.map(|(a, b)| {
+                if ui.input(|i| i.modifiers.shift) {
+                    st.sag = None;
+                    return if curved { bezier(a, b, cam.zoom) } else { traced(a, b, &[], cam.zoom) };
+                }
+                let mid = a.lerp(b, 0.5);
+                let rest = mid + vec2(0.0, (0.25 * a.distance(b)).min(160.0));
+                let (mut m, mut v) = st.sag.unwrap_or((rest, Vec2::ZERO));
+                let dt = ui.input(|i| i.stable_dt).min(1.0 / 30.0);
+                v += ((rest - m) * 90.0 - v * 9.0) * dt;
+                m += v * dt;
+                st.sag = Some((m, v));
+                if v.length() > 1.0 || m.distance(rest) > 0.5 {
+                    ui.ctx().request_repaint();
+                }
+                // a quadratic through its ends with its middle at the hanging point
+                let q = (m.to_vec2() * 2.0 - mid.to_vec2()).to_pos2();
+                (0..=24)
+                    .map(|i| {
+                        let (t, u) = (i as f32 / 24.0, 1.0 - i as f32 / 24.0);
+                        (a.to_vec2() * (u * u) + q.to_vec2() * (2.0 * u * t) + b.to_vec2() * (t * t)).to_pos2()
+                    })
+                    .collect::<Vec<_>>()
+            });
             if let Some(line) = line {
                 painter.add(Shape::line(line, Stroke::new(width + 1.0, drag_color)));
                 painter.circle_filled(p, 3.5 * zs, drag_color);
@@ -4744,6 +4816,21 @@ mod tests {
         assert!((cam.zoom - min).abs() < 1e-4);
         let b = bounds(scene, None).unwrap();
         assert!(view.expand(1.0).contains_rect(Rect::from_two_pos(cam.screen(view.center(), b.min), cam.screen(view.center(), b.max))));
+    }
+
+    #[test]
+    fn a_tie_shows_only_where_its_cable_turns() {
+        // a corner: in from the left at 45°, out level to the right
+        let corner = [pos2(0.0, 100.0), pos2(100.0, 0.0), pos2(200.0, 0.0)];
+        assert!(bent(&corner, pos2(100.0, 1.0), 14.0).is_some_and(|at| at.distance(pos2(100.0, 0.0)) < 1.0));
+        // the middle of a straight run (a bundle the cable runs through): no dot
+        let level = [pos2(0.0, 0.0), pos2(200.0, 0.0)];
+        assert_eq!(bent(&level, pos2(100.0, 0.0), 14.0), None);
+        // a curve passed smoothly: none either
+        let curve = bezier(pos2(0.0, 0.0), pos2(400.0, 120.0), 1.0);
+        assert_eq!(bent(&curve, along(&curve, 0.5), 14.0), None);
+        // a tie off the cable (it's elsewhere): none
+        assert_eq!(bent(&corner, pos2(100.0, 60.0), 14.0), None);
     }
 
     #[test]

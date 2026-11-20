@@ -9,6 +9,8 @@ A patch grows cables. A **cable tie** gathers the ones that run the same way int
 
 Ties hold both kinds of cable: wires carrying pictures and signals' cables going into jacks.
 
+A tie is drawn on its cables: a small dot of the cable's colour where it bends one, nothing where a cable runs straight through it. Point at it to see the whole tie.
+
 ## Move a tie
 
 Drag a tie to slide it somewhere else on the canvas; its cables come with it. Move the nodes and the tie stays where you put it, its cables following. A cable that goes away (unplugged, or its node deleted) just leaves the bundle.
