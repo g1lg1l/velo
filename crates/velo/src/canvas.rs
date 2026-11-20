@@ -2999,8 +2999,9 @@ impl App {
                 map_label = Some((pointer.unwrap_or_else(|| along(curve, 0.5)), text));
             }
         }
-        // the ties: drawn on their cables (small dots where they bend them); the capsule standing
-        // across the bundle shows only while it's pointed at, slid or chosen
+        // the ties: a bundle's capsule always stands across its cables; a bend (a tie of one cable)
+        // is drawn on it, a small dot where it turns it, its capsule showing only while it's
+        // pointed at, slid or chosen
         for (k, (at, held, gap)) in ties.iter().enumerate().filter(|(_, (_, held, _))| !held.is_empty()) {
             let tie = &scene.ties[k];
             let chosen = st.tie.as_ref() == Some(&tie.id);
@@ -3008,10 +3009,16 @@ impl App {
             let hot = ui.ctx().animate_bool_with_time(id().with(("tie", tie.id.as_str())), held_now, t.motion);
             let r = tie_rect(*at, held.len(), *gap, cam.zoom);
             let round = CornerRadius::same((r.width() / 2.0) as u8);
+            let bundle = held.len() > 1;
             if hot > 0.0 {
                 painter.rect_filled(r.expand(4.0), CornerRadius::same((r.width() / 2.0 + 4.0) as u8), (if chosen { t.accent } else { t.fg_text }).gamma_multiply(0.1 * hot));
+            }
+            if bundle {
+                painter.rect_filled(r, round, t.bg_card);
+            }
+            if bundle || hot > 0.0 {
                 let ring = if chosen { t.accent } else { Theme::mix(Theme::mix(t.line, t.fg_text, 0.45), t.fg_text, hot) };
-                painter.rect_stroke(r, round, Stroke::new(1.5, ring.gamma_multiply(hot)), StrokeKind::Inside);
+                painter.rect_stroke(r, round, Stroke::new(1.5, ring.gamma_multiply(if bundle { 1.0 } else { hot })), StrokeKind::Inside);
             }
             // near it or chosen: the × that takes it off
             let near = pointer.is_some_and(|p| r.expand(22.0).contains(p)) || chosen;
