@@ -2276,11 +2276,12 @@ mod tests {
         for (key, output) in [(1, None), (2, Some(3))] {
             engine.send(Command::Install { key, graph: graph(output) });
             engine.send(Command::Edit(key));
-            let deadline = Instant::now() + Duration::from_secs(5);
+            // a CI runner's software GPU takes seconds a frame over three V Beams at 1080p
+            let deadline = Instant::now() + Duration::from_secs(30);
             while engine.status.costed.load(Relaxed) != key && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
-            assert_eq!(engine.status.costed.load(Relaxed), key, "the edited graph timed within 5 s");
+            assert_eq!(engine.status.costed.load(Relaxed), key, "the edited graph timed within 30 s");
             for _ in 0..3 {
                 let ms: Vec<f32> = engine.status.costs.0[..4].iter().map(|c| f32::from_bits(c.load(Relaxed))).collect();
                 assert!(ms.iter().all(|ms| *ms > 0.0 && *ms < 100.0), "each node costs something: {ms:?} ms");
