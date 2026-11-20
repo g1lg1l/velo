@@ -1112,6 +1112,7 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Images", "Immagini"),
     ("Waiting for {}", "In attesa di {}"),
     ("{} is silent", "{} è in silenzio"),
+    ("Nothing plays in {}", "In {} non suona nulla"),
     (
         "Nothing plays in {}. If something does: macOS System Settings → Privacy & Security → Screen & System Audio Recording, allow Velo, then reopen it.",
         "In {} non suona nulla. Se invece suona: Impostazioni di Sistema di macOS → Privacy e sicurezza → Registrazione schermo e audio di sistema, consenti Velo, poi riaprilo.",

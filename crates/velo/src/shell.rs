@@ -1876,7 +1876,11 @@ fn audio_words(state: &AudioState, current: Option<&Input>) -> (String, String) 
     };
     match (&state.hearing, &app) {
         (Hearing::Failed(e), Some(name)) => (tr!("Waiting for {}", name), e.clone()),
-        (Hearing::Nothing, Some(name)) => (tr!("{} is silent", name), tr!("Nothing plays in {}. If something does: macOS System Settings → Privacy & Security → Screen & System Audio Recording, allow Velo, then reopen it.", name)),
+        // only macOS asks for a permission first
+        (Hearing::Nothing, Some(name)) if cfg!(target_os = "macos") => {
+            (tr!("{} is silent", name), tr!("Nothing plays in {}. If something does: macOS System Settings → Privacy & Security → Screen & System Audio Recording, allow Velo, then reopen it.", name))
+        }
+        (Hearing::Nothing, Some(name)) => (tr!("{} is silent", name), tr!("Nothing plays in {}", name)),
         (hearing, _) => match hearing {
             Hearing::Live => (state.name.clone(), tr!("Listening to {}", state.name)),
             Hearing::Waiting if cfg!(target_os = "macos") => (tr!("Waiting for permission…").to_string(), tr!("Waiting for the input to start (on macOS, for your permission)").to_string()),
@@ -1918,7 +1922,7 @@ fn audio_menu(ui: &mut Ui, t: &Theme, state: &AudioState, current: Option<&Input
             (tr!("CHANNELS"), Input::Named(name.clone(), k), format!("{}  {label}", icons::PLUGS))
         }));
     }
-    // one app's sound (macOS 14.2+): the apps that use audio, the one picked even while it's closed
+    // one app's sound (macOS 14.2+, Windows 11): the apps that use audio, the one picked even while it's closed
     let mut apps: Vec<(String, String, bool)> = state.apps.iter().map(|a| (a.id.clone(), a.name.clone(), a.playing)).collect();
     if let Some(Input::App { id, name }) = current
         && !apps.iter().any(|a| &a.0 == id)

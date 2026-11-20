@@ -12,7 +12,7 @@ The milestones that got it here, named in some code comments: M1 First Light (a 
 - **Lessons** for the first five minutes, in English and Italian.
 - **Show control:** a setlist or cue list; more than one output, each with crop and rotation.
 - **Controllers:** profiles for common controllers, MIDI out and LED feedback; OSC out.
-- **Inputs:** one app's sound on Windows (macOS has it), several audio inputs at once, screen capture; HEIC stills and turned phone movies upright on Windows (macOS has them).
+- **Inputs:** several audio inputs at once, screen capture; HEIC stills and turned phone movies upright on Windows (macOS has them).
 - **Shaders:** shaders and scenes shared as packages.
 - **Linux:** one app's sound, and video through the system's decoders.
 

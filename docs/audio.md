@@ -11,7 +11,7 @@ The audio chip in the top bar picks one input. The choice is remembered per mach
 | **Computer audio** (the default) | Whatever the computer plays: Spotify, a browser, a DJ app. No cables, no virtual device. |
 | **Default input** | The system's default input device. |
 | **A device** | Any input by name: a mic, an audio interface, a mixer with USB audio, or a virtual device (BlackHole, VB-Cable). |
-| **One app** (macOS 14.2+) | Only that app's sound, so notifications and calls stay out. |
+| **One app** (macOS 14.2+, Windows 11) | Only that app's sound, so notifications and calls stay out. |
 | **An audio file** | An MP3, played in a loop on the default output: music to work with when nothing else plays. |
 
 Computer audio per platform (through cpal):
@@ -22,7 +22,12 @@ Computer audio per platform (through cpal):
 | macOS 14.6+ | A Core Audio process tap. It needs the system's permission (Screen & System Audio Recording); an unallowed tap delivers silence, not an error. |
 | Linux | The PipeWire sink's monitor. |
 
-**One app** (`apps.rs`): the audio menu lists the apps using audio, playing ones first. A process belongs to the outermost `.app` in an Applications folder, so a browser's helpers count as the browser and daemons stay out. Picking one makes a private tap on its processes in a private aggregate device, opened like any input; the app keeps playing out loud. The choice is saved by the app's bundle path: while the app is closed Velo waits for it, and when its processes change the tap is made again. Not yet: Windows (WASAPI process loopback), Linux (PipeWire), Safari (it plays through WebKit's own process).
+**One app** (`apps.rs`): the audio menu lists the apps using audio, playing ones first; the app keeps playing out loud. While the app is closed Velo waits for it, and when its processes change the tap is made again.
+
+- **macOS 14.2+:** a process belongs to the outermost `.app` in an Applications folder, so a browser's helpers count as the browser and daemons stay out. Picking one makes a private tap on its processes in a private aggregate device, opened like any input. The choice is saved by the app's bundle path.
+- **Windows 11** (Windows 10 from build 20348; earlier the menu lists none): the apps are the processes with an audio session (`IAudioSessionManager2`, on every output), folded by executable, those in `C:\Windows` left out. Picking one opens a WASAPI process loopback (`ActivateAudioInterfaceAsync`, `PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE`) on the app's outermost process of that executable, so a browser's helpers are heard with it; Windows hands it over as 48 kHz stereo, and a thread of its own pushes it into the same ring a device's callback does. The choice is saved by the executable's path. An app run as two separate process trees is heard from the first.
+
+Not yet: Linux (PipeWire), Safari (it plays through WebKit's own process).
 
 **An audio file** (`track.rs`): the audio menu's **Play an MP3…** picks it. It's decoded whole, played on the default output over and over (each channel its own, the file's rate stepped into the device's), and analysed from the frame the output is on, so the picture is in time with what you hear. With no output device it plays silently on a clock; so does a capture run. `VELO_AUDIO=song.mp3` starts on a file, `VELO_AUDIO_FROM=seconds` from there in it.
 
@@ -111,4 +116,4 @@ With computer audio Velo hears the sound before the speakers play it; Bluetooth 
 
 ## 7. Crates
 
-`cpal` (device I/O and loopback), `rtrb` (the callback's ring) and `nanomp3` (an audio file's decoder, pure Rust); on macOS the `objc2` Core Audio bindings for one app's tap. The FFTs, filters, detectors, drum network and tempo tracker are Velo's own code, a few thousand lines with no C dependency.
+`cpal` (device I/O and loopback), `rtrb` (the callback's ring) and `nanomp3` (an audio file's decoder, pure Rust); for one app's tap, the `objc2` Core Audio bindings on macOS and `windows` (WASAPI) on Windows, both already in the tree through cpal. The FFTs, filters, detectors, drum network and tempo tracker are Velo's own code, a few thousand lines with no C dependency.

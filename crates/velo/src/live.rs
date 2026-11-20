@@ -1002,7 +1002,8 @@ pub enum Input {
     /// A device by name, and the first of its channels heard (0 for 1–2, 2 for 3–4…; none
     /// saved, 1–2).
     Named(String, #[serde(default)] u16),
-    /// One app's sound (macOS 14.2+): its bundle on disk, its name.
+    /// One app's sound (macOS 14.2+, Windows 11): its bundle on disk (its executable on
+    /// Windows), its name.
     App { id: String, name: String },
     /// An audio file (an MP3) by its path, played in a loop on the default output: music to
     /// work with when nothing else is playing.

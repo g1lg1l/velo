@@ -26,7 +26,8 @@ pub enum Source {
 
 /// An open input: keep `stream` alive, read mono samples from `samples`.
 pub struct Capture {
-    pub stream: cpal::Stream,
+    /// None for one app's tap on Windows, which streams by itself.
+    pub stream: Option<cpal::Stream>,
     pub samples: rtrb::Consumer<f32>,
     /// The same audio as left and right (the channels heard), for a recording to take.
     pub stereo: rtrb::Consumer<[f32; 2]>,
@@ -60,7 +61,11 @@ pub fn inputs() -> Vec<String> {
 pub fn open(source: &Source) -> Result<Capture, String> {
     let host = cpal::default_host();
     let named = |name: &str| host.devices().ok().and_then(|mut all| all.find(|d| d.description().is_ok_and(|x| x.name().contains(name))));
-    let tap = match source {
+    let tap: Option<crate::apps::Tap> = match source {
+        // Windows: the tap streams by itself (a process loopback), there's no device to open
+        #[cfg(windows)]
+        Source::App { id, name } => return crate::apps::Tap::new(id, name)?.capture(name),
+        #[cfg(not(windows))]
         Source::App { id, name } => Some(crate::apps::Tap::new(id, name)?),
         _ => None,
     };
@@ -105,7 +110,7 @@ pub fn open(source: &Source) -> Result<Capture, String> {
     };
     let (stream, samples, stereo) = short.map_or_else(|| open(cpal::BufferSize::Default), |b| open(b).or_else(|_| open(cpal::BufferSize::Default)))?;
     stream.play().map_err(|e| e.to_string())?;
-    Ok(Capture { stream, samples, stereo, rate, channels, name, tap, broken })
+    Ok(Capture { stream: Some(stream), samples, stereo, rate, channels, name, tap, broken })
 }
 
 /// A device just made (an app's tap) shows among the devices a moment later: up to a second.
