@@ -18,6 +18,8 @@ fn main() {
     for header in ["SyphonServerBase.h", "SyphonClientBase.h"] {
         let link = framework.join(header);
         let _ = std::fs::remove_file(&link);
+        // compiled on any host, run only for a Mac target: built on a Mac
+        #[cfg(unix)]
         std::os::unix::fs::symlink(root.join(header).canonicalize().expect("Syphon's headers"), &link).expect("a link in OUT_DIR");
     }
     let mut build = cc::Build::new();
