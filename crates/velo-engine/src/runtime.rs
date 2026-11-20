@@ -2256,6 +2256,12 @@ mod tests {
             eprintln!("no timestamps on this GPU: skipped");
             return;
         }
+        // a software GPU (a CI runner's WARP) stamps a frame's passes all at its end: no
+        // node's own time to check
+        if device.adapter_info().device_type == wgpu::DeviceType::Cpu {
+            eprintln!("a software GPU: skipped");
+            return;
+        }
         // two dear pictures and a cheap one side by side, blended: the GPU draws them at once
         let program = |code: &str| Program::new(device, ShaderNode::parse(code).unwrap()).unwrap();
         let builtin = |id: &str| BUILTINS.iter().find(|b| b.0 == id).unwrap().1;
@@ -2276,12 +2282,11 @@ mod tests {
         for (key, output) in [(1, None), (2, Some(3))] {
             engine.send(Command::Install { key, graph: graph(output) });
             engine.send(Command::Edit(key));
-            // a CI runner's software GPU takes seconds a frame over three V Beams at 1080p
-            let deadline = Instant::now() + Duration::from_secs(30);
+            let deadline = Instant::now() + Duration::from_secs(5);
             while engine.status.costed.load(Relaxed) != key && Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(10));
             }
-            assert_eq!(engine.status.costed.load(Relaxed), key, "the edited graph timed within 30 s");
+            assert_eq!(engine.status.costed.load(Relaxed), key, "the edited graph timed within 5 s");
             for _ in 0..3 {
                 let ms: Vec<f32> = engine.status.costs.0[..4].iter().map(|c| f32::from_bits(c.load(Relaxed))).collect();
                 assert!(ms.iter().all(|ms| *ms > 0.0 && *ms < 100.0), "each node costs something: {ms:?} ms");
