@@ -8,15 +8,17 @@ Click **Output** and pick a display. Each one is listed with its name, its size 
 
 The picture fills that display in a borderless stage window, above other windows, with no interface and no cursor on it. Its shape is kept: if the display's shape differs from the picture's, you get bars on two sides, never a stretched picture.
 
-Each display in the menu is a switch: pick another and the picture goes there too, as many as you have plugged in. Click an open one again to close it, or **Close output** (**Close every output** with several) to close them all. <kbd>Esc</kbd> on an output closes only that one, and only when it has the keyboard, so a stray key on stage can't.
+Each display in the menu is a switch: pick another and the picture goes there too, as many as you have plugged in. An open one has a tick and a cross: the cross closes it, **Close output** (**Close every output** with several) closes them all. Clicking an open one never closes it, so a misclick on stage can't put a projector out. <kbd>Esc</kbd> on an output closes only that one, and only when it has the keyboard.
+
+Two projectors of the same model have the same name: the menu tells them apart from left to right, as `EPSON PJ` and `EPSON PJ (2)`.
 
 **Window** in the same menu puts an output in an ordinary window too, handy for checking it on one screen.
 
 ## Several displays
 
-With two or more outputs open, the **PROJECTION** part of the Output menu shows a button for each: the crop, rotation, corners and masks below it are that output's. The one you opened last is picked until you pick another.
+With two or more outputs open, the **PROJECTION** part of the Output menu sets one of them, named in its title: the one you opened last, until you click another open one in the list.
 
-- **Crop** shows only a part of the picture on this output, in percent: from the left, from the top, the width and the height. For two projectors side by side, set the canvas twice as wide (3840×1080), then crop one output to `0 0 50 100` and the other to `50 0 50 100`: each shows its half, at its full resolution.
+- **Crop** shows only a part of the picture on this output, in percent: X from the left, Y from the top, W its width and H its height. For two projectors side by side, set the canvas twice as wide (3840×1080), then pick **Left half** for one output and **Right half** for the other: each shows its half, at its full resolution. **Whole** puts all of it back.
 - **Rotation** turns the picture a quarter at a time: 90° or 270° for a screen hung on its side, 180° for a projector hung upside down from the ceiling.
 
 The cropped, turned picture keeps its shape on the output, with bars if the display's shape differs. The test pattern isn't cropped or turned: it shows the projector itself. Every output shows the same live scene; the crop picks the part.

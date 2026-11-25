@@ -99,6 +99,11 @@ pub fn field(text: &mut dyn egui::TextBuffer) -> egui::TextEdit<'_> {
 /// A number to scrub, as in Figma's fields: drag on it (up or right for more, down or left for
 /// less) or click it to type; `label` sits inside on the left, the number in mono.
 pub fn scrub<N: egui::emath::Numeric>(ui: &mut Ui, t: &Theme, label: &str, value: &mut N, range: std::ops::RangeInclusive<N>, width: f32) -> Response {
+    scrub_with(ui, t, label, egui::DragValue::new(value).range(range).speed(1.0), width)
+}
+
+/// [`scrub`] with a number set up as the caller likes (decimals, a suffix).
+pub fn scrub_with(ui: &mut Ui, t: &Theme, label: &str, drag: egui::DragValue<'_>, width: f32) -> Response {
     let fill = t.bg_field;
     let inner = Frame::new().fill(fill).corner_radius(CornerRadius::same(t.radius_sm)).inner_margin(egui::Margin::symmetric(8, 0)).show(ui, |ui| {
         ui.set_width(width - 16.0);
@@ -110,7 +115,7 @@ pub fn scrub<N: egui::emath::Numeric>(ui: &mut Ui, t: &Theme, label: &str, value
             for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active] {
                 (w.weak_bg_fill, w.bg_fill, w.bg_stroke) = (fill, fill, Stroke::NONE);
             }
-            ui.add_sized(ui.available_size(), egui::DragValue::new(value).range(range).speed(1.0))
+            ui.add_sized(ui.available_size(), drag)
         })
         .inner
     });

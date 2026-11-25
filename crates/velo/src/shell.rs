@@ -715,7 +715,7 @@ impl App {
         let text = if icon_only { icons::CARET_DOWN.to_string() } else { format!("{label}  {}", icons::CARET_DOWN) };
         // in Blackout, the menu holding it says so
         let r = kit::button(ui, t, Some(if blackout && dark { icons::POWER } else { icons::PROJECTOR_SCREEN }), &text, !outputs.is_empty() || live.sharing.is_some() || live.pattern || (blackout && dark) || self.recording.is_some());
-        self.hint(&r, tr!("Where the picture goes: one display or several, fullscreen, or a window. Click one again to close it."));
+        self.hint(&r, tr!("Where the picture goes: one display or several, fullscreen, or a window. Each closes from its cross here."));
         if r.clicked() {
             shared.borrow_mut().requests.push(Request::Displays);
         }
@@ -728,17 +728,46 @@ impl App {
             (s.adjust.is_some(), current.as_ref().and_then(|o| s.projections.get(&crate::host::key(o))).cloned().unwrap_or_default())
         };
         // a click inside closes the menu, but not one on a field to type in (the lags, the soft edge)
+        // nor one setting up an output's projection (picking it, its crop, its rotation)
         kit::menu(t, &r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             let mut fields = Vec::new();
-            // each a switch: the picture goes to as many displays as are on
+            // each a switch: the picture goes to as many displays as are on, each ticked. A click
+            // on one that's on picks it for the projection below and never closes it (a misclick
+            // on stage mustn't put a projector out): its x does
             let places = displays.iter().map(|d| {
                 let hz = d.hz.map_or(String::new(), |hz| format!(" · {hz:.0} Hz"));
-                (Target::Display(d.name.clone()), format!("{}  {}  {}×{}{hz}", icons::MONITOR, display_name(&d.name), d.size[0], d.size[1]))
+                (Target::Display(d.name.clone()), icons::MONITOR, display_name(&d.name), format!("{}×{}{hz}", d.size[0], d.size[1]))
             });
-            for (target, text) in places.chain([(Target::Window, format!("{}  {}", icons::APP_WINDOW, tr!("Window")))]) {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            for (target, icon, label, size) in places.chain([(Target::Window, icons::APP_WINDOW, tr!("Window").to_string(), String::new())]) {
                 let open = outputs.contains(&target);
-                if ui.selectable_label(open, text).clicked() {
-                    request = Some(if open { Request::Close(Some(target)) } else { Request::Open(target) });
+                let mut job = egui::text::LayoutJob::default();
+                job.append(if open { icons::CHECK } else { icon }, 0.0, egui::TextFormat::simple(font.clone(), if open { t.accent } else { egui::Color32::PLACEHOLDER }));
+                job.append(&format!("  {label}"), 0.0, egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER));
+                let x = egui::IdSalt::new(("close output", crate::host::key(&target)));
+                let row = egui::Button::selectable(open && current.as_ref() == Some(&target), job);
+                let row = if open { row.shortcut_text((size, egui::Atom::custom(x, egui::vec2(t.control_h, t.row_h)))) } else { row.shortcut_text(size) };
+                let row = row.atom_ui(ui);
+                let closed = row.rect(x).is_some_and(|rect| {
+                    let r = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| kit::icon_button(ui, t, icons::X, tr!("Close this output"), false)).inner;
+                    fields.push(r.rect);
+                    r.clicked()
+                });
+                let about = if open { tr!("The picture goes out here. Click to set its projection below; the cross closes it") } else { tr!("Send the picture here too") };
+                let r = row.response.on_hover_text(about);
+                if open {
+                    fields.push(r.rect);
+                }
+                if closed {
+                    request = Some(Request::Close(Some(target)));
+                } else if r.clicked() && open {
+                    let mut s = shared.borrow_mut();
+                    if s.current() != Some(&target) {
+                        s.finish(true);
+                        s.picked = Some(target);
+                    }
+                } else if r.clicked() {
+                    request = Some(Request::Open(target));
                 }
             }
             ui.separator();
@@ -804,45 +833,70 @@ impl App {
             // an output's crop, turn, corner pin and masks, kept per display with the preferences
             if let Some(current) = &current {
                 ui.separator();
-                kit::menu_title(ui, t, tr!("PROJECTION"));
-                // with several outputs, which one's: the last opened unless another is picked
-                if outputs.len() > 1 {
-                    ui.horizontal_wrapped(|ui| {
-                        for o in &outputs {
-                            if ui.selectable_label(o == current, name(o)).clicked() {
-                                let mut s = shared.borrow_mut();
-                                s.finish(true);
-                                s.picked = Some(o.clone());
-                            }
+                // with several outputs, whose: the one picked in the list above, named here
+                let margin = egui::Margin { left: (t.pad * 1.5) as i8, right: t.pad as i8, top: (t.gap * 2.0) as i8, bottom: t.gap as i8 };
+                egui::Frame::new().inner_margin(margin).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        kit::caps(ui, t, tr!("PROJECTION"));
+                        if outputs.len() > 1 {
+                            ui.label(RichText::new(format!("· {}", name(current))).size(t.text_sm).color(t.fg_text));
                         }
                     });
-                }
-                // the part of the picture this output shows, in percent of it
-                let mut crop = projection.crop().map(|v| v * 100.0);
-                let mut cropped = false;
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{}  {}", icons::CROP, tr!("Crop"))).color(t.fg_text))
-                        .on_hover_text(tr!("The part of the picture this output shows, in percent: from the left, from the top, its width and its height. Two projectors side by side: 0 0 50 100 on one, 50 0 50 100 on the other"));
-                    for v in &mut crop {
-                        let r = ui.add(egui::DragValue::new(v).range(0.0..=100.0).speed(0.25).fixed_decimals(1).suffix("%"));
-                        fields.push(r.rect);
-                        cropped |= r.changed();
-                    }
                 });
-                if cropped && let Some(p) = shared.borrow_mut().projection() {
-                    p.crop = crop.map(|v| v / 100.0);
+                // the rows below sit in the icon column, as the lags' do
+                let inset = egui::Margin { left: (t.pad * 1.5) as i8, right: (t.pad * 1.5) as i8, top: 0, bottom: t.gap as i8 };
+                // the part of the picture this output shows, in percent of it: a half for each of
+                // two projectors side by side in a click, any part typed or dragged
+                let mut crop = projection.crop().map(|v| v * 100.0);
+                let (mut part, mut typed) = (None, false);
+                egui::Frame::new().inner_margin(inset).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{}  {}", icons::CROP, tr!("Crop"))).color(t.fg_text))
+                            .on_hover_text(tr!("The part of the picture this output shows, in percent: from the left, from the top, its width and its height. Two projectors side by side: 0 0 50 100 on one, 50 0 50 100 on the other"));
+                        kit::right(ui, |ui| {
+                            let halves = [(tr!("Right half"), [0.5, 0.0, 0.5, 1.0]), (tr!("Left half"), [0.0, 0.0, 0.5, 1.0]), (tr!("Whole"), velo_engine::projection::WHOLE)];
+                            for (label, half) in halves {
+                                let r = ui.selectable_label(projection.crop() == half, label);
+                                fields.push(r.rect);
+                                if r.clicked() {
+                                    part = Some(half);
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(t.gap);
+                    let width = (ui.available_width() - 3.0 * t.gap) / 4.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = t.gap;
+                        for (label, v) in ["X", "Y", "W", "H"].into_iter().zip(&mut crop) {
+                            let r = kit::scrub_with(ui, t, label, egui::DragValue::new(v).range(0.0..=100.0).speed(0.25).custom_formatter(|v, _| if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v:.1}") }).suffix("%"), width);
+                            fields.push(r.rect);
+                            typed |= r.changed();
+                        }
+                    });
+                });
+                if let Some(crop) = part.or(typed.then(|| crop.map(|v| v / 100.0)))
+                    && let Some(p) = shared.borrow_mut().projection()
+                {
+                    p.crop = crop;
                     p.crop = p.crop();
                 }
                 // turned a quarter at a time, for a screen on its side or a projector upside down
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{}  {}", icons::ARROW_CLOCKWISE, tr!("Rotation"))).color(t.fg_text));
-                    for k in 0..4u8 {
-                        if ui.selectable_label(projection.turn % 4 == k, format!("{}°", u16::from(k) * 90)).clicked()
-                            && let Some(p) = shared.borrow_mut().projection()
-                        {
-                            p.turn = k;
-                        }
-                    }
+                egui::Frame::new().inner_margin(inset).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{}  {}", icons::ARROW_CLOCKWISE, tr!("Rotation"))).color(t.fg_text));
+                        kit::right(ui, |ui| {
+                            for k in (0..4u8).rev() {
+                                let r = ui.selectable_label(projection.turn % 4 == k, format!("{}°", u16::from(k) * 90));
+                                fields.push(r.rect);
+                                if r.clicked()
+                                    && let Some(p) = shared.borrow_mut().projection()
+                                {
+                                    p.turn = k;
+                                }
+                            }
+                        });
+                    });
                 });
                 let r = ui.add(egui::Button::selectable(adjusting, format!("{}  {}", icons::FRAME_CORNERS, tr!("Adjust the projection"))).shortcut_text(keys("stage.adjust")));
                 if r.on_hover_text(tr!("Drag the picture's corners on the output until it lands on the screen. Arrows nudge the picked handle a pixel (Shift: ten), Tab picks the next, Esc ends")).clicked() {

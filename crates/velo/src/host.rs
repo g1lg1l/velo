@@ -106,6 +106,28 @@ impl Shared {
     }
 }
 
+/// The displays left to right (then top to bottom), each under a name no other has: two
+/// projectors of one model, both "EPSON PJ", are "EPSON PJ" and "EPSON PJ (2)", so each opens and
+/// keeps its own projection. Ordered by where they stand, the names hold while nothing is moved.
+fn monitors(event_loop: &ActiveEventLoop) -> Vec<(String, winit::monitor::MonitorHandle)> {
+    let mut all: Vec<_> = event_loop.available_monitors().collect();
+    all.sort_by_key(|m| (m.position().x, m.position().y));
+    unique(all.iter().map(|m| m.name().unwrap_or_default())).into_iter().zip(all).collect()
+}
+
+/// Names made unique in order: the second "EPSON PJ" is "EPSON PJ (2)".
+fn unique(names: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    names
+        .into_iter()
+        .map(|name| {
+            let before = seen.iter().filter(|s| **s == name).count();
+            seen.push(name.clone());
+            if before == 0 { name } else { format!("{name} ({})", before + 1) }
+        })
+        .collect()
+}
+
 /// What a projection is kept under: the display's name ("" for a window).
 pub fn key(target: &Target) -> String {
     match target {
@@ -236,7 +258,7 @@ impl<'a> Host<'a> {
     }
 
     fn list(&self, event_loop: &ActiveEventLoop) {
-        let displays = event_loop.available_monitors().map(|m| Display { name: m.name().unwrap_or_default(), size: [m.size().width, m.size().height], hz: m.refresh_rate_millihertz().map(|mhz| mhz as f32 / 1000.0) }).collect();
+        let displays = monitors(event_loop).into_iter().map(|(name, m)| Display { name, size: [m.size().width, m.size().height], hz: m.refresh_rate_millihertz().map(|mhz| mhz as f32 / 1000.0) }).collect();
         self.shared.borrow_mut().displays = displays;
     }
 
@@ -249,8 +271,8 @@ impl<'a> Host<'a> {
         let Some(engine) = self.engine.clone() else { return };
         let attributes = Window::default_attributes().with_title("Velo output");
         let monitor = match &target {
-            Target::Display(name) => match event_loop.available_monitors().find(|m| m.name().as_ref() == Some(name)) {
-                Some(m) => Some(m),
+            Target::Display(name) => match monitors(event_loop).into_iter().find(|m| &m.0 == name) {
+                Some((_, m)) => Some(m),
                 None => return, // unplugged since the menu listed it
             },
             Target::Window => None,
@@ -402,7 +424,7 @@ impl ApplicationHandler<UserEvent> for Host<'_> {
         // its window over the UI's, on top)
         if self.looked.elapsed() > Duration::from_secs(1) {
             self.looked = std::time::Instant::now();
-            let names: Vec<String> = event_loop.available_monitors().filter_map(|m| m.name()).collect();
+            let names: Vec<String> = monitors(event_loop).into_iter().map(|m| m.0).collect();
             let gone: Vec<Target> = self.outputs.iter().map(|o| o.target.clone()).filter(|t| matches!(t, Target::Display(name) if !names.contains(name))).collect();
             for target in gone {
                 self.close(Some(&target));
@@ -462,6 +484,12 @@ mod tests {
         assert_eq!(s.projection().expect("an output").corners, projection::SQUARE, "the window, opened last, has its own");
         s.finish(true);
         assert!(s.adjust.is_none());
+    }
+
+    #[test]
+    fn displays_of_one_model_get_names_of_their_own() {
+        let names = unique(["EPSON PJ", "Built-in", "EPSON PJ", "EPSON PJ"].map(String::from));
+        assert_eq!(names, ["EPSON PJ", "Built-in", "EPSON PJ (2)", "EPSON PJ (3)"]);
     }
 
     #[test]
