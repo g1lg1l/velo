@@ -3818,6 +3818,7 @@ impl App {
             let at = self.center_rect.map_or(egui::pos2(900.0, 80.0), |r| r.right_top() + egui::vec2(-300.0 - t.pad, 240.0));
             egui::Window::new("inspector").title_bar(false).frame(frame).default_pos(at).default_size([300.0, 520.0]).min_size([240.0, 200.0]).resizable(true).constrain(true).show(&ctx, |ui| self.inspector(ui));
         }
+        self.output_setup(&ctx);
         self.start_ui(&ctx);
         self.node_menu(&ctx);
         self.preferences(&ctx);

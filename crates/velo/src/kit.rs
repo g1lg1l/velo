@@ -560,6 +560,36 @@ fn icon_button_with(ui: &mut Ui, t: &Theme, icon: &str, angle: f32, label: &str,
     resp.on_hover_text(label)
 }
 
+/// The record button: a dot, red on red with how long it's been (`since`, seconds) while it
+/// records. Drawn, not a glyph: the icon font is a subset.
+pub fn record_button(ui: &mut Ui, t: &Theme, since: Option<u64>, label: &str) -> Response {
+    let font = Theme::mono(t.text_sm);
+    let time = since.map(|s| ui.painter().layout_no_wrap(format!("{}:{:02}", s / 60, s % 60), font, t.error));
+    let (rect, resp) = ui.allocate_exact_size(vec2(t.control_h + time.as_ref().map_or(0.0, |g| g.size().x + t.gap), t.control_h), Sense::click());
+    let enabled = ui.is_enabled();
+    let h = if enabled { hover(ui, t, &resp) } else { 0.0 };
+    let shape = if ui.visuals().button_frame { rect } else { rect.shrink(3.0) };
+    let painter = ui.painter();
+    if since.is_some() {
+        painter.rect_filled(shape, CornerRadius::same(t.radius_sm), Theme::mix(t.bg_control, t.error, 0.3 + 0.1 * h));
+    } else if h > 0.0 {
+        painter.rect_filled(shape, CornerRadius::same(t.radius_sm), t.bg_control.gamma_multiply(h));
+    }
+    let color = match (enabled, since) {
+        (false, _) => t.fg_muted.gamma_multiply(0.5),
+        (_, Some(_)) => t.error,
+        _ => Theme::mix(t.fg_muted, t.fg_text, h),
+    };
+    let dot = pos2(rect.left() + t.control_h / 2.0, rect.center().y);
+    painter.circle_filled(dot, 5.0, color);
+    if let Some(time) = time {
+        painter.galley(pos2(rect.left() + t.control_h - 3.0, rect.center().y - time.size().y / 2.0), time, t.error);
+    }
+    focus_ring(ui, t, &resp, t.radius_sm);
+    resp.widget_info(|| WidgetInfo::selected(Role::Button, enabled, since.is_some(), label));
+    resp.on_hover_text(label)
+}
+
 /// An icon toggle that turns red while it's on: a state the whole room sees (Blackout).
 pub fn alarm_button(ui: &mut Ui, t: &Theme, icon: &str, label: &str, on: bool) -> Response {
     if !on {

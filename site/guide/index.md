@@ -39,7 +39,7 @@ Velo has a small vocabulary. These are all the words the guide uses.
 - **The scenes** are on the left, a card each with a live thumbnail. Number keys launch them.
 - **The inspector** is on the right: the selected node's values, or the scene's launch settings when nothing is selected.
 - **The deck** runs along the bottom: the scene's variations, its eight macros, and every source moving live.
-- **The top bar** holds what you glance at while playing: the audio input, the tempo, MIDI, the Output menu, Freeze and Blackout.
+- **The top bar** holds what you glance at while playing: the audio input, the tempo, MIDI, the Output menu, Record, Freeze and Blackout.
 
 Each panel hides with a key, and <kbd>&#92;</kbd> hides them all (see [Shortcuts](./shortcuts)).
 

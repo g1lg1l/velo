@@ -40,7 +40,7 @@ pub const COMMANDS: [Command; 59] = [
     cmd("Stage", "stage.blackout", "Blackout"),
     cmd("Stage", "stage.freeze", "Freeze"),
     cmd("Stage", "stage.pattern", "Test pattern"),
-    cmd("Stage", "stage.adjust", "Adjust the projection"),
+    cmd("Stage", "stage.adjust", "Set up the outputs"),
     cmd("Stage", "stage.record", "Record the output"),
     cmd("Stage", "stage.tap", "Tap tempo"),
     cmd("Stage", "stage.learn", "MIDI learn"),

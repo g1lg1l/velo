@@ -214,14 +214,15 @@ impl App {
                 self.tempo_chip(ui, &t);
             });
             ui.add_space(t.pad);
-            // the stage: MIDI, where the picture goes, Freeze and Blackout (in the Output menu when
-            // the bar is narrow); words when there's room, icons when there's less
+            // the stage: MIDI, where the picture goes, Record, Freeze and Blackout (in the Output
+            // menu when the bar is narrow); words when there's room, icons when there's less
             kit::group(ui, &t, |ui| {
                 self.midi_chip(ui, &t, compact);
                 kit::group_line(ui, &t);
                 self.output_chip(ui, &t, compact, tight);
                 if !tight {
                     kit::group_line(ui, &t);
+                    self.record_button(ui, &t);
                     let frozen = self.live.as_ref().is_some_and(|l| l.frozen);
                     let tip = self.tip(tr!("Freeze: the output holds this frame while you change things"), "stage.freeze");
                     let r = ui.add_enabled_ui(self.live.is_some(), |ui| kit::icon_button(ui, &t, icons::SNOWFLAKE, &tip, frozen)).inner;
@@ -358,7 +359,30 @@ impl App {
         }
         self.hint(&r, tip);
         let mut picked = (None, false);
-        kit::menu(t, &r).show(|ui| picked = audio_menu(ui, t, &state, current.as_ref()));
+        let mut speaker = self.settings.speaker_ms;
+        // a click inside closes the menu, but not one on the lag's field
+        kit::menu(t, &r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
+            picked = audio_menu(ui, t, &state, current.as_ref());
+            // the speakers' lag: what's heard of the computer's sound held back that much, so the
+            // pictures wait for it (inset as the menu's lines are: a label has no padding of its own)
+            ui.separator();
+            let mut field = egui::Rect::NOTHING;
+            egui::Frame::new().inner_margin(egui::Margin { left: (t.pad * 1.5) as i8, right: (t.pad * 1.5) as i8, ..Default::default() }).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{}  {}", icons::SPEAKER_HIGH, tr!("Speaker lag"))).color(t.fg_text)).on_hover_text(tr!("The pictures later by this much: Bluetooth speakers play the computer's sound late"));
+                    field = kit::right(ui, |ui| ui.add(egui::DragValue::new(&mut speaker).range(0.0..=crate::live::MAX_SPEAKER_LAG).speed(1.0).fixed_decimals(0).suffix(" ms"))).rect;
+                });
+            });
+            if picked.0.is_some() || picked.1 || ui.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| ui.min_rect().contains(p) && !field.contains(p))) {
+                ui.close();
+            }
+        });
+        if speaker != self.settings.speaker_ms
+            && let Some(live) = &self.live
+        {
+            live.audio.set_lag(speaker);
+            self.settings.speaker_ms = speaker;
+        }
         self.pick_audio(ui.ctx(), picked);
     }
 
@@ -691,49 +715,31 @@ impl App {
         };
         let dark = live.blackout;
         let shared = live.shared.clone();
-        let (outputs, current, displays) = {
+        let (outputs, displays) = {
             let s = shared.borrow();
-            (s.outputs.clone(), s.current().cloned(), s.displays.clone())
-        };
-        let name = |target: &Target| match target {
-            Target::Window => tr!("Window").to_string(),
-            Target::Display(name) => display_name(name),
+            (s.outputs.clone(), s.displays.clone())
         };
         let label = match outputs.as_slice() {
             [] => tr!("Output").to_string(),
-            [one] => name(one),
+            [one] => output_name(one),
             many => tr!("{} outputs", many.len()),
-        };
-        // recording: said on the chip, with how long it's been
-        let label = match &self.recording {
-            Some((_, since)) => {
-                let s = since.elapsed().as_secs();
-                format!("{label} · REC {}:{:02}", s / 60, s % 60)
-            }
-            None => label,
         };
         let text = if icon_only { icons::CARET_DOWN.to_string() } else { format!("{label}  {}", icons::CARET_DOWN) };
         // in Blackout, the menu holding it says so
-        let r = kit::button(ui, t, Some(if blackout && dark { icons::POWER } else { icons::PROJECTOR_SCREEN }), &text, !outputs.is_empty() || live.sharing.is_some() || live.pattern || (blackout && dark) || self.recording.is_some());
+        let r = kit::button(ui, t, Some(if blackout && dark { icons::POWER } else { icons::PROJECTOR_SCREEN }), &text, !outputs.is_empty() || live.sharing.is_some() || live.pattern || (blackout && dark));
         self.hint(&r, tr!("Where the picture goes: one display or several, fullscreen, or a window. Each closes from its cross here."));
         if r.clicked() {
             shared.borrow_mut().requests.push(Request::Displays);
         }
-        let (mut request, mut stage, mut share, mut lead) = (None, None, None, self.settings.lead_ms);
+        let (mut request, mut stage, mut share) = (None, None, None);
         let (recording, mut mute) = (self.recording.is_some(), self.settings.record_mute);
-        let mut speaker = self.settings.speaker_ms;
-        let (sharing, frozen, pattern) = (live.sharing, live.frozen, live.pattern);
-        let (adjusting, projection) = {
-            let s = shared.borrow();
-            (s.adjust.is_some(), current.as_ref().and_then(|o| s.projections.get(&crate::host::key(o))).cloned().unwrap_or_default())
-        };
-        // a click inside closes the menu, but not one on a field to type in (the lags, the soft edge)
-        // nor one setting up an output's projection (picking it, its crop, its rotation)
-        kit::menu(t, &r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
-            let mut fields = Vec::new();
-            // each a switch: the picture goes to as many displays as are on, each ticked. A click
-            // on one that's on picks it for the projection below and never closes it (a misclick
-            // on stage mustn't put a projector out): its x does
+        let (sharing, frozen) = (live.sharing, live.frozen);
+        let keys = |id| self.settings.keymap.keys(id).first().map(keymap::text).unwrap_or_default();
+        // where the picture goes, and only that: setting a projector up has a panel of its own
+        // (it takes a while, looking at the wall), recording a button of its own
+        kit::menu(t, &r).show(|ui| {
+            // each a switch: the picture goes to as many displays as are on, each ticked. Only
+            // its cross closes one (a misclick on stage mustn't put a projector out)
             let places = displays.iter().map(|d| {
                 let hz = d.hz.map_or(String::new(), |hz| format!(" · {hz:.0} Hz"));
                 (Target::Display(d.name.clone()), icons::MONITOR, display_name(&d.name), format!("{}×{}{hz}", d.size[0], d.size[1]))
@@ -745,28 +751,14 @@ impl App {
                 job.append(if open { icons::CHECK } else { icon }, 0.0, egui::TextFormat::simple(font.clone(), if open { t.accent } else { egui::Color32::PLACEHOLDER }));
                 job.append(&format!("  {label}"), 0.0, egui::TextFormat::simple(font.clone(), egui::Color32::PLACEHOLDER));
                 let x = egui::IdSalt::new(("close output", crate::host::key(&target)));
-                let row = egui::Button::selectable(open && current.as_ref() == Some(&target), job);
+                let row = egui::Button::new(job);
                 let row = if open { row.shortcut_text((size, egui::Atom::custom(x, egui::vec2(t.control_h, t.row_h)))) } else { row.shortcut_text(size) };
                 let row = row.atom_ui(ui);
-                let closed = row.rect(x).is_some_and(|rect| {
-                    let r = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| kit::icon_button(ui, t, icons::X, tr!("Close this output"), false)).inner;
-                    fields.push(r.rect);
-                    r.clicked()
-                });
-                let about = if open { tr!("The picture goes out here. Click to set its projection below; the cross closes it") } else { tr!("Send the picture here too") };
-                let r = row.response.on_hover_text(about);
-                if open {
-                    fields.push(r.rect);
-                }
+                let closed = row.rect(x).is_some_and(|rect| ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| kit::icon_button(ui, t, icons::X, tr!("Close this output"), false)).inner.clicked());
+                let r = row.response.on_hover_text(if open { tr!("The picture goes out here; the cross closes it") } else { tr!("Send the picture here too") });
                 if closed {
                     request = Some(Request::Close(Some(target)));
-                } else if r.clicked() && open {
-                    let mut s = shared.borrow_mut();
-                    if s.current() != Some(&target) {
-                        s.finish(true);
-                        s.picked = Some(target);
-                    }
-                } else if r.clicked() {
+                } else if r.clicked() && !open {
                     request = Some(Request::Open(target));
                 }
             }
@@ -789,181 +781,32 @@ impl App {
                     share = Some((!on).then_some(kind));
                 }
             }
-            let keys = |id| self.settings.keymap.keys(id).first().map(keymap::text).unwrap_or_default();
-            // the program to a movie, with what's heard unless it's left out
+            // the projectors' setup, in its panel: crop, rotation, corners, masks, the test pattern
             ui.separator();
-            kit::menu_title(ui, t, tr!("RECORD"));
-            let r = ui.add(egui::Button::selectable(recording, format!("{}  {}", icons::FILM_STRIP, if recording { tr!("Stop recording") } else { tr!("Record the output") })).shortcut_text(keys("stage.record")));
-            if r.on_hover_text(tr!("The output as a movie (MP4) in your Movies folder, at the canvas's size and frame rate. Needs ffmpeg: Velo offers to download it")).clicked() {
-                stage = Some("stage.record");
+            let r = ui.add_enabled(!outputs.is_empty(), egui::Button::new(format!("{}  {}", icons::FRAME_CORNERS, tr!("Set up the outputs…"))).shortcut_text(keys("stage.adjust")));
+            if r.on_hover_text(tr!("Crop, rotation, corners and masks of each output, and the test pattern, in a panel that stays open while you look at the wall")).clicked() {
+                stage = Some("stage.adjust");
             }
-            // a switch: a tick in the icon column, as the menus' others, not egui's checkbox
-            if ui.add_enabled_ui(!recording, |ui| kit::menu_tick(ui, t, !mute, tr!("With the sound Velo hears"))).inner.clicked() {
-                mute = !mute;
-            }
-            // the stage: a pattern to line up a projector, and Freeze and Blackout when the bar
-            // has no room for them
-            ui.separator();
-            let mut items = vec![("stage.pattern", icons::CROSSHAIR, tr!("Test pattern"), pattern)];
+            // the bar has no room for Record, Freeze and Blackout: here instead
             if blackout {
-                items.extend([("stage.freeze", icons::SNOWFLAKE, tr!("Freeze"), frozen), ("stage.blackout", icons::POWER, tr!("Blackout"), dark)]);
-            }
-            for (id, icon, name, on) in items {
-                let r = ui.add(egui::Button::selectable(on, format!("{icon}  {name}")).shortcut_text(keys(id)));
-                let r = if id == "stage.pattern" { r.on_hover_text(tr!("A grid, a circle and color bars on the outputs, for lining up a projector")) } else { r };
-                if r.clicked() {
-                    stage = Some(id);
-                }
-            }
-            // the output's lag: the pictures drawn that much ahead, so the beat lands on time
-            // and the speakers': what's heard of the computer's sound held back that much, so the
-            // pictures wait for it (inset as the menu's lines are: a label has no padding of its own)
-            let lags = [
-                (icons::TIMER, tr!("Projector lag"), tr!("The pictures ahead of the music by this much"), &mut lead, velo_engine::runtime::MAX_LEAD * 1000.0),
-                (icons::SPEAKER_HIGH, tr!("Speaker lag"), tr!("The pictures later by this much: Bluetooth speakers play the computer's sound late"), &mut speaker, crate::live::MAX_SPEAKER_LAG),
-            ];
-            for (icon, name, about, ms, most) in lags {
-                egui::Frame::new().inner_margin(egui::Margin { left: (t.pad * 1.5) as i8, ..Default::default() }).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("{icon}  {name}")).color(t.fg_text)).on_hover_text(about);
-                        fields.push(kit::right(ui, |ui| ui.add(egui::DragValue::new(ms).range(0.0..=most).speed(1.0).fixed_decimals(0).suffix(" ms"))).rect);
-                    });
-                });
-            }
-            // an output's crop, turn, corner pin and masks, kept per display with the preferences
-            if let Some(current) = &current {
                 ui.separator();
-                // with several outputs, whose: the one picked in the list above, named here
-                let margin = egui::Margin { left: (t.pad * 1.5) as i8, right: t.pad as i8, top: (t.gap * 2.0) as i8, bottom: t.gap as i8 };
-                egui::Frame::new().inner_margin(margin).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        kit::caps(ui, t, tr!("PROJECTION"));
-                        if outputs.len() > 1 {
-                            ui.label(RichText::new(format!("· {}", name(current))).size(t.text_sm).color(t.fg_text));
-                        }
-                    });
-                });
-                // the rows below sit in the icon column, as the lags' do
-                let inset = egui::Margin { left: (t.pad * 1.5) as i8, right: (t.pad * 1.5) as i8, top: 0, bottom: t.gap as i8 };
-                // the part of the picture this output shows, in percent of it: a half for each of
-                // two projectors side by side in a click, any part typed or dragged
-                let mut crop = projection.crop().map(|v| v * 100.0);
-                let (mut part, mut typed) = (None, false);
-                egui::Frame::new().inner_margin(inset).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("{}  {}", icons::CROP, tr!("Crop"))).color(t.fg_text))
-                            .on_hover_text(tr!("The part of the picture this output shows, in percent: from the left, from the top, its width and its height. Two projectors side by side: 0 0 50 100 on one, 50 0 50 100 on the other"));
-                        kit::right(ui, |ui| {
-                            let halves = [(tr!("Right half"), [0.5, 0.0, 0.5, 1.0]), (tr!("Left half"), [0.0, 0.0, 0.5, 1.0]), (tr!("Whole"), velo_engine::projection::WHOLE)];
-                            for (label, half) in halves {
-                                let r = ui.selectable_label(projection.crop() == half, label);
-                                fields.push(r.rect);
-                                if r.clicked() {
-                                    part = Some(half);
-                                }
-                            }
-                        });
-                    });
-                    ui.add_space(t.gap);
-                    let width = (ui.available_width() - 3.0 * t.gap) / 4.0;
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = t.gap;
-                        for (label, v) in ["X", "Y", "W", "H"].into_iter().zip(&mut crop) {
-                            let r = kit::scrub_with(ui, t, label, egui::DragValue::new(v).range(0.0..=100.0).speed(0.25).custom_formatter(|v, _| if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v:.1}") }).suffix("%"), width);
-                            fields.push(r.rect);
-                            typed |= r.changed();
-                        }
-                    });
-                });
-                if let Some(crop) = part.or(typed.then(|| crop.map(|v| v / 100.0)))
-                    && let Some(p) = shared.borrow_mut().projection()
-                {
-                    p.crop = crop;
-                    p.crop = p.crop();
-                }
-                // turned a quarter at a time, for a screen on its side or a projector upside down
-                egui::Frame::new().inner_margin(inset).show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("{}  {}", icons::ARROW_CLOCKWISE, tr!("Rotation"))).color(t.fg_text));
-                        kit::right(ui, |ui| {
-                            for k in (0..4u8).rev() {
-                                let r = ui.selectable_label(projection.turn % 4 == k, format!("{}°", u16::from(k) * 90));
-                                fields.push(r.rect);
-                                if r.clicked()
-                                    && let Some(p) = shared.borrow_mut().projection()
-                                {
-                                    p.turn = k;
-                                }
-                            }
-                        });
-                    });
-                });
-                let r = ui.add(egui::Button::selectable(adjusting, format!("{}  {}", icons::FRAME_CORNERS, tr!("Adjust the projection"))).shortcut_text(keys("stage.adjust")));
-                if r.on_hover_text(tr!("Drag the picture's corners on the output until it lands on the screen. Arrows nudge the picked handle a pixel (Shift: ten), Tab picks the next, Esc ends")).clicked() {
-                    stage = Some("stage.adjust");
-                }
-                let r = ui.add_enabled(projection.masks.len() < velo_engine::projection::MAX_MASKS, egui::Button::new(format!("{}  {}", icons::POLYGON, tr!("Draw a mask"))));
-                if r.on_hover_text(tr!("A black shape over the picture: click its points on the output, then Enter or its first point. Click inside one and press Delete to remove it")).clicked() {
-                    shared.borrow_mut().draw_mask();
-                }
-                let mut gone = None;
-                for (i, mask) in projection.masks.iter().enumerate().filter(|m| m.1.len() >= 3) {
-                    ui.horizontal(|ui| {
-                        ui.label(tr!("Mask {} · {} points", i + 1, mask.len()));
-                        kit::right(ui, |ui| {
-                            if kit::icon_button(ui, t, icons::TRASH, tr!("Remove this mask"), false).clicked() {
-                                gone = Some(i);
-                            }
-                        });
-                    });
-                }
-                let mut soft = projection.soft * 100.0;
-                if !projection.masks.is_empty() {
-                    let r = ui.add(egui::Slider::new(&mut soft, 0.0..=5.0).text(tr!("Soft edge")).suffix("%"));
-                    fields.push(r.rect);
-                    if r.changed()
-                        && let Some(p) = shared.borrow_mut().projection()
-                    {
-                        p.soft = soft / 100.0;
+                let items = [
+                    ("stage.record", icons::FILM_STRIP, if recording { tr!("Stop recording") } else { tr!("Record the output") }, recording),
+                    ("stage.freeze", icons::SNOWFLAKE, tr!("Freeze"), frozen),
+                    ("stage.blackout", icons::POWER, tr!("Blackout"), dark),
+                ];
+                for (id, icon, name, on) in items {
+                    if ui.add(egui::Button::selectable(on, format!("{icon}  {name}")).shortcut_text(keys(id))).clicked() {
+                        stage = Some(id);
+                    }
+                    if id == "stage.record" && ui.add_enabled_ui(!recording, |ui| kit::menu_tick(ui, t, !mute, tr!("With the sound Velo hears"))).inner.clicked() {
+                        mute = !mute;
                     }
                 }
-                if ui
-                    .add_enabled(projection != velo_engine::Projection::default(), egui::Button::new(format!("{}  {}", icons::ARROW_U_UP_LEFT, tr!("Reset the projection"))))
-                    .on_hover_text(tr!("The whole picture square on the output again, unturned, with no masks"))
-                    .clicked()
-                {
-                    let mut s = shared.borrow_mut();
-                    if let Some(o) = s.current().map(crate::host::key) {
-                        s.projections.remove(&o);
-                    }
-                    if let Some(a) = &mut s.adjust {
-                        (a.selected, a.drawing) = (None, false);
-                    }
-                }
-                if let Some(m) = gone {
-                    let mut s = shared.borrow_mut();
-                    if let Some(p) = s.projection() {
-                        p.masks.remove(m);
-                    }
-                    if let Some(a) = &mut s.adjust {
-                        a.selected = None;
-                    }
-                }
-            }
-            if ui.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| ui.min_rect().contains(p) && !fields.iter().any(|f| f.contains(p)))) {
-                ui.close();
             }
         });
         if let Some(request) = request {
             shared.borrow_mut().requests.push(request);
-        }
-        if lead != self.settings.lead_ms {
-            live.set_lead(lead);
-            self.settings.lead_ms = lead;
-        }
-        if speaker != self.settings.speaker_ms {
-            live.audio.set_lag(speaker);
-            self.settings.speaker_ms = speaker;
         }
         self.settings.record_mute = mute;
         if let (Some(kind), Some(live)) = (share, &mut self.live) {
@@ -972,6 +815,183 @@ impl App {
         if let Some(id) = stage {
             self.command(id);
         }
+    }
+
+    /// The outputs' setup, while it's open (Shift+Cmd+K, or the Output menu): a panel that stays
+    /// open while you look at the wall, the output being set up showing its handles. That output's
+    /// crop, rotation, corners and masks (kept per display with the preferences), then the test
+    /// pattern and the projectors' lag, for every output. Closing it ends adjusting.
+    pub fn output_setup(&mut self, ctx: &egui::Context) {
+        let t = self.theme.clone();
+        let Some(live) = &self.live else { return };
+        let shared = live.shared.clone();
+        let (outputs, current, projection, adjust) = {
+            let s = shared.borrow();
+            (s.outputs.clone(), s.current().cloned(), s.current().and_then(|c| s.projections.get(&crate::host::key(c))).cloned().unwrap_or_default(), s.adjust)
+        };
+        let (Some(current), Some(adjust)) = (current, adjust) else { return };
+        let (mut pattern, mut lead) = (live.pattern, self.settings.lead_ms);
+        let done = self.tip(tr!("Done"), "stage.adjust");
+        let pattern_tip = self.tip(tr!("A grid, a circle and color bars on the outputs, for lining up a projector"), "stage.pattern");
+        let frame = egui::Frame::new().fill(t.bg_panel).stroke(egui::Stroke::new(1.0, t.line)).corner_radius(t.radius_md).inner_margin(3).shadow(ctx.global_style().visuals.window_shadow);
+        // first at the canvas' left, clear of the preview card in its top-right corner
+        let at = self.center_rect.map_or(egui::pos2(260.0, 80.0), |r| r.left_top() + egui::vec2(t.pad, t.pad));
+        let edit = |change: &dyn Fn(&mut velo_engine::Projection)| {
+            if let Some(p) = shared.borrow_mut().projection() {
+                change(p);
+            }
+        };
+        let mut close = false;
+        egui::Window::new("output setup").title_bar(false).frame(frame).default_pos(at).resizable(false).constrain(true).show(ctx, |ui| {
+            ui.set_width(296.0);
+            kit::bar(ui, &t, |ui| {
+                kit::heading(ui, &t, icons::FRAME_CORNERS, tr!("OUTPUT SETUP"));
+                kit::right(ui, |ui| close = kit::icon_button(ui, &t, icons::X, &done, false).clicked());
+            });
+            // a short screen scrolls it rather than cutting its foot off
+            let tall = ctx.content_rect().height() - 2.0 * t.control_h - 4.0 * t.pad;
+            egui::ScrollArea::vertical().max_height(tall).auto_shrink([false, true]).show(ui, |ui| {
+                egui::Frame::new().inner_margin(t.pad).show(ui, |ui| {
+                    // which output: its handles are on it
+                    if outputs.len() > 1 {
+                        let names: Vec<String> = outputs.iter().map(output_name).collect();
+                        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                        let now = outputs.iter().position(|o| *o == current).unwrap_or(0);
+                        if let Some(i) = kit::segmented(ui, &t, now, &names).filter(|&i| i != now) {
+                            let mut s = shared.borrow_mut();
+                            s.finish(false);
+                            s.picked = Some(outputs[i].clone());
+                        }
+                        ui.add_space(t.gap);
+                    }
+                    kit::hint(ui, &t, &tr!("Drag the picture's corners on {} until it lands on the screen. Arrows nudge the picked handle a pixel (Shift: ten), Tab picks the next, Esc ends.", output_name(&current)));
+                    // the part of the picture this output shows: a half for each of two projectors
+                    // side by side in a click, any part typed or dragged, in percent of it
+                    kit::section(ui, &t, icons::CROP, tr!("CROP"), false, |ui| {
+                        let halves = [velo_engine::projection::WHOLE, [0.0, 0.0, 0.5, 1.0], [0.5, 0.0, 0.5, 1.0]];
+                        let now = halves.iter().position(|h| *h == projection.crop()).unwrap_or(usize::MAX);
+                        if let Some(i) = kit::segmented(ui, &t, now, &[tr!("Whole"), tr!("Left half"), tr!("Right half")]) {
+                            edit(&|p| p.crop = halves[i]);
+                        }
+                        ui.add_space(t.gap);
+                        let mut crop = projection.crop().map(|v| v * 100.0);
+                        let width = (ui.available_width() - 3.0 * t.gap) / 4.0;
+                        let mut typed = false;
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = t.gap;
+                            for (label, v) in ["X", "Y", "W", "H"].into_iter().zip(&mut crop) {
+                                let drag = egui::DragValue::new(v).range(0.0..=100.0).speed(0.25).custom_formatter(|v, _| if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v:.1}") }).suffix("%");
+                                typed |= kit::scrub_with(ui, &t, label, drag, width).changed();
+                            }
+                        });
+                        if typed {
+                            edit(&|p| {
+                                p.crop = crop.map(|v| v / 100.0);
+                                p.crop = p.crop();
+                            });
+                        }
+                        kit::hint(ui, &t, tr!("The part of the picture this output shows: from the left, from the top, its width and its height."));
+                    });
+                    // turned a quarter at a time, for a screen on its side or a projector upside down
+                    kit::section(ui, &t, icons::ARROW_CLOCKWISE, tr!("ROTATION"), false, |ui| {
+                        if let Some(k) = kit::segmented(ui, &t, usize::from(projection.turn % 4), &["0°", "90°", "180°", "270°"]) {
+                            edit(&|p| p.turn = k as u8);
+                        }
+                    });
+                    // black shapes over the picture, so no light falls past the screen
+                    kit::section(ui, &t, icons::POLYGON, tr!("MASKS"), false, |ui| {
+                        let mut gone = None;
+                        for (i, mask) in projection.masks.iter().enumerate().filter(|m| m.1.len() >= 3) {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(tr!("Mask {} · {} points", i + 1, mask.len())).color(t.fg_text));
+                                kit::right(ui, |ui| {
+                                    if kit::icon_button(ui, &t, icons::TRASH, tr!("Remove this mask"), false).clicked() {
+                                        gone = Some(i);
+                                    }
+                                });
+                            });
+                        }
+                        if let Some(m) = gone {
+                            edit(&|p| {
+                                p.masks.remove(m);
+                            });
+                            if let Some(a) = &mut shared.borrow_mut().adjust {
+                                a.selected = None;
+                            }
+                        }
+                        if adjust.drawing {
+                            kit::hint(ui, &t, tr!("Click the mask's points on the output, then Enter or its first point."));
+                        } else {
+                            let room = projection.masks.len() < velo_engine::projection::MAX_MASKS;
+                            let r = ui.add_enabled_ui(room, |ui| kit::action(ui, &t, kit::Variant::Outline, Some(icons::POLYGON), tr!("Draw a mask"))).inner;
+                            if r.on_hover_text(tr!("A black shape over the picture: click its points on the output, then Enter or its first point. Click inside one and press Delete to remove it")).clicked() {
+                                shared.borrow_mut().draw_mask();
+                            }
+                        }
+                        if projection.masks.iter().any(|m| m.len() >= 3) {
+                            ui.add_space(t.gap);
+                            let mut soft = projection.soft * 100.0;
+                            let drag = egui::DragValue::new(&mut soft).range(0.0..=5.0).speed(0.05).fixed_decimals(1).suffix("%");
+                            if kit::scrub_with(ui, &t, tr!("SOFT EDGE"), drag, ui.available_width()).changed() {
+                                edit(&|p| p.soft = soft / 100.0);
+                            }
+                        }
+                    });
+                    // for every output: the pattern to line them up, and how late they show the picture
+                    kit::section(ui, &t, icons::CROSSHAIR, tr!("LINING UP"), false, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(tr!("Test pattern")).color(t.fg_text)).on_hover_text(&pattern_tip);
+                            kit::right(ui, |ui| kit::switch(ui, &t, &mut pattern, tr!("Test pattern")));
+                        });
+                        ui.add_space(t.gap);
+                        let drag = egui::DragValue::new(&mut lead).range(0.0..=velo_engine::runtime::MAX_LEAD * 1000.0).speed(1.0).fixed_decimals(0).suffix(" ms");
+                        kit::scrub_with(ui, &t, tr!("PROJECTOR LAG"), drag, ui.available_width()).on_hover_text(tr!("The pictures ahead of the music by this much"));
+                        kit::hint(ui, &t, tr!("Clap along with a scene that flashes on the beat and raise it until the flash is on your clap."));
+                    });
+                    ui.add_space(t.pad);
+                    let r = ui.add_enabled_ui(projection != velo_engine::Projection::default(), |ui| kit::action(ui, &t, kit::Variant::Ghost, Some(icons::ARROW_U_UP_LEFT), tr!("Reset the projection"))).inner;
+                    if r.on_hover_text(tr!("The whole picture square on the output again, unturned, with no masks")).clicked() {
+                        let mut s = shared.borrow_mut();
+                        if let Some(o) = s.current().map(crate::host::key) {
+                            s.projections.remove(&o);
+                        }
+                        if let Some(a) = &mut s.adjust {
+                            (a.selected, a.drawing) = (None, false);
+                        }
+                    }
+                })
+            });
+        });
+        if close {
+            shared.borrow_mut().finish(true);
+        }
+        let Some(live) = &mut self.live else { return };
+        if pattern != live.pattern {
+            live.set_pattern(pattern);
+        }
+        if lead != self.settings.lead_ms {
+            live.set_lead(lead);
+            self.settings.lead_ms = lead;
+        }
+    }
+
+    /// Recording the output: a dot, red with how long it's been while it records. A right-click
+    /// says whether what Velo hears goes in too.
+    fn record_button(&mut self, ui: &mut Ui, t: &Theme) {
+        let since = self.recording.as_ref().map(|(_, at)| at.elapsed().as_secs());
+        let tip = if since.is_some() { tr!("Stop recording") } else { tr!("Record the output: a movie (MP4) in your Movies folder, at the canvas's size and frame rate. Right-click: with or without the sound") };
+        let tip = self.tip(tip, "stage.record");
+        let r = ui.add_enabled_ui(self.live.is_some(), |ui| kit::record_button(ui, t, since, &tip)).inner;
+        if r.clicked() {
+            self.command("stage.record");
+        }
+        let mut mute = self.settings.record_mute;
+        kit::context_menu(t, &r).show(|ui| {
+            if ui.add_enabled_ui(since.is_none(), |ui| kit::menu_tick(ui, t, !mute, tr!("With the sound Velo hears"))).inner.clicked() {
+                mute = !mute;
+            }
+        });
+        self.settings.record_mute = mute;
     }
 
     /// Where the picture shows now.
@@ -1961,6 +1981,14 @@ impl App {
 }
 
 /// A display as people say it: Windows calls them `\\.\DISPLAY1`.
+/// An output's name as the menus say it.
+fn output_name(target: &Target) -> String {
+    match target {
+        Target::Window => tr!("Window").to_string(),
+        Target::Display(name) => display_name(name),
+    }
+}
+
 fn display_name(name: &str) -> String {
     name.strip_prefix(r"\\.\DISPLAY").map_or_else(|| name.to_string(), |n| tr!("Display {}", n))
 }
