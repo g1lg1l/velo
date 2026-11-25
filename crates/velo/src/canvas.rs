@@ -337,6 +337,9 @@ pub struct State {
     context_cable: Option<String>,
     /// The Grid cell its inspector edits (from 0).
     pub grid_cell: usize,
+    /// The Mapping surface its inspector edits (from 0), and the corner picked on it (top-left,
+    /// top-right, bottom-right, bottom-left): the arrows move that one.
+    pub mapping: (usize, Option<usize>),
     /// A signal dropped on a card: its output ("n_ab12/4"), the card's node, where: the
     /// parameter it'll move is picked from a menu there.
     pick: Option<(String, String, Pos2)>,
@@ -3860,6 +3863,8 @@ impl App {
                             }
                             if n.kind == "velo.grid" {
                                 self.grid_section(ui, t, node, true);
+                            } else if n.kind == velo_core::MAPPING {
+                                self.mapping_section(ui, t, node, true);
                             } else {
                                 self.node_params(ui, t, node, !media);
                             }
@@ -4412,6 +4417,36 @@ pub fn demo_shader(session: &mut Session, broken: bool) -> Option<String> {
     ids.into_iter().next()
 }
 
+/// `VELO_DEMO_SURFACES`: a scene with a Mapping laying three pictures on a box's three faces as a
+/// projector in front of its corner sees them, its outlines on. Built with the operators; returns
+/// the Mapping's id.
+pub fn demo_surfaces(session: &mut Session) -> Option<String> {
+    session.run("scene.add", json!({ "name": "Box" })).ok()?;
+    let (dx, dy) = (NODE_W + SPACING, NODE_H + 40.0);
+    let mut ids = Vec::new();
+    for (kind, x, y) in [("velo.noise", 0.0, 0.0), ("velo.gradient", 0.0, 1.0), ("velo.shapes", 0.0, 2.0), (velo_core::MAPPING, 1.0, 1.0), ("velo.output", 2.0, 1.0)] {
+        session.run("node.add", json!({ "kind": kind, "pos": [x * dx, y * dy] })).ok()?;
+        ids.push(session.active()?.nodes.last()?.id.clone());
+    }
+    for (from, to, port) in [(0, 3, 0), (1, 3, 1), (2, 3, 2), (3, 4, 0)] {
+        session.run("edge.connect", json!({ "from": [ids[from], 0], "to": [ids[to], port] })).ok()?;
+    }
+    // the top face, the left and the right, meeting at the box's near corner in the middle
+    let faces = [
+        ("top_1", [0.5, 0.18, 0.66, 0.34]),
+        ("bottom_1", [0.34, 0.34, 0.5, 0.5]),
+        ("top_2", [0.34, 0.34, 0.5, 0.5]),
+        ("bottom_2", [0.34, 0.7, 0.5, 0.86]),
+        ("top_3", [0.5, 0.5, 0.66, 0.34]),
+        ("bottom_3", [0.5, 0.86, 0.66, 0.7]),
+        ("outlines", [1.0, 0.0, 0.0, 0.0]),
+    ];
+    for (param, value) in faces {
+        session.run("node.set_param", json!({ "node": ids[3], "param": param, "value": value })).ok()?;
+    }
+    Some(ids[3].clone())
+}
+
 /// `VELO_DEMO_SCENES`: a second scene, "Drop" (Shapes through Kaleido and Feedback, its zoom on
 /// the kick), launched on 4 bars with an 8-beat crossfade. Built with the operators; returns its id.
 pub fn demo_drop(session: &mut Session) -> Option<String> {
@@ -4510,6 +4545,7 @@ fn node_icon(id: &str) -> &'static str {
         "velo.merge" => icons::GIT_MERGE,
         v::SWITCH => icons::TOGGLE_RIGHT,
         v::GRID => icons::GRID_FOUR,
+        v::MAPPING => icons::FRAME_CORNERS,
         "velo.layers" => icons::STACK,
         v::OUTPUT => icons::PROJECTOR_SCREEN,
         v::AUDIO => icons::MICROPHONE,
@@ -4599,6 +4635,7 @@ pub fn node_about(id: &str) -> Option<&'static str> {
         "velo.mask" => "Shows the picture where the mask is bright.",
         "velo.merge" => "Up to four pictures as one's red, green, blue and alpha.",
         velo_core::GRID => "Up to eight pictures in a grid of cells.",
+        velo_core::MAPPING => "Up to eight pictures, each on a surface whose corners you place where the projector meets the thing: a box's faces, panels, windows.",
         velo_core::SWITCH => "One of up to sixteen pictures at a time, picked by a value: cut, crossfaded, dissolved or wiped. Only the one it shows renders.",
         velo_core::OUTPUT => "Where the scene's picture leaves: the preview, a display.",
         velo_core::AUDIO => "The music as signals: its level, bands, hits and melody.",

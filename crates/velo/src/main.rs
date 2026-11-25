@@ -799,6 +799,12 @@ impl App {
                     }
                 }
             }
+            // VELO_DEMO_SURFACES (with VELO_DEMO_GRAPH): a Mapping on a box's three faces, selected, its first surface's
+            // top-right corner picked
+            if std::env::var_os("VELO_DEMO_SURFACES").is_some() {
+                selected = canvas::demo_surfaces(&mut app.session);
+                app.canvas.mapping = (0, Some(1));
+            }
             // VELO_DEMO_SHADER=1|broken: a Shader node's scene, the node selected, its code open
             if let Ok(demo) = std::env::var("VELO_DEMO_SHADER") {
                 selected = canvas::demo_shader(&mut app.session, demo == "broken");
@@ -1793,6 +1799,8 @@ impl App {
         }
         if kind_id == "velo.grid" {
             self.grid_section(ui, t, &node_id, false);
+        } else if kind_id == velo_core::MAPPING {
+            self.mapping_section(ui, t, &node_id, false);
         } else if kind_id == velo_core::SHARED_IN {
             self.shared_link(ui, t, &node_id);
         } else {
@@ -2637,6 +2645,173 @@ impl App {
             }
             close |= r.drag_stopped() || r.lost_focus();
         });
+        for (param, value, merge) in sets {
+            let props = json!({ "node": node, "param": param, "value": value });
+            if merge {
+                self.run_merge("node.set_param", props, &format!("param {node} {param}"));
+            } else {
+                self.run("node.set_param", props);
+            }
+        }
+        if close {
+            self.session.close_merge();
+        }
+    }
+
+    /// A Mapping's settings: its background and outlines, then the canvas with each surface
+    /// something is wired into, its picture on it as the projector gets it. A corner drags where
+    /// it meets the thing; while the pointer is on the map the arrows move the picked corner a
+    /// pixel (Shift: ten).
+    fn mapping_section(&mut self, ui: &mut egui::Ui, t: &Theme, node: &str, first: bool) {
+        use velo_engine::projection;
+        let Some(scene) = self.session.active().cloned() else { return };
+        let Some(n) = scene.node(node).cloned() else { return };
+        let Some(shader) = live::shader(velo_core::MAPPING, None) else { return };
+        let default = |id: &str| shader.controls.iter().find(|(p, _)| p.id == id).map_or([0.0; 4], |(p, _)| p.default);
+        let value = |id: &str| n.params.get(id).copied().unwrap_or_else(|| default(id));
+        // a surface's corners as the shader goes round them: top-left, top-right, bottom-right,
+        // bottom-left (top_n holds the first two, bottom_n bottom-left then bottom-right)
+        let corners = |s: usize| {
+            let (top, bottom) = (value(&format!("top_{}", s + 1)), value(&format!("bottom_{}", s + 1)));
+            [[top[0], top[1]], [top[2], top[3]], [bottom[2], bottom[3]], [bottom[0], bottom[1]]]
+        };
+        let moved = |s: usize, c: usize, q: [f32; 2]| {
+            let id = format!("{}_{}", if c < 2 { "top" } else { "bottom" }, s + 1);
+            let at = if c == 1 || c == 2 { 2 } else { 0 };
+            let mut v = value(&id);
+            (v[at], v[at + 1]) = (q[0].clamp(0.0, 1.0), q[1].clamp(0.0, 1.0));
+            (id, v, true)
+        };
+        // the surfaces there: those with something wired into their input, its node's id and name
+        let feeds: Vec<Option<(String, String)>> = (0..8u8).map(|p| scene.wire_into(node, p).and_then(|e| scene.node(&e.from.0)).map(|f| (f.id.clone(), f.name.clone()))).collect();
+        let there: Vec<usize> = (0..8).filter(|&s| feeds[s].is_some()).collect();
+        let mut sets: Vec<(String, [f32; 4], bool)> = Vec::new();
+        let mut close = false;
+        kit::section(ui, t, icons::FRAME_CORNERS, tr!("MAPPING"), first, |ui| {
+            ui.add_space(t.gap);
+            let (_, picked) = widgets::color(ui, t, tr!("Background"), value("background"));
+            if let Some(c) = picked {
+                sets.push(("background".into(), c, true));
+            }
+            ui.horizontal(|ui| {
+                kit::label(ui, t, tr!("Outlines"));
+                let mut on = value("outlines")[0] > 0.5;
+                if kit::right(ui, |ui| kit::switch(ui, t, &mut on, tr!("Outlines"))).on_hover_text(tr!("The surfaces' edges and corners, on the output too, to line them up")).changed() {
+                    sets.push(("outlines".into(), [f32::from(u8::from(on)), 0.0, 0.0, 0.0], false));
+                }
+            });
+        });
+        let canvas = self.session.project.canvas;
+        let size = egui::vec2(canvas.width.max(1) as f32, canvas.height.max(1) as f32);
+        let (mut surface, mut corner) = self.canvas.mapping;
+        kit::section(ui, t, icons::IMAGES, tr!("SURFACES"), false, |ui| {
+            ui.add_space(t.gap);
+            let width = ui.available_width();
+            let (map, resp) = ui.allocate_exact_size(egui::vec2(width, width * size.y / size.x), egui::Sense::click_and_drag());
+            let on_map = |q: [f32; 2]| map.min + egui::vec2(q[0], q[1]) * map.size();
+            let off_map = |p: egui::Pos2| [(p.x - map.min.x) / map.width(), (p.y - map.min.y) / map.height()];
+            // the corner within reach of p: the picked surface's first (a box's faces share
+            // corners), else the nearest
+            let near = |p: egui::Pos2, prefer: usize| {
+                let all = there.iter().flat_map(|&s| (0..4).map(move |c| (s, c)));
+                all.map(|(s, c)| (s, c, on_map(corners(s)[c]).distance(p))).filter(|n| n.2 < 10.0).min_by(|a, b| (a.0 != prefer).cmp(&(b.0 != prefer)).then(a.2.total_cmp(&b.2))).map(|n| (n.0, n.1))
+            };
+            // pressed: that corner picked, else the surface pressed inside (the one on top)
+            if (resp.drag_started() || resp.clicked())
+                && let Some(p) = ui.input(|i| i.pointer.press_origin())
+            {
+                (surface, corner) = match near(p, surface) {
+                    Some((s, c)) => (s, Some(c)),
+                    None => there.iter().rev().find(|&&s| projection::contains(&corners(s), off_map(p))).map_or((surface, None), |&s| (s, None)),
+                };
+            }
+            let held = corner.filter(|_| there.contains(&surface));
+            if let Some(c) = held
+                && resp.dragged()
+            {
+                let at = on_map(corners(surface)[c]) + resp.drag_delta();
+                sets.push(moved(surface, c, off_map(at)));
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if resp.hover_pos().is_some_and(|p| near(p, surface).is_some()) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+            // let go near another surface's corner: on it exactly, so a box's faces meet with no gap
+            if let Some(c) = held
+                && resp.drag_stopped()
+            {
+                let at = on_map(corners(surface)[c]);
+                if let Some(o) = there.iter().filter(|&&s| s != surface).flat_map(|&s| corners(s)).find(|o| on_map(*o).distance(at) < 6.0) {
+                    sets.push(moved(surface, c, o));
+                }
+            }
+            close |= resp.drag_stopped();
+            // the arrows, Shift's first (a plain arrow's pattern would take those too)
+            if let Some(c) = held
+                && resp.hovered()
+            {
+                let mut nudge = egui::Vec2::ZERO;
+                for (key, d) in [(egui::Key::ArrowLeft, egui::vec2(-1.0, 0.0)), (egui::Key::ArrowRight, egui::vec2(1.0, 0.0)), (egui::Key::ArrowUp, egui::vec2(0.0, -1.0)), (egui::Key::ArrowDown, egui::vec2(0.0, 1.0))] {
+                    for (modifiers, k) in [(egui::Modifiers::SHIFT, 10.0), (egui::Modifiers::NONE, 1.0)] {
+                        nudge += d * k * f32::from(u8::from(ui.input_mut(|i| i.consume_key(modifiers, key))));
+                    }
+                }
+                if nudge != egui::Vec2::ZERO {
+                    let q = corners(surface)[c];
+                    sets.push(moved(surface, c, [q[0] + nudge.x / size.x, q[1] + nudge.y / size.y]));
+                }
+            }
+            let painter = ui.painter_at(map);
+            let back = value("background");
+            painter.rect_filled(map, t.radius_sm, egui::Color32::from(egui::Rgba::from_rgb(back[0], back[1], back[2])));
+            // each picture on its surface through the shader's homography, on a fine grid
+            const N: u32 = 8;
+            for &s in &there {
+                let thumb = feeds[s].as_ref().and_then(|(id, _)| self.live.as_ref()?.thumb(id));
+                let (Some(h), Some((tex, uv))) = (projection::homography(&corners(s)), thumb) else { continue };
+                let mut mesh = egui::Mesh::with_texture(tex);
+                for j in 0..=N {
+                    for i in 0..=N {
+                        let k = egui::vec2(i as f32, j as f32) / N as f32;
+                        mesh.vertices.push(egui::epaint::Vertex { pos: on_map(projection::map(&h, [k.x, k.y])), uv: uv.lerp_inside(k), color: t.picture_tint() });
+                    }
+                }
+                for j in 0..N {
+                    for i in 0..N {
+                        let a = j * (N + 1) + i;
+                        mesh.add_triangle(a, a + 1, a + N + 2);
+                        mesh.add_triangle(a, a + N + 2, a + N + 1);
+                    }
+                }
+                painter.add(mesh);
+            }
+            // the edges, the picked surface's on top with its corners
+            let mut order = there.clone();
+            order.sort_by_key(|&s| s == surface);
+            for s in order {
+                let q = corners(s).map(on_map);
+                let picked = s == surface;
+                let (stroke, dot) = if picked { (egui::Stroke::new(1.5, t.accent), 4.0) } else { (egui::Stroke::new(1.0, t.fg_muted), 2.5) };
+                painter.add(egui::Shape::closed_line(q.to_vec(), stroke));
+                let middle = q.iter().fold(egui::Vec2::ZERO, |m, p| m + p.to_vec2() / 4.0).to_pos2();
+                kit::fit_text(&painter, middle, egui::Align2::CENTER_CENTER, (s + 1).to_string(), Theme::mono(t.text_xs), t.fg_text, map.width());
+                for (c, p) in q.into_iter().enumerate() {
+                    let on = picked && corner == Some(c);
+                    painter.circle(p, if on { 5.0 } else { dot }, if on { t.accent } else { t.bg_panel }, stroke);
+                }
+            }
+            if there.is_empty() {
+                kit::hint(ui, t, tr!("Wire a picture into an input: each one gets a surface of its own."));
+            } else {
+                kit::hint(ui, t, tr!("Drag a corner to where it meets the thing; let go by another surface's corner and they join. The arrows move the picked one a pixel, Shift ten."));
+                if there.contains(&surface) && kit::ghost(ui, t, Some(icons::ARROWS_CLOCKWISE), &tr!("Reset surface {}", surface + 1)).clicked() {
+                    for id in [format!("top_{}", surface + 1), format!("bottom_{}", surface + 1)] {
+                        let v = default(&id);
+                        sets.push((id, v, false));
+                    }
+                }
+            }
+        });
+        self.canvas.mapping = (surface, corner);
         for (param, value, merge) in sets {
             let props = json!({ "node": node, "param": param, "value": value });
             if merge {

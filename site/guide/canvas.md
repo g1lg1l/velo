@@ -31,7 +31,7 @@ The groups in the node menu:
 | **Generators** | Noise, Gradient, Shapes, Waveform, Shader (with 76 presets), Image, Video, Live (NDI, Spout and cameras in), Media List, AI Image, Text, Text List, Particles, Mesh |
 | **Effects** | Transform, Kaleido, Color, Blur, Feedback, Displace, Opacity, Levels, Threshold, Edges, Channels, Crop, Polar, UV Map, Lookup, Freeze, Time Machine, Key, Luma Blur, Shader FX (with 41 presets, from Glitch and VHS to LED Wall, God Rays, Motion, Pixel Sort, Scramble and Rolling) |
 | **Composite** | Blend, Mask, Merge |
-| **Control** | Switch, Grid, Layer Stack |
+| **Control** | Switch, Grid, Mapping, Layer Stack |
 | **Output** | Output |
 | **Signals** | Audio In, Beat, Beat Kick, LFO, Time, Random, Probe |
 | **Logic** | Remap, Math, Gain, Envelope, Counter, Sequencer, Sample & Hold, Toggle, Compare, Timer, Smooth, Quantize, Speed, Delay, Spring, Slope |

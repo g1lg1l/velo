@@ -18,7 +18,7 @@ pub const GLOBALS: [&str; 21] =
 pub const GLOBAL_FLOATS: usize = 24;
 
 /// The built-in nodes, written in the same format as anyone's (dogfooding the format).
-pub const BUILTINS: [(&str, &str); 37] = [
+pub const BUILTINS: [(&str, &str); 38] = [
     ("noise", include_str!("../shaders/noise.wgsl")),
     ("gradient", include_str!("../shaders/gradient.wgsl")),
     ("shapes", include_str!("../shaders/shapes.wgsl")),
@@ -37,6 +37,7 @@ pub const BUILTINS: [(&str, &str); 37] = [
     ("layers", include_str!("../shaders/layers.wgsl")),
     ("mask", include_str!("../shaders/mask.wgsl")),
     ("grid", include_str!("../shaders/grid.wgsl")),
+    ("mapping", include_str!("../shaders/mapping.wgsl")),
     ("switch", include_str!("../shaders/switch.wgsl")),
     ("particles", include_str!("../shaders/particles.wgsl")),
     ("mesh", include_str!("../shaders/mesh.wgsl")),

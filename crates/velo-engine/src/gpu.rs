@@ -2314,6 +2314,46 @@ fn main_image(uv: vec2f, px: vec2f) -> vec4f {
     }
 
     #[test]
+    fn a_mapping_lays_each_wired_input_on_its_surface() {
+        let _gpu = crate::gpu_lock();
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let flat = |body: &str| Program::new(&device, ShaderNode::parse(&format!("/*{{ \"name\": \"Flat\" }}*/\nfn main_image(uv: vec2f, px: vec2f) -> vec4f {{ return {body}; }}")).unwrap()).unwrap();
+        // red; blue on its left half, green on its right
+        let programs = [flat("vec4f(1.0, 0.0, 0.0, 1.0)"), flat("select(vec4f(0.0, 1.0, 0.0, 1.0), vec4f(0.0, 0.0, 1.0, 1.0), uv.x < 0.5)"), program(&device, "mapping")];
+        let mut inputs = vec![None; 8];
+        (inputs[0], inputs[1]) = (Some(0), Some(1));
+        let nodes = [NodeSpec { program: 0, inputs: vec![] }, NodeSpec { program: 1, inputs: vec![] }, NodeSpec { program: 2, inputs }];
+        let mut runner = Runner::new(&device, &programs, &nodes, &[], [32, 32], &wave_texture(&device)).unwrap();
+        for n in 0..2 {
+            runner.set_params(&queue, &programs, n, &[]);
+        }
+        // surface 1 the left half; surface 2 the right half narrowing to the right, as a box's
+        // side going away; 3 to 8 where they start, with nothing wired
+        let values = programs[2].node.values(|p| match p {
+            "top_1" => Some([0.0, 0.0, 0.5, 0.0]),
+            "bottom_1" => Some([0.0, 1.0, 0.5, 1.0]),
+            "top_2" => Some([0.5, 0.0, 1.0, 0.25]),
+            "bottom_2" => Some([0.5, 1.0, 1.0, 0.75]),
+            _ => None,
+        });
+        runner.set_params(&queue, &programs, 2, &values);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        runner.render(&queue, &mut encoder, &programs, &[0.0, 1.0 / 60.0, 0.0, 2.0]);
+        queue.submit([encoder.finish()]);
+        let texels: Vec<[u16; 4]> = read(&device, &queue, &runner, 2).as_chunks::<4>().0.to_vec();
+        let at = |x: usize, y: usize| texels[y * 32 + x][..3].to_vec();
+        let one = 0x3C00;
+        assert_eq!(at(8, 16), [one, 0, 0], "surface 1: the red");
+        assert_eq!(at(18, 16), [0, 0, one], "surface 2's near side: the picture's left, not flipped");
+        assert_eq!(at(30, 16), [0, one, 0], "surface 2's far side: the picture's right");
+        // above surface 2's slanted top, where surface 4 would be if something fed it
+        assert_eq!(at(28, 2), [0, 0, 0], "the background, and nothing from an unwired surface");
+    }
+
+    #[test]
     fn every_kind_of_noise_draws_its_own_picture() {
         let _gpu = crate::gpu_lock();
         let Some((device, queue)) = gpu() else {

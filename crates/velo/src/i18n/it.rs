@@ -21,6 +21,10 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Shows the picture where the mask is bright.", "Mostra l'immagine dove la maschera è chiara."),
     ("Up to eight pictures in a grid of cells.", "Fino a otto immagini in una griglia di celle."),
     (
+        "Up to eight pictures, each on a surface whose corners you place where the projector meets the thing: a box's faces, panels, windows.",
+        "Fino a otto immagini, ognuna su una superficie con gli angoli dove il proiettore incontra l'oggetto: le facce di una scatola, pannelli, finestre.",
+    ),
+    (
         "One of up to sixteen pictures at a time, picked by a value: cut, crossfaded, dissolved or wiped. Only the one it shows renders.",
         "Una di sedici immagini al massimo alla volta, scelta da un valore: a stacco, in dissolvenza, per dissoluzione o a tendina. Si calcola solo quella che mostra.",
     ),
@@ -1317,6 +1321,17 @@ pub static STRINGS: &[(&str, &str)] = &[
     ("Parameters", "Parametri"),
     ("Duplicate", "Duplica"),
     ("Grid", "Griglia"),
+    ("Mapping", "Mapping"),
+    ("MAPPING", "MAPPING"),
+    ("SURFACES", "SUPERFICI"),
+    ("Outlines", "Contorni"),
+    ("The surfaces' edges and corners, on the output too, to line them up", "I bordi e gli angoli delle superfici, anche sull'uscita, per allinearle"),
+    ("Wire a picture into an input: each one gets a surface of its own.", "Collega un'immagine a un ingresso: ognuna ha una superficie tutta sua."),
+    (
+        "Drag a corner to where it meets the thing; let go by another surface's corner and they join. The arrows move the picked one a pixel, Shift ten.",
+        "Trascina un angolo dove tocca l'oggetto; lascialo vicino all'angolo di un'altra superficie e si uniscono. Le frecce spostano quello scelto di un pixel, con Maiusc di dieci.",
+    ),
+    ("Reset surface {}", "Ripristina la superficie {}"),
     ("Switch", "Switch"),
     ("Spikes", "Punte"),
     ("Sharpness", "Affilatura"),

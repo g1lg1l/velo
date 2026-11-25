@@ -719,6 +719,7 @@ pub const NODE_KINDS: &[NodeKind] = &[
     kind("velo.merge", "Merge", Category::Composite, &["r", "g", "b", "a"], OUT),
     kind(SWITCH, "Switch", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16"], OUT),
     kind(GRID, "Grid", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8"], OUT),
+    kind(MAPPING, "Mapping", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8"], OUT),
     kind("velo.layers", "Layer Stack", Category::Control, &["1", "2", "3", "4", "5", "6", "7", "8"], OUT),
     kind("velo.output", "Output", Category::Output, IN, &[]),
     kind(SHARED_IN, "Shared", Category::Signal, &[], OUT),
@@ -809,6 +810,8 @@ pub const LIVE_PROGRAM: &str = "program";
 
 /// Up to 4 × 4 cells of eight inputs, one picture out (it was an output node until format 3).
 pub const GRID: &str = "velo.grid";
+/// Up to eight pictures, each on a surface of four corners placed by hand: projection mapping.
+pub const MAPPING: &str = "velo.mapping";
 /// Where a scene's picture leaves the graph.
 pub const OUTPUT: &str = "velo.output";
 /// One of up to eight inputs, as its `value` picks, with a cut or a transition between them.
