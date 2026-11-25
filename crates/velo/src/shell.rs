@@ -360,20 +360,19 @@ impl App {
         self.hint(&r, tip);
         let mut picked = (None, false);
         let mut speaker = self.settings.speaker_ms;
-        // a click inside closes the menu, but not one on the lag's field
+        // closed by a pick (the list closes it) or the permission's button, never by the lag's field
         kit::menu(t, &r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             picked = audio_menu(ui, t, &state, current.as_ref());
             // the speakers' lag: what's heard of the computer's sound held back that much, so the
             // pictures wait for it (inset as the menu's lines are: a label has no padding of its own)
             ui.separator();
-            let mut field = egui::Rect::NOTHING;
-            egui::Frame::new().inner_margin(egui::Margin { left: (t.pad * 1.5) as i8, right: (t.pad * 1.5) as i8, ..Default::default() }).show(ui, |ui| {
+            egui::Frame::new().inner_margin(egui::Margin::symmetric((t.pad * 1.5) as i8, 0)).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{}  {}", icons::SPEAKER_HIGH, tr!("Speaker lag"))).color(t.fg_text)).on_hover_text(tr!("The pictures later by this much: Bluetooth speakers play the computer's sound late"));
-                    field = kit::right(ui, |ui| ui.add(egui::DragValue::new(&mut speaker).range(0.0..=crate::live::MAX_SPEAKER_LAG).speed(1.0).fixed_decimals(0).suffix(" ms"))).rect;
+                    kit::right(ui, |ui| ui.add(egui::DragValue::new(&mut speaker).range(0.0..=crate::live::MAX_SPEAKER_LAG).speed(1.0).fixed_decimals(0).suffix(" ms")));
                 });
             });
-            if picked.0.is_some() || picked.1 || ui.input(|i| i.pointer.any_click() && i.pointer.interact_pos().is_some_and(|p| ui.min_rect().contains(p) && !field.contains(p))) {
+            if picked.1 {
                 ui.close();
             }
         });
@@ -822,18 +821,19 @@ impl App {
     /// crop, rotation, corners and masks (kept per display with the preferences), then the test
     /// pattern and the projectors' lag, for every output. Closing it ends adjusting.
     pub fn output_setup(&mut self, ctx: &egui::Context) {
-        let t = self.theme.clone();
         let Some(live) = &self.live else { return };
         let shared = live.shared.clone();
+        // closed most of the time: nothing cloned then
         let (outputs, current, projection, adjust) = {
             let s = shared.borrow();
-            (s.outputs.clone(), s.current().cloned(), s.current().and_then(|c| s.projections.get(&crate::host::key(c))).cloned().unwrap_or_default(), s.adjust)
+            let (Some(current), Some(adjust)) = (s.current(), s.adjust) else { return };
+            (s.outputs.clone(), current.clone(), s.projections.get(crate::host::key(current)).cloned().unwrap_or_default(), adjust)
         };
-        let (Some(current), Some(adjust)) = (current, adjust) else { return };
+        let t = self.theme.clone();
         let (mut pattern, mut lead) = (live.pattern, self.settings.lead_ms);
         let done = self.tip(tr!("Done"), "stage.adjust");
         let pattern_tip = self.tip(tr!("A grid, a circle and color bars on the outputs, for lining up a projector"), "stage.pattern");
-        let frame = egui::Frame::new().fill(t.bg_panel).stroke(egui::Stroke::new(1.0, t.line)).corner_radius(t.radius_md).inner_margin(3).shadow(ctx.global_style().visuals.window_shadow);
+        let frame = kit::window_frame(ctx, &t).fill(t.bg_panel).inner_margin(3);
         // first at the canvas' left, clear of the preview card in its top-right corner
         let at = self.center_rect.map_or(egui::pos2(260.0, 80.0), |r| r.left_top() + egui::vec2(t.pad, t.pad));
         let edit = |change: &dyn Fn(&mut velo_engine::Projection)| {
@@ -857,10 +857,8 @@ impl App {
                         let names: Vec<String> = outputs.iter().map(output_name).collect();
                         let names: Vec<&str> = names.iter().map(String::as_str).collect();
                         let now = outputs.iter().position(|o| *o == current).unwrap_or(0);
-                        if let Some(i) = kit::segmented(ui, &t, now, &names).filter(|&i| i != now) {
-                            let mut s = shared.borrow_mut();
-                            s.finish(false);
-                            s.picked = Some(outputs[i].clone());
+                        if let Some(i) = kit::segmented(ui, &t, now, &names) {
+                            shared.borrow_mut().pick(outputs[i].clone());
                         }
                         ui.add_space(t.gap);
                     }
@@ -952,7 +950,7 @@ impl App {
                     let r = ui.add_enabled_ui(projection != velo_engine::Projection::default(), |ui| kit::action(ui, &t, kit::Variant::Ghost, Some(icons::ARROW_U_UP_LEFT), tr!("Reset the projection"))).inner;
                     if r.on_hover_text(tr!("The whole picture square on the output again, unturned, with no masks")).clicked() {
                         let mut s = shared.borrow_mut();
-                        if let Some(o) = s.current().map(crate::host::key) {
+                        if let Some(o) = s.current().map(|c| crate::host::key(c).to_string()) {
                             s.projections.remove(&o);
                         }
                         if let Some(a) = &mut s.adjust {
@@ -1980,7 +1978,6 @@ impl App {
     }
 }
 
-/// A display as people say it: Windows calls them `\\.\DISPLAY1`.
 /// An output's name as the menus say it.
 fn output_name(target: &Target) -> String {
     match target {
@@ -1989,6 +1986,7 @@ fn output_name(target: &Target) -> String {
     }
 }
 
+/// A display as people say it: Windows calls them `\\.\DISPLAY1`.
 fn display_name(name: &str) -> String {
     name.strip_prefix(r"\\.\DISPLAY").map_or_else(|| name.to_string(), |n| tr!("Display {}", n))
 }

@@ -3813,7 +3813,7 @@ impl App {
         // the inspector in a window of its own: drag it by its bar, size it by its edges; the
         // margin keeps its square bar inside the window's rounded corners
         if self.settings.inspector_floating && self.settings.panels.inspector {
-            let frame = Frame::new().fill(t.bg_panel).stroke(egui::Stroke::new(1.0, t.line)).corner_radius(t.radius_md).inner_margin(3).shadow(ctx.global_style().visuals.window_shadow);
+            let frame = kit::window_frame(&ctx, &t).fill(t.bg_panel).inner_margin(3);
             // first under the preview card, at the right
             let at = self.center_rect.map_or(egui::pos2(900.0, 80.0), |r| r.right_top() + egui::vec2(-300.0 - t.pad, 240.0));
             egui::Window::new("inspector").title_bar(false).frame(frame).default_pos(at).default_size([300.0, 520.0]).min_size([240.0, 200.0]).resizable(true).constrain(true).show(&ctx, |ui| self.inspector(ui));
@@ -4191,7 +4191,7 @@ impl eframe::App for App {
             (Some(live), _) => live.picture(),
             _ => None,
         };
-        let output = !self.live_outputs().is_empty();
+        let output = self.live.as_ref().is_some_and(|l| !l.shared.borrow().outputs.is_empty());
         if let Some(reel) = &mut self.reel {
             reel.frame(&ctx, picture, output);
         }

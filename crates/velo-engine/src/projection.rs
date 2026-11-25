@@ -1,8 +1,8 @@
 //! How the picture lands on one output: the part of it that output shows (its crop) and how it
 //! is turned, for a show split over several projectors or a screen hung on its side; then where
 //! the picture's four corners land on the projector, so it falls on a cloth that isn't square to
-//! it, and black polygons over it, so no light spills past the cloth. Points are parts of the output's width and height (0..1, y down), so they
-//! hold at any resolution. The output blit draws the picture through the homography the corners
+//! it, and black polygons over it, so no light spills past the cloth. Points are parts of the
+//! output's width and height (0..1, y down), so they hold at any resolution. The output blit draws the picture through the homography the corners
 //! make and blacks out the masks (`runtime.rs`, `Warp`); untouched, it isn't drawn at all.
 
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,8 @@ impl Projection {
     pub fn crop(&self) -> [f32; 4] {
         let [x, y, w, h] = self.crop.map(|v| if v.is_finite() { v } else { 0.0 });
         let (x, y) = (x.clamp(0.0, 0.99), y.clamp(0.0, 0.99));
-        [x, y, w.clamp(0.01, 1.0 - x), h.clamp(0.01, 1.0 - y)]
+        // min then max, not clamp: in f32, 1 - 0.99 is a hair under 0.01, and clamp panics on that
+        [x, y, w.min(1.0 - x).max(0.01), h.min(1.0 - y).max(0.01)]
     }
 
     /// What the output blit's shader is told: the crop, then the quarter turns.
@@ -227,6 +228,9 @@ mod tests {
         let past = Projection { crop: [0.8, -0.2, 0.5, 2.0], turn: 6, ..Default::default() };
         assert_eq!(past.crop(), [0.8, 0.0, 0.19999999, 1.0]);
         assert_eq!(past.place()[4], 2.0);
+        // the crop's corner at the far edge: a sliver, not a panic
+        let edge = Projection { crop: [1.0, 1.0, 0.5, 0.5], ..Default::default() };
+        assert_eq!(edge.crop(), [0.99, 0.99, 0.01, 0.01]);
         // preferences from before crops read as the whole picture
         assert_eq!(serde_json::from_str::<Projection>(r#"{"soft": 0.01}"#).expect("reads").crop, WHOLE);
     }

@@ -996,24 +996,18 @@ fn handles(a: Pos2, b: Pos2, zoom: f32) -> [Pos2; 2] {
 }
 
 fn near_polyline(p: Pos2, pts: &[Pos2], reach: f32) -> bool {
-    pts.windows(2).any(|s| {
-        let (a, b) = (s[0], s[1]);
-        let ab = b - a;
-        let k = ((p - a).dot(ab) / ab.length_sq().max(1e-6)).clamp(0.0, 1.0);
-        (a + ab * k).distance(p) <= reach
-    })
+    pts.windows(2).any(|s| foot(s[0], s[1], p).distance(p) <= reach)
+}
+
+/// The point of the segment `a`–`b` nearest `p`.
+fn foot(a: Pos2, b: Pos2, p: Pos2) -> Pos2 {
+    let k = ((p - a).dot(b - a) / a.distance_sq(b).max(1e-6)).clamp(0.0, 1.0);
+    a + (b - a) * k
 }
 
 /// A polyline's point nearest `p`, when it passes within `reach` of it.
-fn bent(pts: &[Pos2], p: Pos2, reach: f32) -> Option<Pos2> {
-    pts.windows(2)
-        .map(|w| {
-            let (a, b) = (w[0], w[1]);
-            let k = ((p - a).dot(b - a) / a.distance_sq(b).max(1e-6)).clamp(0.0, 1.0);
-            a + (b - a) * k
-        })
-        .min_by(|x, y| x.distance(p).total_cmp(&y.distance(p)))
-        .filter(|q| q.distance(p) <= reach)
+fn nearest(pts: &[Pos2], p: Pos2, reach: f32) -> Option<Pos2> {
+    pts.windows(2).map(|w| foot(w[0], w[1], p)).min_by(|x, y| x.distance(p).total_cmp(&y.distance(p))).filter(|q| q.distance(p) <= reach)
 }
 
 /// The point a fraction `k` of the way along a polyline.
@@ -2139,7 +2133,7 @@ impl App {
         };
         // a bend (a tie of one cable) shows as a small dot of its cable's colour, where it holds it
         // whether the cable turns there or runs straight on (a bundle shows its capsule instead)
-        let bends = |key: &str, pts: &[Pos2]| -> Vec<Pos2> { ties.iter().filter(|(_, held, _)| held.len() == 1 && held[0] == key).filter_map(|(at, ..)| bent(pts, *at, (BEND_RUN + 8.0) * cam.zoom)).collect() };
+        let bends = |key: &str, pts: &[Pos2]| -> Vec<Pos2> { ties.iter().filter(|(_, held, _)| held.len() == 1 && held[0] == key).filter_map(|(at, ..)| nearest(pts, *at, (BEND_RUN + 8.0) * cam.zoom)).collect() };
         // every wire on screen as a polyline (off-screen ones: None)
         let wires: Vec<Option<(usize, Vec<Pos2>)>> = scene
             .edges
@@ -4818,15 +4812,15 @@ mod tests {
     fn a_bend_shows_on_its_cable_turned_or_straight() {
         // a corner: in from the left at 45°, out level to the right
         let corner = [pos2(0.0, 100.0), pos2(100.0, 0.0), pos2(200.0, 0.0)];
-        assert!(bent(&corner, pos2(100.0, 1.0), 14.0).is_some_and(|at| at.distance(pos2(100.0, 0.0)) < 1.0));
+        assert!(nearest(&corner, pos2(100.0, 1.0), 14.0).is_some_and(|at| at.distance(pos2(100.0, 0.0)) < 1.0));
         // the middle of a straight run: on it too
         let level = [pos2(0.0, 0.0), pos2(200.0, 0.0)];
-        assert_eq!(bent(&level, pos2(100.0, 2.0), 14.0), Some(pos2(100.0, 0.0)));
+        assert_eq!(nearest(&level, pos2(100.0, 2.0), 14.0), Some(pos2(100.0, 0.0)));
         // a curve passed smoothly: on it
         let curve = bezier(pos2(0.0, 0.0), pos2(400.0, 120.0), 1.0);
-        assert!(bent(&curve, along(&curve, 0.5), 14.0).is_some());
+        assert!(nearest(&curve, along(&curve, 0.5), 14.0).is_some());
         // a tie off the cable (it's elsewhere): none
-        assert_eq!(bent(&corner, pos2(100.0, 60.0), 14.0), None);
+        assert_eq!(nearest(&corner, pos2(100.0, 60.0), 14.0), None);
     }
 
     #[test]

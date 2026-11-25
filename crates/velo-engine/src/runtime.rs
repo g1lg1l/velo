@@ -1075,9 +1075,6 @@ impl Thread {
                                 o.warp = None;
                             }
                         }
-                        if outputs.iter().all(|o| o.guides.is_none()) {
-                            preview_warp = None;
-                        }
                     }
                     Command::Occluded { id, hidden } => {
                         if let Some(o) = outputs.iter_mut().find(|o| o.id == id) {
@@ -1091,6 +1088,10 @@ impl Thread {
                     Command::Record(spec) => recording = spec.map(|s| Sharing::start(&self.device, Taker::Record(s.clone()), s.size, self.status.clone())),
                     Command::Quit => return,
                 }
+            }
+            // no output adjusted (it ended, or its output closed): the preview's warp lets go
+            if outputs.iter().all(|o| o.guides.is_none()) {
+                preview_warp = None;
             }
             // pace: the outputs' vsync when they take frames, else a 60 Hz tick. A display that
             // doesn't (covered, off-screen, stuck) never stops the graph or the preview (ARCHITECTURE.md §5).
@@ -1390,9 +1391,6 @@ impl Thread {
                     Some((a, b, p)) if !blackout => {
                         // its shape (cropped and turned) kept on a display of another: bars, never stretched
                         let cell = size.and_then(|s| fit([o.config.width, o.config.height], o.projection.placed(s)));
-                        if cell.is_some() {
-                            clear(&mut encoder, dst);
-                        }
                         blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), dst, cell);
                     }
                     // blackout, or nothing to show: a cleared frame, never whatever the drawable held
@@ -1441,9 +1439,6 @@ impl Thread {
                             w.blit.place = o.blit.place;
                             let frame = w.frame.as_ref().expect("fitted above");
                             let cell = size.and_then(|s| fit(PREVIEW, o.projection.placed(s)));
-                            if cell.is_some() {
-                                clear(&mut encoder, frame);
-                            }
                             w.blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), frame, cell);
                             w.draw(&self.device, &self.queue, &mut encoder, &o.projection, o.guides, &preview_view);
                         }
@@ -1739,9 +1734,6 @@ struct Blit {
     place: [f32; 8],
 }
 
-/// All of the picture, square.
-const WHOLE: [f32; 8] = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
-
 impl Blit {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         const SHADER: &str = "
@@ -1855,18 +1847,18 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
         });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("blit"), size: 48, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        Self { pipeline, layout, sampler, uniform, decode: if format.is_srgb() { 1.0 } else { 0.0 }, place: WHOLE }
+        Self { pipeline, layout, sampler, uniform, decode: if format.is_srgb() { 1.0 } else { 0.0 }, place: crate::Projection::default().place() }
     }
 
     /// Draws `src` (the first going over to the second by `mix`, 0..1, the way `style` says:
     /// [`Transition::ALL`]'s index) over all of `dst`, or into one `cell` of it (x, y, width,
-    /// height in pixels), leaving the rest as it is.
+    /// height in pixels), the rest black: bars, in the same pass.
     #[allow(clippy::too_many_arguments)]
     fn draw(&self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, src: [&wgpu::TextureView; 2], (mix, style): (f32, f32), dst: &wgpu::TextureView, cell: Option<[f32; 4]>) {
         let [w, h] = cell.map_or_else(|| [dst.texture().width() as f32, dst.texture().height() as f32], |c| [c[2], c[3]]);
         self.uniform(queue, (mix, style), w / h.max(1.0));
         let group = self.group(device, src);
-        let mut pass = Self::pass(encoder, dst, if cell.is_some() { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) });
+        let mut pass = Self::pass(encoder, dst, wgpu::LoadOp::Clear(wgpu::Color::BLACK));
         if let Some([x, y, w, h]) = cell {
             pass.set_viewport(x, y, w, h, 0.0, 1.0);
         }
@@ -1892,8 +1884,10 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     }
 
     fn uniform(&self, queue: &wgpu::Queue, (mix, style): (f32, f32), aspect: f32) {
-        let values = [self.decode, mix, style, aspect].into_iter().chain(self.place);
-        let bytes: Vec<u8> = values.flat_map(f32::to_ne_bytes).collect();
+        let mut bytes = [0u8; 48];
+        for (b, v) in bytes.as_chunks_mut::<4>().0.iter_mut().zip([self.decode, mix, style, aspect].into_iter().chain(self.place)) {
+            *b = v.to_ne_bytes();
+        }
         queue.write_buffer(&self.uniform, 0, &bytes);
     }
 

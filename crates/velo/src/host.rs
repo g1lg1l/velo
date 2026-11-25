@@ -78,9 +78,18 @@ impl Shared {
         self.picked.as_ref().filter(|p| self.outputs.contains(p)).or(self.outputs.last())
     }
 
+    /// That output set up from now on: a mask being drawn or a handle picked on the one before
+    /// ends there, so clicks and arrows never land on another output's points.
+    pub fn pick(&mut self, target: Target) {
+        if self.current() != Some(&target) {
+            self.finish(false);
+        }
+        self.picked = Some(target);
+    }
+
     /// The current output's projection, made if it has none.
     pub fn projection(&mut self) -> Option<&mut Projection> {
-        let key = key(self.current()?);
+        let key = key(self.current()?).to_string();
         Some(self.projections.entry(key).or_default())
     }
 
@@ -109,6 +118,9 @@ impl Shared {
 /// The displays left to right (then top to bottom), each under a name no other has: two
 /// projectors of one model, both "EPSON PJ", are "EPSON PJ" and "EPSON PJ (2)", so each opens and
 /// keeps its own projection. Ordered by where they stand, the names hold while nothing is moved.
+// shortcut: when the first of two goes, the second takes its name (and its projection), and
+// the menu shows it unticked while its output, kept by its handle, stays open; winit has no
+// identity for a display that holds across every platform and restart to key them by instead
 fn monitors(event_loop: &ActiveEventLoop) -> Vec<(String, winit::monitor::MonitorHandle)> {
     let mut all: Vec<_> = event_loop.available_monitors().collect();
     all.sort_by_key(|m| (m.position().x, m.position().y));
@@ -129,10 +141,10 @@ fn unique(names: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 /// What a projection is kept under: the display's name ("" for a window).
-pub fn key(target: &Target) -> String {
+pub fn key(target: &Target) -> &str {
     match target {
-        Target::Window => String::new(),
-        Target::Display(name) => name.clone(),
+        Target::Window => "",
+        Target::Display(name) => name,
     }
 }
 
@@ -152,8 +164,12 @@ struct Open {
     target: Target,
     window: Arc<Window>,
     id: u64,
-    /// The projection the engine was last sent for it, with its handles (None: nothing yet).
-    sent: Option<(Projection, Option<Option<usize>>)>,
+    /// Its display (None: a window): one unplugged closes it. Not its name, which two of one
+    /// model trade when the first goes.
+    monitor: Option<winit::monitor::MonitorHandle>,
+    /// The projection the engine has for it, with its handles: untouched and none to begin with,
+    /// as the engine attaches an output.
+    sent: (Projection, Option<Option<usize>>),
 }
 
 pub struct Host<'a> {
@@ -180,12 +196,14 @@ impl<'a> Host<'a> {
     /// The mouse and keys on the adjusted output's window while its projection is adjusted: drag
     /// a handle, click to add a mask's point, arrows nudge the picked handle a pixel (Shift:
     /// ten). True when the event was theirs.
-    fn adjust(&mut self, id: WindowId, event: &WindowEvent) -> bool {
+    fn adjust(&mut self, target: &Target, window: &Window, event: &WindowEvent) -> bool {
         use winit::keyboard::{Key, NamedKey};
         let mut shared = self.shared.borrow_mut();
         let Some(mut adjust) = shared.adjust else { return false };
         // only the output being adjusted takes the mouse and keys
-        let Some(window) = shared.current().and_then(|c| self.outputs.iter().find(|o| &o.target == c)).map(|o| &o.window).filter(|w| w.id() == id) else { return false };
+        if shared.current() != Some(target) {
+            return false;
+        }
         let size = window.inner_size();
         let [w, h] = [size.width.max(1) as f32, size.height.max(1) as f32];
         let at = [self.cursor[0] / w, self.cursor[1] / h];
@@ -265,7 +283,7 @@ impl<'a> Host<'a> {
     fn open(&mut self, event_loop: &ActiveEventLoop, target: Target) {
         // already there: picked for the projection's settings
         if self.outputs.iter().any(|o| o.target == target) {
-            self.shared.borrow_mut().picked = Some(target);
+            self.shared.borrow_mut().pick(target);
             return;
         }
         let Some(engine) = self.engine.clone() else { return };
@@ -300,20 +318,23 @@ impl<'a> Host<'a> {
         config.format = surface.get_capabilities(&engine.adapter).formats.into_iter().find(|f| !f.is_srgb()).unwrap_or(config.format);
         config.present_mode = wgpu::PresentMode::Fifo;
         config.desired_maximum_frame_latency = 1;
-        let millihertz = monitor.or_else(|| window.current_monitor()).and_then(|m| m.refresh_rate_millihertz()).filter(|&m| m > 0).unwrap_or(60_000);
+        let millihertz = monitor.clone().or_else(|| window.current_monitor()).and_then(|m| m.refresh_rate_millihertz()).filter(|&m| m > 0).unwrap_or(60_000);
         let id = self.next;
         self.next += 1;
         engine.send(Command::Attach { id, surface, config, period: Duration::from_secs_f64(1000.0 / f64::from(millihertz)) });
-        self.outputs.push(Open { target: target.clone(), window, id, sent: None });
+        self.outputs.push(Open { target: target.clone(), window, id, monitor, sent: Default::default() });
         let mut shared = self.shared.borrow_mut();
-        shared.outputs.push(target.clone());
-        shared.picked = Some(target);
+        shared.pick(target.clone());
+        shared.outputs.push(target);
     }
 
     /// A new engine for one that stopped: its windows go at once (the old render thread may never
     /// let go of them), the outputs come back on the same displays.
     fn restart(&mut self, event_loop: &ActiveEventLoop) {
-        let targets = std::mem::take(&mut self.shared.borrow_mut().outputs);
+        let (targets, picked) = {
+            let mut s = self.shared.borrow_mut();
+            (std::mem::take(&mut s.outputs), s.picked.clone())
+        };
         (self.outputs, self.closing) = (Vec::new(), Vec::new());
         let fresh = Engine::start(Some(Box::new(event_loop.owned_display_handle()))).map(Rc::new);
         self.engine = fresh.as_ref().ok().cloned();
@@ -321,15 +342,17 @@ impl<'a> Host<'a> {
             for target in targets {
                 self.open(event_loop, target);
             }
+            // the one being set up stays so (each reopened is picked in turn)
+            if let Some(p) = picked {
+                self.shared.borrow_mut().pick(p);
+            }
         }
         self.shared.borrow_mut().fresh = Some(fresh);
     }
 
     /// Closes the output going there, or every one (None).
     fn close(&mut self, target: Option<&Target>) {
-        let (gone, kept) = std::mem::take(&mut self.outputs).into_iter().partition(|o| target.is_none_or(|t| &o.target == t));
-        self.outputs = kept;
-        let gone: Vec<Open> = gone;
+        let gone: Vec<Open> = self.outputs.extract_if(.., |o| target.is_none_or(|t| &o.target == t)).collect();
         let mut shared = self.shared.borrow_mut();
         for o in gone {
             if let Some(engine) = &self.engine {
@@ -347,16 +370,16 @@ impl<'a> Host<'a> {
     /// Each output's projection to the engine, when it changed; the handles on the current one
     /// while it's adjusted.
     fn send_projections(&mut self) {
+        let Some(engine) = &self.engine else { return };
         let shared = self.shared.borrow();
-        let current = shared.current().cloned();
+        let (current, untouched) = (shared.current(), Projection::default());
         for o in &mut self.outputs {
-            let guides = shared.adjust.filter(|_| current.as_ref() == Some(&o.target)).map(|a| a.selected);
-            let want = (shared.projections.get(&key(&o.target)).cloned().unwrap_or_default(), guides);
-            if let Some(engine) = &self.engine
-                && o.sent.as_ref() != Some(&want)
-            {
-                engine.send(Command::Projection { id: o.id, projection: want.0.clone(), guides });
-                o.sent = Some(want);
+            let guides = shared.adjust.filter(|_| current == Some(&o.target)).map(|a| a.selected);
+            let want = shared.projections.get(key(&o.target)).unwrap_or(&untouched);
+            // runs on every wake of the event loop: cloned only when it changed
+            if o.sent.0 != *want || o.sent.1 != guides {
+                engine.send(Command::Projection { id: o.id, projection: want.clone(), guides });
+                o.sent = (want.clone(), guides);
             }
         }
     }
@@ -384,7 +407,7 @@ impl ApplicationHandler<UserEvent> for Host<'_> {
         if self.closing.iter().any(|w| w.1.id() == id) {
             return;
         }
-        let Some((output, target)) = self.outputs.iter().find(|o| o.window.id() == id).map(|o| (o.id, o.target.clone())) else {
+        let Some((output, target, window)) = self.outputs.iter().find(|o| o.window.id() == id).map(|o| (o.id, o.target.clone(), o.window.clone())) else {
             return self.eframe.window_event(event_loop, id, event);
         };
         match &event {
@@ -392,7 +415,7 @@ impl ApplicationHandler<UserEvent> for Host<'_> {
             WindowEvent::ModifiersChanged(m) => self.shift = m.state().shift_key(),
             _ => {}
         }
-        if self.adjust(id, &event) {
+        if self.adjust(&target, &window, &event) {
             return;
         }
         // an output window takes one key: Esc closes it (when it has the keyboard, so a key
@@ -422,10 +445,10 @@ impl ApplicationHandler<UserEvent> for Host<'_> {
         self.eframe.about_to_wait(event_loop);
         // once a second: an output's display unplugged closes that output (Windows would move
         // its window over the UI's, on top)
-        if self.looked.elapsed() > Duration::from_secs(1) {
+        if self.looked.elapsed() > Duration::from_secs(1) && self.outputs.iter().any(|o| o.monitor.is_some()) {
             self.looked = std::time::Instant::now();
-            let names: Vec<String> = monitors(event_loop).into_iter().map(|m| m.0).collect();
-            let gone: Vec<Target> = self.outputs.iter().map(|o| o.target.clone()).filter(|t| matches!(t, Target::Display(name) if !names.contains(name))).collect();
+            let plugged: Vec<_> = event_loop.available_monitors().collect();
+            let gone: Vec<Target> = self.outputs.iter().filter(|o| o.monitor.as_ref().is_some_and(|m| !plugged.contains(m))).map(|o| o.target.clone()).collect();
             for target in gone {
                 self.close(Some(&target));
                 if let Target::Display(name) = target {
@@ -497,9 +520,15 @@ mod tests {
         let [a, b] = [Target::Display("Left PJ".into()), Target::Display("Right PJ".into())];
         let mut s = Shared { outputs: vec![a.clone(), b.clone()], ..Default::default() };
         assert_eq!(s.current(), Some(&b), "the last opened");
-        s.picked = Some(a.clone());
+        s.pick(a.clone());
         s.projection().expect("an output").turn = 1;
-        assert_eq!((s.projections["Left PJ"].turn, s.projections.contains_key("Right PJ")), (1, false));
+        assert_eq!((s.projections["Left PJ"].turn, s.projections.get("Right PJ").is_none_or(|p| p.turn == 0)), (1, true));
+        // a mask half drawn on one ends when another is picked: no click lands on the wrong one
+        s.draw_mask();
+        s.projection().expect("an output").masks.last_mut().expect("the new mask").push([0.1, 0.1]);
+        s.pick(b.clone());
+        assert!(s.projections["Left PJ"].masks.is_empty() && s.adjust.is_some_and(|a| !a.drawing && a.selected.is_none()));
+        s.pick(a.clone());
         // the picked one closed: back to the last opened
         s.outputs.retain(|t| t != &a);
         assert_eq!(s.current(), Some(&b));
