@@ -2,7 +2,7 @@
 
 ## Today
 
-Velo is in beta on Windows and macOS. It hears the computer's sound or any input (bands, drum hits from a small live model, melody, tempo), runs a graph of 64 node kinds per scene on the GPU with 76 shader and 41 effect presets and your own WGSL or ISF shaders, reads the music once for the whole show through shared signals, puts photos, movies and the camera on 3D models, launches scenes on the beat with transitions, and is played with macros, variations, MIDI (its pads held or lit back on the controller), the computer's keys, OSC in and out, Ableton Link and MIDI clock, ahead of a slow projector by its lag. It goes out fullscreen, corner-pinned and masked onto a screen that isn't square to the projector, over Spout, Syphon and NDI, graded by its Output, and records the show to a movie with its sound (ffmpeg is downloaded the first time, if you agree). An AI panel (Claude Code, Codex, a local or API model) builds scenes from Velo's own nodes, and `velo-mcp` lets any MCP client drive it.
+Velo is in beta on Windows and macOS. It hears the computer's sound or any input (bands, drum hits from a small live model, melody, tempo), runs a graph of 64 node kinds per scene on the GPU with 76 shader and 41 effect presets and your own WGSL or ISF shaders, reads the music once for the whole show through shared signals, puts photos, movies and the camera on 3D models, launches scenes on the beat with transitions, and is played with macros, variations, MIDI (its pads held or lit back on the controller), the computer's keys, OSC in and out, Ableton Link and MIDI clock, ahead of a slow projector by its lag. It goes out fullscreen on as many displays as you like, each showing its own crop of the picture, turned if need be, corner-pinned and masked onto a screen that isn't square to the projector, over Spout, Syphon and NDI, graded by its Output, and records the show to a movie with its sound (ffmpeg is downloaded the first time, if you agree). An AI panel (Claude Code, Codex, a local or API model) builds scenes from Velo's own nodes, and `velo-mcp` lets any MCP client drive it.
 
 The milestones that got it here, named in some code comments: M1 First Light (a shader on a projector), M2 Hear It (audio becomes motion), M3 Play It (scenes and control), M4 Keep It (your own shaders, bundles, the demo), M5 Talk to It (the AI). M6 Ship It is the release itself.
 
@@ -10,7 +10,7 @@ The milestones that got it here, named in some code comments: M1 First Light (a 
 
 - **Trust on install:** a signed Windows installer and a signed, notarized macOS app.
 - **Lessons** for the first five minutes, in English and Italian.
-- **Show control:** a setlist or cue list; more than one output, each with crop and rotation.
+- **Show control:** a setlist or cue list.
 - **Controllers:** profiles for common controllers.
 - **Inputs:** several audio inputs at once, screen capture; HEIC stills and turned phone movies upright on Windows (macOS has them).
 - **Shaders:** shaders and scenes shared as packages.

@@ -1,6 +1,7 @@
-//! An output's corner pin and masks: where the picture's four corners land on the projector, so
-//! it falls on a cloth that isn't square to it, and black polygons over it, so no light spills
-//! past the cloth. Points are parts of the output's width and height (0..1, y down), so they
+//! How the picture lands on one output: the part of it that output shows (its crop) and how it
+//! is turned, for a show split over several projectors or a screen hung on its side; then where
+//! the picture's four corners land on the projector, so it falls on a cloth that isn't square to
+//! it, and black polygons over it, so no light spills past the cloth. Points are parts of the output's width and height (0..1, y down), so they
 //! hold at any resolution. The output blit draws the picture through the homography the corners
 //! make and blacks out the masks (`runtime.rs`, `Warp`); untouched, it isn't drawn at all.
 
@@ -27,11 +28,19 @@ pub struct Projection {
     /// How far inside a mask's edge the black fades in, as a part of the output's height:
     /// 0 is a hard edge. The edge stays where it's drawn, so no light passes it either way.
     pub soft: f32,
+    /// The part of the picture this output shows: x, y, width, height, as parts of the picture's
+    /// (all of it: 0, 0, 1, 1). Its shape is kept on the output, as the whole picture's is.
+    pub crop: [f32; 4],
+    /// Quarter turns clockwise, 0 to 3: a screen hung on its side, a projector upside down.
+    pub turn: u8,
 }
+
+/// All of the picture.
+pub const WHOLE: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
 
 impl Default for Projection {
     fn default() -> Self {
-        Self { corners: SQUARE, masks: Vec::new(), soft: 0.0 }
+        Self { corners: SQUARE, masks: Vec::new(), soft: 0.0, crop: WHOLE, turn: 0 }
     }
 }
 
@@ -39,6 +48,27 @@ impl Projection {
     /// Nothing to do: the output is drawn as it always was.
     pub fn is_identity(&self) -> bool {
         self.corners == SQUARE && self.masks.iter().all(|m| m.len() < 3)
+    }
+
+    /// The crop kept inside the picture, at least a hundredth of it a side.
+    pub fn crop(&self) -> [f32; 4] {
+        let [x, y, w, h] = self.crop.map(|v| if v.is_finite() { v } else { 0.0 });
+        let (x, y) = (x.clamp(0.0, 0.99), y.clamp(0.0, 0.99));
+        [x, y, w.clamp(0.01, 1.0 - x), h.clamp(0.01, 1.0 - y)]
+    }
+
+    /// What the output blit's shader is told: the crop, then the quarter turns.
+    pub fn place(&self) -> [f32; 8] {
+        let [x, y, w, h] = self.crop();
+        [x, y, w, h, f32::from(self.turn % 4), 0.0, 0.0, 0.0]
+    }
+
+    /// How large a picture `size` pixels large shows on this output, cropped and turned: what
+    /// its shape is kept to.
+    pub fn placed(&self, size: [u32; 2]) -> [u32; 2] {
+        let [_, _, w, h] = self.crop();
+        let [cw, ch] = [(size[0] as f32 * w).round().max(1.0) as u32, (size[1] as f32 * h).round().max(1.0) as u32];
+        if self.turn % 2 == 1 { [ch, cw] } else { [cw, ch] }
     }
 
     /// Every point that can be picked and moved, in order: the four corners, then each mask's.
@@ -184,6 +214,21 @@ mod tests {
         assert!(drawing.is_identity());
         let pinned = Projection { corners: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.1, 1.0]], ..Default::default() };
         assert!(!pinned.is_identity());
+        assert_eq!((p.place(), p.placed([1920, 1080])), ([0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0], [1920, 1080]), "all of it, square");
+    }
+
+    #[test]
+    fn a_crop_and_a_turn_change_the_shape_kept() {
+        // the right half of a 3840 × 1080 picture, on a projector turned on its side
+        let p = Projection { crop: [0.5, 0.0, 0.5, 1.0], turn: 1, ..Default::default() };
+        assert_eq!(p.placed([3840, 1080]), [1080, 1920]);
+        assert_eq!(p.place()[..5], [0.5, 0.0, 0.5, 1.0, 1.0]);
+        // a crop past the picture is kept inside it
+        let past = Projection { crop: [0.8, -0.2, 0.5, 2.0], turn: 6, ..Default::default() };
+        assert_eq!(past.crop(), [0.8, 0.0, 0.19999999, 1.0]);
+        assert_eq!(past.place()[4], 2.0);
+        // preferences from before crops read as the whole picture
+        assert_eq!(serde_json::from_str::<Projection>(r#"{"soft": 0.01}"#).expect("reads").crop, WHOLE);
     }
 
     #[test]

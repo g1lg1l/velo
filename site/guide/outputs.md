@@ -1,6 +1,6 @@
 # Outputs
 
-The picture of the live scene goes out through the **Output** chip in the top bar: fullscreen on a display, in a window, or to other apps through Spout and NDI.
+The picture of the live scene goes out through the **Output** chip in the top bar: fullscreen on one display or several, in a window, or to other apps through Spout and NDI.
 
 ## A display
 
@@ -8,9 +8,20 @@ Click **Output** and pick a display. Each one is listed with its name, its size 
 
 The picture fills that display in a borderless stage window, above other windows, with no interface and no cursor on it. Its shape is kept: if the display's shape differs from the picture's, you get bars on two sides, never a stretched picture.
 
-To close it, use **Close output** in the same menu. <kbd>Esc</kbd> doesn't close it, so a stray key on stage can't either.
+Each display in the menu is a switch: pick another and the picture goes there too, as many as you have plugged in. Click an open one again to close it, or **Close output** (**Close every output** with several) to close them all. <kbd>Esc</kbd> on an output closes only that one, and only when it has the keyboard, so a stray key on stage can't.
 
-**Window** in the same menu puts the output in an ordinary window instead, handy for checking it on one screen.
+**Window** in the same menu puts an output in an ordinary window too, handy for checking it on one screen.
+
+## Several displays
+
+With two or more outputs open, the **PROJECTION** part of the Output menu shows a button for each: the crop, rotation, corners and masks below it are that output's. The one you opened last is picked until you pick another.
+
+- **Crop** shows only a part of the picture on this output, in percent: from the left, from the top, the width and the height. For two projectors side by side, set the canvas twice as wide (3840×1080), then crop one output to `0 0 50 100` and the other to `50 0 50 100`: each shows its half, at its full resolution.
+- **Rotation** turns the picture a quarter at a time: 90° or 270° for a screen hung on its side, 180° for a projector hung upside down from the ceiling.
+
+The cropped, turned picture keeps its shape on the output, with bars if the display's shape differs. The test pattern isn't cropped or turned: it shows the projector itself. Every output shows the same live scene; the crop picks the part.
+
+Spout, NDI and the recording always take the whole picture, unturned.
 
 ## Fitting the picture to the screen
 
@@ -20,9 +31,9 @@ A projector hung off to the side, or a cloth that isn't square, makes the pictur
 - For the last pixel, click a corner and nudge it with the **arrow keys**, one pixel at a time (ten with <kbd>Shift</kbd>). <kbd>Tab</kbd> picks the next handle.
 - Turn on the **Test pattern** while you do it: it is pinned too, and its circle and square cells show when the corners are right.
 - **Draw a mask** (in the same menu) blacks out a shape over the picture, so no light falls on the DJ or past the cloth: click its points on the output, then <kbd>Enter</kbd> or click its first point again. Masks can be any shape. Drag their points to change them; click inside one and press <kbd>Delete</kbd>, or use its bin in the menu, to remove it. **Soft edge** fades the black in from the mask's edge.
-- <kbd>Esc</kbd> on the output ends it. **Reset the projection** puts the picture back square.
+- <kbd>Esc</kbd> on the output ends it. **Reset the projection** puts the whole picture back square, unturned, with no masks.
 
-While you adjust, the preview shows the output as it lands, handles and all. The corners and masks stay with this computer, one set for each display, not with the show: plug into the same projector next week and they are as you left them. Spout and NDI still send the picture square; the app on the other end maps it.
+While you adjust, the preview shows the output as it lands, handles and all. The crop, rotation, corners and masks stay with this computer, one set for each display, not with the show: plug into the same projector next week and they are as you left them. Spout and NDI still send the picture square; the app on the other end maps it.
 
 If a projector is unplugged, the picture keeps running; Velo tells you, and recovers when it's back. A GPU driver reset is recovered from the same way.
 

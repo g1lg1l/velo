@@ -728,7 +728,7 @@ impl App {
         if std::env::var_os("VELO_DEMO_PIN").is_some()
             && let Some(live) = &app.live
         {
-            let pin = velo_engine::Projection { corners: [[0.12, 0.08], [0.9, 0.16], [0.82, 0.94], [0.06, 0.86]], masks: vec![vec![[0.0, 0.55], [0.3, 0.6], [0.24, 1.0], [0.0, 1.0]]], soft: 0.01 };
+            let pin = velo_engine::Projection { corners: [[0.12, 0.08], [0.9, 0.16], [0.82, 0.94], [0.06, 0.86]], masks: vec![vec![[0.0, 0.55], [0.3, 0.6], [0.24, 1.0], [0.0, 1.0]]], soft: 0.01, ..Default::default() };
             app.settings.projections.insert(String::new(), pin);
             let mut s = live.shared.borrow_mut();
             s.requests.push(host::Request::Open(host::Target::Window));
@@ -983,7 +983,7 @@ impl App {
             "stage.adjust" => {
                 let open = self.live.as_ref().map(|live| {
                     let mut s = live.shared.borrow_mut();
-                    match (s.adjust.is_some(), s.output.is_some()) {
+                    match (s.adjust.is_some(), !s.outputs.is_empty()) {
                         (true, _) => s.finish(true),
                         (false, true) => s.adjust = Some(host::Adjust::default()),
                         (false, false) => return false,
@@ -2384,9 +2384,9 @@ impl App {
         !self.settings.hide_preview || self.settings.preview_background || self.settings.split != Split::Off || output_node
     }
 
-    /// Where the output is, if anywhere.
-    fn live_output(&self) -> Option<host::Target> {
-        self.live.as_ref().and_then(|l| l.shared.borrow().output.clone())
+    /// Where the outputs are, in the order they opened.
+    fn live_outputs(&self) -> Vec<host::Target> {
+        self.live.as_ref().map(|l| l.shared.borrow().outputs.clone()).unwrap_or_default()
     }
 
     /// The output as a floating card in the canvas' top-right corner (Figma-like); P hides it.
@@ -3849,7 +3849,7 @@ mod projection_tests {
 
     #[test]
     fn an_outputs_projection_is_kept_with_the_preferences() {
-        let pin = velo_engine::Projection { corners: [[0.1, 0.0], [0.9, 0.05], [1.0, 1.0], [0.0, 0.95]], masks: vec![vec![[0.0, 0.0], [0.2, 0.0], [0.0, 0.3]]], soft: 0.02 };
+        let pin = velo_engine::Projection { corners: [[0.1, 0.0], [0.9, 0.05], [1.0, 1.0], [0.0, 0.95]], masks: vec![vec![[0.0, 0.0], [0.2, 0.0], [0.0, 0.3]]], soft: 0.02, crop: [0.5, 0.0, 0.5, 1.0], turn: 3 };
         let mut settings = Settings::default();
         settings.projections.insert("EPSON PJ".into(), pin.clone());
         let back: Settings = ron::from_str(&ron::to_string(&settings).expect("saves")).expect("reads back");
@@ -4139,7 +4139,7 @@ impl eframe::App for App {
             eprintln!("velo: UI frame {:.2} ms average, {:.2} ms worst; our ui() {:.2} ms average, {:.2} ms worst; {} frames (last 2 s)", avg * 1000.0, worst * 1000.0, layout * 1000.0, layout_worst * 1000.0, self.cpu.samples.len());
             if let Some(live) = &self.live {
                 let s = &live.engine.status;
-                let output = self.live_output().map_or("none".to_string(), |o| format!("{o:?}"));
+                let output = format!("{:?}", self.live_outputs());
                 eprintln!("velo: engine {:.1} fps, last frame {} µs on the render thread, {} frames, {} late; output {output}", live.fps, s.frame_us.load(Relaxed), s.frames.load(Relaxed), s.late.load(Relaxed));
                 if let Some(scene) = self.session.active() {
                     let costs: Vec<String> = scene.nodes.iter().filter_map(|n| live.cost(&n.id).map(|c| format!("{} {c:.2}", n.kind))).collect();
@@ -4190,7 +4190,7 @@ impl eframe::App for App {
             (Some(live), _) => live.picture(),
             _ => None,
         };
-        let output = self.live_output().is_some();
+        let output = !self.live_outputs().is_empty();
         if let Some(reel) = &mut self.reel {
             reel.frame(&ctx, picture, output);
         }

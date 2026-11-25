@@ -297,27 +297,38 @@ pub enum Command {
         key: u64,
         kinds: Vec<crate::signal::Kind>,
     },
+    /// An output to draw to, under an id of the UI's: there can be several, each on a display
+    /// of its own.
     Attach {
+        id: u64,
         surface: wgpu::Surface<'static>,
         config: wgpu::SurfaceConfiguration,
         period: Duration,
     },
-    Resize([u32; 2]),
-    Detach,
+    Resize {
+        id: u64,
+        size: [u32; 2],
+    },
+    /// The output let go of: its id comes back on [`Engine::detached`] once it is.
+    Detach(u64),
     /// The output goes black (the graph and the preview keep running, so lifting it is seamless).
     Blackout(bool),
     /// The program held on the frame it shows now (outputs, shares and the preview), or let go.
     Freeze(bool),
     /// The outputs and shares show a test pattern instead (lining up a projector), or not.
     Pattern(bool),
-    /// The output's corner pin and masks ([`crate::Projection`]), and while they're being
-    /// adjusted the handles drawn over the output and the preview, the picked one lit.
+    /// An output's crop, turn, corner pin and masks ([`crate::Projection`]), and while they're
+    /// being adjusted the handles drawn over it and the preview, the picked one lit.
     Projection {
+        id: u64,
         projection: crate::Projection,
         guides: Option<Option<usize>>,
     },
-    /// The output window is covered or off-screen: don't wait for it to take frames.
-    Occluded(bool),
+    /// An output window is covered or off-screen: don't wait for it to take frames.
+    Occluded {
+        id: u64,
+        hidden: bool,
+    },
     /// The program shared with other apps (Spout) or over the network (NDI) too, or no longer.
     Share(Option<crate::share::Share>),
     /// The program recorded to a movie, or the recording stopped (its file finished on a
@@ -433,8 +444,8 @@ pub struct Engine {
     device: wgpu::Device,
     queue: wgpu::Queue,
     commands: mpsc::Sender<Command>,
-    /// Detached outputs come back here, so their windows are dropped on the main thread.
-    pub detached: mpsc::Receiver<()>,
+    /// Detached outputs' ids come back here, so their windows are dropped on the main thread.
+    pub detached: mpsc::Receiver<u64>,
     pub status: Arc<Status>,
     pub features: Arc<SharedFeatures>,
     pub wave: Arc<SharedWave>,
@@ -797,16 +808,27 @@ pub fn costs(spans: &[(u64, u64)], stale: u64) -> Vec<u64> {
 }
 
 struct Output {
+    id: u64,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     blit: Blit,
     /// The corner pin and masks, made the first time they're used.
     warp: Option<Warp>,
+    /// Its crop, turn, corner pin and masks, and the handles while they're adjusted.
+    projection: crate::Projection,
+    guides: Option<Option<usize>>,
     period: Duration,
     occluded: bool,
     /// After a frame it didn't hand out, the next time to ask: until then the engine runs on its
     /// own timer, so the preview never waits for a display that isn't taking frames.
     retry_at: Instant,
+}
+
+impl Output {
+    /// Pinned, masked or adjusted: drawn into a frame of its own first, then through the warp.
+    fn warped(&self) -> bool {
+        !self.projection.is_identity() || self.guides.is_some()
+    }
 }
 
 /// How long to leave an output alone after it didn't hand out a frame.
@@ -858,7 +880,7 @@ struct Thread {
     device: wgpu::Device,
     queue: wgpu::Queue,
     commands: mpsc::Receiver<Command>,
-    detached: mpsc::Sender<()>,
+    detached: mpsc::Sender<u64>,
     status: Arc<Status>,
     features: Arc<SharedFeatures>,
     wave: Arc<SharedWave>,
@@ -890,9 +912,7 @@ impl Thread {
         let mut showing: Vec<(u64, Layer, LayerBlend, f32)> = Vec::new();
         let mut faded_at = Instant::now();
         let (mut freeze, mut held, mut pattern) = (false, None, false);
-        // the output's corner pin and masks, and the handles while they're adjusted (None:
-        // untouched, the output drawn straight); the preview shows them too while adjusting
-        let mut pin: Option<(crate::Projection, Option<Option<usize>>)> = None;
+        // the preview shows an output's projection landing while it's adjusted
         let mut preview_warp: Option<Warp> = None;
         let start = Instant::now();
         let tick = Duration::from_micros(16_667);
@@ -903,7 +923,7 @@ impl Thread {
         // the shared signal graph: run once a frame before any scene's, whatever renders
         let (mut shared, mut shared_keys): (Vec<crate::signal::Signal>, Vec<String>) = (Vec::new(), Vec::new());
         let (mut show, mut edit) = (Show::default(), 0u64);
-        let mut output: Option<Output> = None;
+        let mut outputs: Vec<Output> = Vec::new();
         let mut blackout = false;
         let mut clock = Clock::default();
         // how far ahead of the music the pictures are drawn, seconds (Command::Lead)
@@ -1019,12 +1039,14 @@ impl Thread {
                             crate::signal::retune(&mut g.signals, &kinds);
                         }
                     }
-                    Command::Attach { surface, config, period } => {
+                    Command::Attach { id, surface, config, period } => {
                         surface.configure(&self.device, &config);
-                        output = Some(Output { blit: Blit::new(&self.device, config.format), warp: None, surface, config, period, occluded: false, retry_at: Instant::now() });
+                        let o = Output { id, blit: Blit::new(&self.device, config.format), warp: None, projection: crate::Projection::default(), guides: None, surface, config, period, occluded: false, retry_at: Instant::now() };
+                        outputs.retain(|o| o.id != id);
+                        outputs.push(o);
                     }
-                    Command::Resize([w, h]) => {
-                        if let Some(o) = &mut output
+                    Command::Resize { id, size: [w, h] } => {
+                        if let Some(o) = outputs.iter_mut().find(|o| o.id == id)
                             && w > 0
                             && h > 0
                         {
@@ -1034,9 +1056,9 @@ impl Thread {
                             o.surface.configure(&self.device, &o.config);
                         }
                     }
-                    Command::Detach => {
-                        output = None;
-                        let _ = self.detached.send(());
+                    Command::Detach(id) => {
+                        outputs.retain(|o| o.id != id);
+                        let _ = self.detached.send(id);
                     }
                     Command::Blackout(on) => blackout = on,
                     Command::Freeze(on) => {
@@ -1044,18 +1066,21 @@ impl Thread {
                         held = None;
                     }
                     Command::Pattern(on) => pattern = on,
-                    Command::Projection { projection, guides } => {
-                        pin = (!projection.is_identity() || guides.is_some()).then_some((projection, guides));
-                        // back to straight: its frames let go
-                        if pin.is_none() {
-                            preview_warp = None;
-                            if let Some(o) = &mut output {
+                    Command::Projection { id, projection, guides } => {
+                        if let Some(o) = outputs.iter_mut().find(|o| o.id == id) {
+                            (o.projection, o.guides) = (projection, guides);
+                            o.blit.place = o.projection.place();
+                            // back to straight: its frame lets go
+                            if !o.warped() {
                                 o.warp = None;
                             }
                         }
+                        if outputs.iter().all(|o| o.guides.is_none()) {
+                            preview_warp = None;
+                        }
                     }
-                    Command::Occluded(hidden) => {
-                        if let Some(o) = &mut output {
+                    Command::Occluded { id, hidden } => {
+                        if let Some(o) = outputs.iter_mut().find(|o| o.id == id) {
                             o.occluded = hidden;
                         }
                     }
@@ -1067,26 +1092,35 @@ impl Thread {
                     Command::Quit => return,
                 }
             }
-            // pace: the output's vsync when it takes frames, else a 60 Hz tick. A display that
-            // doesn't (covered, off-screen, stuck) never stops the graph or the preview (ARCHITECTURE.md §5)
-            let target = match &mut output {
-                Some(o) if !o.occluded && Instant::now() >= o.retry_at => match o.surface.get_current_texture() {
-                    wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
-                    wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                        o.surface.configure(&self.device, &o.config);
-                        None
+            // pace: the outputs' vsync when they take frames, else a 60 Hz tick. A display that
+            // doesn't (covered, off-screen, stuck) never stops the graph or the preview (ARCHITECTURE.md §5).
+            // shortcut: every output is drawn each frame, so the slowest display sets the pace
+            // (a 30 Hz one holds a 60 Hz one to 30); a present thread per output would free them
+            let targets: Vec<Option<wgpu::SurfaceTexture>> = outputs
+                .iter_mut()
+                .map(|o| {
+                    if o.occluded || Instant::now() < o.retry_at {
+                        return None;
                     }
-                    _ => {
-                        // ponytail: one acquire can still block (Metal waits up to 1 s for a
-                        // drawable); a present thread per output would hide even that
-                        o.retry_at = Instant::now() + RETRY;
-                        self.status.stalls.fetch_add(1, Relaxed);
-                        None
+                    match o.surface.get_current_texture() {
+                        wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => Some(t),
+                        wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                            o.surface.configure(&self.device, &o.config);
+                            None
+                        }
+                        _ => {
+                            // ponytail: one acquire can still block (Metal waits up to 1 s for a
+                            // drawable); a present thread per output would hide even that
+                            o.retry_at = Instant::now() + RETRY;
+                            self.status.stalls.fetch_add(1, Relaxed);
+                            None
+                        }
                     }
-                },
-                _ => None,
-            };
-            if target.is_none() {
+                })
+                .collect();
+            // the output that paces this frame: the first that handed one out
+            let pacer = outputs.iter().zip(&targets).find(|(_, t)| t.is_some()).map(|(o, _)| o.period);
+            if pacer.is_none() {
                 // to the next tick on a fixed beat, not a tick after waking: a wake that comes
                 // late is made up on the next frame instead of slowing every one (a deadline
                 // missed by more than a tick starts the beat again from now)
@@ -1095,18 +1129,15 @@ impl Thread {
                 std::thread::sleep(deadline.saturating_duration_since(now));
             }
             let now = Instant::now();
-            if let (Some(o), Some(_)) = (&output, &target)
-                && now - last > o.period * 3 / 2
+            if let Some(period) = pacer
+                && now - last > period * 3 / 2
             {
                 self.status.late.fetch_add(1, Relaxed);
             }
             let delta = (now - last).as_secs_f32();
             last = now;
             // what a frame may take: the output's period while it paces the frames, else the tick
-            let budget = match (&output, &target) {
-                (Some(o), Some(_)) => o.period,
-                _ => tick,
-            };
+            let budget = pacer.unwrap_or(tick);
 
             // launches: a waiting one lands on its boundary once its graph is built. Everything the
             // clock drives (launches, transitions, the beat, the bar, signals, media turns) is
@@ -1340,30 +1371,35 @@ impl Thread {
             let program = held.as_ref().map(|v| (v, v, 0.0)).or(program);
             let preview = if edit == 0 || edit == show.live { program } else { picture(edit).map(|v| (v, v, 0.0)) };
             let mut copy_into = None;
-            if let Some(t) = &target {
+            for (o, t) in outputs.iter_mut().zip(&targets) {
+                let Some(t) = t else { continue };
                 let view = t.texture.create_view(&Default::default());
                 // pinned or masked: what the output would show drawn into a frame of its own,
                 // then that through the corner pin and the masks (the test pattern too)
-                if let (Some(o), Some(_), false) = (&mut output, &pin, blackout) {
-                    o.warp.get_or_insert_with(|| Warp::new(&self.device, o.config.format)).fit(&self.device, [o.config.width, o.config.height]);
+                let warped = o.warped() && !blackout;
+                if warped {
+                    let w = o.warp.get_or_insert_with(|| Warp::new(&self.device, o.config.format));
+                    w.fit(&self.device, [o.config.width, o.config.height]);
+                    w.blit.place = o.blit.place;
                 }
-                let warp = output.as_ref().and_then(|o| o.warp.as_ref()).filter(|_| pin.is_some() && !blackout);
+                let warp = o.warp.as_ref().filter(|_| warped);
                 let dst = warp.and_then(|w| w.frame.as_ref()).unwrap_or(&view);
-                match (program, &output) {
-                    (_, Some(o)) if pattern && !blackout => warp.map_or(&o.blit, |w| &w.blit).draw(&self.device, &self.queue, &mut encoder, [&black, &black], (0.0, PATTERN), dst, None),
-                    (Some((a, b, p)), Some(o)) if !blackout => {
-                        // its shape kept on a display of another (bars, never stretched)
-                        let cell = size.and_then(|s| fit([o.config.width, o.config.height], s));
+                let blit = warp.map_or(&o.blit, |w| &w.blit);
+                match program {
+                    _ if pattern && !blackout => blit.draw(&self.device, &self.queue, &mut encoder, [&black, &black], (0.0, PATTERN), dst, None),
+                    Some((a, b, p)) if !blackout => {
+                        // its shape (cropped and turned) kept on a display of another: bars, never stretched
+                        let cell = size.and_then(|s| fit([o.config.width, o.config.height], o.projection.placed(s)));
                         if cell.is_some() {
                             clear(&mut encoder, dst);
                         }
-                        warp.map_or(&o.blit, |w| &w.blit).draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), dst, cell);
+                        blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), dst, cell);
                     }
                     // blackout, or nothing to show: a cleared frame, never whatever the drawable held
                     _ => clear(&mut encoder, dst),
                 }
-                if let (Some(w), Some((projection, guides))) = (warp, &pin) {
-                    w.draw(&self.device, &self.queue, &mut encoder, projection, *guides, &view);
+                if let Some(w) = warp {
+                    w.draw(&self.device, &self.queue, &mut encoder, &o.projection, o.guides, &view);
                 }
             }
             // shared and recorded: the program full size, read back for the sender (black in a
@@ -1396,13 +1432,20 @@ impl Thread {
                 copy_into = self.preview.free();
                 if let Some(i) = copy_into {
                     last_preview = now;
-                    match &pin {
-                        // adjusting the projection: the preview shows it landing, handles and all
-                        Some((projection, guides @ Some(_))) => {
+                    match outputs.iter().find(|o| o.guides.is_some()) {
+                        // adjusting an output's projection: the preview shows it landing, cropped,
+                        // turned, handles and all
+                        Some(o) => {
                             let w = preview_warp.get_or_insert_with(|| Warp::new(&self.device, PREVIEW_FORMAT));
                             w.fit(&self.device, PREVIEW);
-                            w.blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), w.frame.as_ref().expect("fitted above"), None);
-                            w.draw(&self.device, &self.queue, &mut encoder, projection, *guides, &preview_view);
+                            w.blit.place = o.blit.place;
+                            let frame = w.frame.as_ref().expect("fitted above");
+                            let cell = size.and_then(|s| fit(PREVIEW, o.projection.placed(s)));
+                            if cell.is_some() {
+                                clear(&mut encoder, frame);
+                            }
+                            w.blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), frame, cell);
+                            w.draw(&self.device, &self.queue, &mut encoder, &o.projection, o.guides, &preview_view);
                         }
                         _ => preview_blit.draw(&self.device, &self.queue, &mut encoder, [a, b], (p, style), &preview_view, None),
                     }
@@ -1458,7 +1501,7 @@ impl Thread {
             } else if resolved && let Some(x) = &timing {
                 x.read(self.status.clone(), period);
             }
-            if let Some(t) = target {
+            for t in targets.into_iter().flatten() {
                 self.queue.present(t);
             }
             // no more than IN_FLIGHT frames queued: the GPU sets the pace once it's the slower
@@ -1691,7 +1734,13 @@ struct Blit {
     /// encodes); y: how much of the second picture. Written by each draw: a blit draws once a frame.
     uniform: wgpu::Buffer,
     decode: f32,
+    /// The part of the picture drawn and how it's turned ([`crate::Projection::place`]): an
+    /// output's own, all of it square anywhere else.
+    place: [f32; 8],
 }
+
+/// All of the picture, square.
+const WHOLE: [f32; 8] = [0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0];
 
 impl Blit {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -1704,10 +1753,26 @@ struct V { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
 @group(0) @binding(0) var a: texture_2d<f32>;
 @group(0) @binding(1) var b: texture_2d<f32>;
 @group(0) @binding(2) var smp: sampler;
-@group(0) @binding(3) var<uniform> u: vec4<f32>;
+struct U {
+    // decode for an sRGB target, how far from a to b, which transition (Transition::ALL's index,
+    // or PATTERN), the target's width over its height
+    u: vec4<f32>,
+    // the part of the picture drawn: x, y, width, height
+    crop: vec4<f32>,
+    // x: quarter turns clockwise
+    turn: vec4<f32>,
+}
+@group(0) @binding(3) var<uniform> k: U;
+// where the target's point reads the picture: turned, then cropped
+fn place(q: vec2<f32>) -> vec2<f32> {
+    let n = u32(k.turn.x + 0.5) % 4u;
+    var p = q;
+    if n == 1u { p = vec2<f32>(q.y, 1.0 - q.x); } else if n == 2u { p = 1.0 - q; } else if n == 3u { p = vec2<f32>(1.0 - q.y, q.x); }
+    return k.crop.xy + p * k.crop.zw;
+}
 fn hash(p: vec2<f32>) -> f32 { return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453); }
 fn finish(c: vec3<f32>) -> vec4<f32> {
-    if u.x > 0.5 { return vec4<f32>(pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2)), 1.0); }
+    if k.u.x > 0.5 { return vec4<f32>(pow(max(c, vec3<f32>(0.0)), vec3<f32>(2.2)), 1.0); }
     return vec4<f32>(c, 1.0);
 }
 // within `w` pixels of a line where `d` is 0 (1 on it, 0 past it)
@@ -1727,23 +1792,24 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     c = mix(c, accent, max(line(min(uv.x, 1.0 - uv.x), 2.0), line(min(uv.y, 1.0 - uv.y), 2.0)));
     return c;
 }
-// u: decode for an sRGB target, how far from a to b, which transition (Transition::ALL's index,
-// or PATTERN), the target's width over its height
+// the test pattern fills the target as it is: it lines up the projector, not the picture
 @fragment fn fs(v: V) -> @location(0) vec4<f32> {
+    let u = k.u;
     if u.z > 9.5 { return finish(pattern(v.uv, u.w)); }
+    let uv = place(v.uv);
     let t = clamp(u.y, 0.0, 1.0);
     let style = u.z;
     let s = smoothstep(0.0, 1.0, t);
     // where each is read: Zoom pushes the old one in and brings the new one from further away
-    var ua = v.uv;
-    var ub = v.uv;
+    var ua = uv;
+    var ub = uv;
     if style > 2.5 && style < 3.5 {
-        ua = (v.uv - 0.5) / (1.0 + 1.5 * s) + 0.5;
-        ub = (v.uv - 0.5) * (1.0 + 0.6 * (1.0 - s)) + 0.5;
+        ua = (uv - 0.5) / (1.0 + 1.5 * s) + 0.5;
+        ub = (uv - 0.5) * (1.0 + 0.6 * (1.0 - s)) + 0.5;
     }
     // Glitch: 16 x 9 blocks turn over at random, colors split most in the middle of it
     let glitch = style > 3.5 && style < 4.5;
-    let block = floor(v.uv * vec2<f32>(16.0, 9.0));
+    let block = floor(uv * vec2<f32>(16.0, 9.0));
     let split = select(0.0, sin(t * 3.14159) * 0.03 * (hash(block + 7.0) - 0.5), glitch);
     let ca = textureSample(a, smp, ua).rgb;
     let cb = textureSample(b, smp, ub).rgb;
@@ -1751,7 +1817,7 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     let blue = textureSample(b, smp, ub - vec2<f32>(split, 0.0)).b;
     var c = mix(ca, cb, t);
     if style > 1.5 && style < 2.5 {
-        c = mix(ca, cb, smoothstep(v.uv.x - 0.06, v.uv.x + 0.06, t * 1.12 - 0.06));
+        c = mix(ca, cb, smoothstep(uv.x - 0.06, uv.x + 0.06, t * 1.12 - 0.06));
     } else if style > 2.5 && style < 3.5 {
         c = mix(ca, cb, s);
     } else if glitch {
@@ -1787,9 +1853,9 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
             multiview_mask: None,
             cache: None,
         });
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("blit"), size: 16, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor { label: Some("blit"), size: 48, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        Self { pipeline, layout, sampler, uniform, decode: if format.is_srgb() { 1.0 } else { 0.0 } }
+        Self { pipeline, layout, sampler, uniform, decode: if format.is_srgb() { 1.0 } else { 0.0 }, place: WHOLE }
     }
 
     /// Draws `src` (the first going over to the second by `mix`, 0..1, the way `style` says:
@@ -1826,11 +1892,8 @@ fn pattern(uv: vec2<f32>, aspect: f32) -> vec3<f32> {
     }
 
     fn uniform(&self, queue: &wgpu::Queue, (mix, style): (f32, f32), aspect: f32) {
-        let mut bytes = [0u8; 16];
-        bytes[..4].copy_from_slice(&self.decode.to_ne_bytes());
-        bytes[4..8].copy_from_slice(&mix.to_ne_bytes());
-        bytes[8..12].copy_from_slice(&style.to_ne_bytes());
-        bytes[12..16].copy_from_slice(&aspect.to_ne_bytes());
+        let values = [self.decode, mix, style, aspect].into_iter().chain(self.place);
+        let bytes: Vec<u8> = values.flat_map(f32::to_ne_bytes).collect();
         queue.write_buffer(&self.uniform, 0, &bytes);
     }
 
@@ -2374,6 +2437,56 @@ mod tests {
     }
 
     #[test]
+    fn an_output_shows_its_crop_turned() {
+        let _gpu = crate::gpu_lock();
+        let Ok(engine) = Engine::start(None) else {
+            eprintln!("no GPU adapter here: skipped");
+            return;
+        };
+        let (device, queue) = (engine.device(), engine.queue());
+        // a picture white on its left half, black on its right
+        let rgba = |format, [w, h]: [u32; 2], usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let picture = rgba(wgpu::TextureFormat::Rgba8Unorm, [8, 4], wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST);
+        let texels: Vec<u8> = (0..32).flat_map(|i| if i % 8 < 4 { [255; 4] } else { [0, 0, 0, 255] }).collect();
+        queue.write_texture(picture.as_image_copy(), &texels, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(32), rows_per_image: None }, picture.size());
+        let picture = picture.create_view(&Default::default());
+        // 64 px: a row copied out is 256 bytes, as copies want
+        let [w, h] = [64u32, 16];
+        let shown = |crop: [f32; 4], turn: u8| {
+            let target = rgba(wgpu::TextureFormat::Rgba8Unorm, [w, h], wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC);
+            let mut blit = Blit::new(device, wgpu::TextureFormat::Rgba8Unorm);
+            blit.place = crate::Projection { crop, turn, ..Default::default() }.place();
+            let mut encoder = device.create_command_encoder(&Default::default());
+            blit.draw(device, queue, &mut encoder, [&picture, &picture], (0.0, 1.0), &target.create_view(&Default::default()), None);
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: u64::from(w * h * 4), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
+            encoder.copy_texture_to_buffer(target.as_image_copy(), wgpu::TexelCopyBufferInfo { buffer: &buffer, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: None } }, target.size());
+            queue.submit([encoder.finish()]);
+            buffer.map_async(wgpu::MapMode::Read, .., |r| r.expect("map"));
+            device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+            let data = buffer.slice(..).get_mapped_range().expect("mapped").to_vec();
+            move |x: u32, y: u32| data[((y * w + x) * 4) as usize]
+        };
+        let whole = crate::projection::WHOLE;
+        assert_eq!(shown([0.5, 0.0, 0.5, 1.0], 0)(32, 8), 0, "the right half: black");
+        assert_eq!(shown([0.0, 0.0, 0.5, 1.0], 0)(32, 8), 255, "the left half: white");
+        let upside_down = shown(whole, 2);
+        assert_eq!((upside_down(8, 8), upside_down(56, 8)), (0, 255), "half a turn: white on the right");
+        let quarter = shown(whole, 1);
+        assert_eq!((quarter(32, 2), quarter(32, 14)), (255, 0), "a quarter turn clockwise: the left on top");
+    }
+
+    #[test]
     fn a_pinned_output_lands_in_its_quad_with_its_masks_black() {
         let _gpu = crate::gpu_lock();
         let Ok(engine) = Engine::start(None) else {
@@ -2406,7 +2519,7 @@ mod tests {
             ..Default::default()
         });
         // its right edge pulled in to the middle, a square mask on its left
-        let projection = crate::Projection { corners: [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]], masks: vec![vec![[0.1, 0.4], [0.2, 0.4], [0.2, 0.6], [0.1, 0.6]]], soft: 0.0 };
+        let projection = crate::Projection { corners: [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0], [0.0, 1.0]], masks: vec![vec![[0.1, 0.4], [0.2, 0.4], [0.2, 0.6], [0.1, 0.6]]], ..Default::default() };
         warp.draw(device, queue, &mut encoder, &projection, None, &target.create_view(&Default::default()));
         let buffer = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: u64::from(w * h * 4), usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         let layout = wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: None };
