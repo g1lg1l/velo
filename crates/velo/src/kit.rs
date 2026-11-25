@@ -821,19 +821,18 @@ pub fn hold_button(ui: &mut Ui, t: &Theme, icon: Option<&str>, label: &str, done
 
 /// Pill navigation (React Bits' Pill Nav): the active pill slides to the picked tab.
 /// `compact` shows only the icons of inactive tabs and lets the active one grow open; tabs
-/// `off` says are empty are dimmed and can't be picked. In a top-down `ui` they stack as a
-/// column, each as wide as it. Returns the tab the user picked this frame.
+/// `off` says are empty are dimmed and can't be picked. In a wrapping `ui` they run onto more
+/// rows. Returns the tab the user picked this frame.
 pub fn tabs<T: Copy + PartialEq>(ui: &mut Ui, t: &Theme, id: Id, current: T, items: &[(T, &str, &str)], compact: bool, off: impl Fn(T) -> bool) -> Option<T> {
     let font = t.body();
     let mut picked = None;
     let mut slots = Vec::with_capacity(items.len());
     let pad = t.pad - 2.0;
-    let column = !ui.layout().is_horizontal();
     for (i, &(value, icon, label)) in items.iter().enumerate() {
         let full = ui.painter().layout_no_wrap(label.to_string(), font.clone(), t.fg_text).size().x + 20.0 + 2.0 * pad;
         let open = if compact { ui.ctx().animate_bool_with_time(id.with(i), value == current, t.motion) } else { 1.0 };
         let icon_only = 14.0 + 2.0 * pad;
-        let w = if column { ui.available_width() } else { icon_only + (full - icon_only) * open };
+        let w = icon_only + (full - icon_only) * open;
         let dead = off(value);
         let (rect, resp) = ui.allocate_exact_size(vec2(w, t.control_h), if dead { Sense::hover() } else { Sense::click() });
         if resp.clicked() {

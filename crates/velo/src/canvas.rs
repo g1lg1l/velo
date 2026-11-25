@@ -80,8 +80,6 @@ const TIP: f32 = 6.0;
 /// The node menu: its width, its list's height and a line's (a name over what it does).
 const MENU_W: f32 = 442.0;
 const LIST_H: f32 = 364.0;
-/// the node menu's column of groups
-const MENU_SIDE_W: f32 = 128.0;
 const MENU_ROW_H: f32 = 46.0;
 
 /// The canvas widget's id: it holds the keyboard while you work on the graph.
@@ -3880,8 +3878,8 @@ impl App {
         }
     }
 
-    /// TouchDesigner's OP Create dialog as a modal: type to filter, a column of groups on the
-    /// left (All first; the ones a search leaves empty are dimmed), ↑ ↓ and Enter, or click.
+    /// TouchDesigner's OP Create dialog as a modal: type to filter, a tab per group, wrapping
+    /// onto more rows (All first; the ones a search leaves empty are dimmed), ↑ ↓ and Enter, or click.
     pub fn node_menu(&mut self, ctx: &egui::Context) {
         let Some(menu) = &mut self.canvas.menu else { return };
         let t = self.theme.clone();
@@ -3946,6 +3944,15 @@ impl App {
                 (menu.selected, menu.top) = (0, true);
             }
             let items: Vec<(Option<&'static str>, &str, &str)> = tabs.iter().map(|&g| (g, group_icon(g), g.map_or(tr!("All"), i18n::t))).collect();
+            egui::Frame::new().inner_margin(Margin { left: t.pad as i8, right: t.pad as i8, top: 0, bottom: t.pad as i8 }).show(ui, |ui| {
+                // as many rows as the modal's width needs
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
+                    if let Some(g) = kit::tabs(ui, &t, Id::unique("node-menu-tabs"), tab, &items, false, |g| !has(g)) {
+                        (menu.tab, menu.selected, menu.top) = (g, 0, true);
+                    }
+                });
+            });
             let line = ui.available_rect_before_wrap();
             ui.painter().hline(line.x_range(), line.top() - 0.5, Stroke::new(1.0, t.line));
             let (up, down, enter, tab_key) =
@@ -3962,57 +3969,43 @@ impl App {
             let list = egui::ScrollArea::vertical().max_height(LIST_H).auto_shrink([false, false]);
             // egui keeps scroll offsets (even across runs): each opening, search and tab starts at the top
             let list = if std::mem::take(&mut menu.top) { list.vertical_scroll_offset(0.0) } else { list };
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let side = ui.allocate_ui_with_layout(vec2(MENU_SIDE_W, LIST_H), egui::Layout::top_down(egui::Align::Min), |ui| {
-                    egui::Frame::new().inner_margin(Margin::same(t.gap as i8)).show(ui, |ui| {
-                        ui.set_min_size(vec2(MENU_SIDE_W - 2.0 * t.gap, LIST_H - 2.0 * t.gap));
-                        ui.spacing_mut().item_spacing.y = 2.0;
-                        if let Some(g) = kit::tabs(ui, &t, Id::unique("node-menu-tabs"), tab, &items, false, |g| !has(g)) {
-                            (menu.tab, menu.selected, menu.top) = (g, 0, true);
-                        }
-                    });
-                });
-                ui.painter().vline(side.response.rect.right() + 0.5, side.response.rect.y_range(), Stroke::new(1.0, t.line));
-                // the rows stack, not run on beside the groups
-                ui.vertical(|ui| list.show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 0.0;
-                    let mut group = None;
-                    for (i, pick) in matches.iter().enumerate() {
-                        let k = pick.kind;
-                        // the groups' names in All; a tab says it already
-                        if tab.is_none() && group != Some(k.group()) {
-                            group = Some(k.group());
-                            let top = if i == 0 { t.gap * 1.5 } else { t.gap * 3.0 };
-                            egui::Frame::new().inner_margin(Margin { left: t.pad as i8, right: t.pad as i8, top: top as i8, bottom: t.gap as i8 }).show(ui, |ui| {
-                                ui.set_min_width(ui.available_width());
-                                kit::caps(ui, &t, &i18n::t(k.group()).to_uppercase());
-                            });
-                        }
-                        let r = kit::row_sized(ui, &t, Id::unique(("node-menu-row", k.id, pick.link.as_ref().map(|l| &l.0))), i == menu.selected, MENU_ROW_H);
-                        let mut painter = ui.painter_at(r.rect);
-                        painter.multiply_opacity(kit::row_alpha(ui, &r));
-                        // its icon on a tile of its category's color, its name over what it does
-                        let color = t.category(k.category);
-                        let tile = Rect::from_center_size(pos2(r.rect.left() + t.pad + 15.0, r.rect.center().y), vec2(30.0, 30.0));
-                        painter.rect_filled(tile, t.radius_sm, color.gamma_multiply(0.16));
-                        kit::icon_at(&painter, tile.center(), node_icon(k.id), 17.0, color);
-                        let x = tile.right() + t.pad + 2.0;
-                        painter.text(pos2(x, r.rect.center().y), Align2::LEFT_BOTTOM, pick.link.as_ref().map_or(i18n::t(k.label), |l| l.1.as_str()), t.body(), t.fg_text);
-                        if let Some(about) = node_about(k.id).map(crate::i18n::t) {
-                            kit::fit_text(&painter, pos2(x, r.rect.center().y + 2.0), Align2::LEFT_TOP, about, t.small(), t.fg_muted, r.rect.right() - t.pad - x);
-                        }
-                        if r.clicked() {
-                            chosen = Some(pick.clone());
-                        }
-                        if i == menu.selected && (up || down) {
-                            r.scroll_to_me(None);
-                        }
+            list.show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                let mut group = None;
+                for (i, pick) in matches.iter().enumerate() {
+                    let k = pick.kind;
+                    // the groups' names in All; a tab says it already
+                    if tab.is_none() && group != Some(k.group()) {
+                        group = Some(k.group());
+                        let top = if i == 0 { t.gap * 1.5 } else { t.gap * 3.0 };
+                        egui::Frame::new().inner_margin(Margin { left: t.pad as i8, right: t.pad as i8, top: top as i8, bottom: t.gap as i8 }).show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
+                            kit::caps(ui, &t, &i18n::t(k.group()).to_uppercase());
+                        });
                     }
-                    if matches.is_empty() {
-                        egui::Frame::new().inner_margin(t.pad).show(ui, |ui| ui.label(egui::RichText::new(tr!("Nothing found")).color(t.fg_muted)));
+                    let r = kit::row_sized(ui, &t, Id::unique(("node-menu-row", k.id, pick.link.as_ref().map(|l| &l.0))), i == menu.selected, MENU_ROW_H);
+                    let mut painter = ui.painter_at(r.rect);
+                    painter.multiply_opacity(kit::row_alpha(ui, &r));
+                    // its icon on a tile of its category's color, its name over what it does
+                    let color = t.category(k.category);
+                    let tile = Rect::from_center_size(pos2(r.rect.left() + t.pad + 15.0, r.rect.center().y), vec2(30.0, 30.0));
+                    painter.rect_filled(tile, t.radius_sm, color.gamma_multiply(0.16));
+                    kit::icon_at(&painter, tile.center(), node_icon(k.id), 17.0, color);
+                    let x = tile.right() + t.pad + 2.0;
+                    kit::fit_text(&painter, pos2(x, r.rect.center().y), Align2::LEFT_BOTTOM, pick.link.as_ref().map_or(i18n::t(k.label), |l| l.1.as_str()), t.body(), t.fg_text, r.rect.right() - t.pad - x);
+                    if let Some(about) = node_about(k.id).map(crate::i18n::t) {
+                        kit::fit_text(&painter, pos2(x, r.rect.center().y + 2.0), Align2::LEFT_TOP, about, t.small(), t.fg_muted, r.rect.right() - t.pad - x);
                     }
-                }));
+                    if r.clicked() {
+                        chosen = Some(pick.clone());
+                    }
+                    if i == menu.selected && (up || down) {
+                        r.scroll_to_me(None);
+                    }
+                }
+                if matches.is_empty() {
+                    egui::Frame::new().inner_margin(t.pad).show(ui, |ui| ui.label(egui::RichText::new(tr!("Nothing found")).color(t.fg_muted)));
+                }
             });
             let foot = ui.available_rect_before_wrap();
             ui.painter().hline(foot.x_range(), foot.top() - 0.5, Stroke::new(1.0, t.line));
