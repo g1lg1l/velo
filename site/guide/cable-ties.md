@@ -9,7 +9,7 @@ A patch grows cables. A **cable tie** gathers the ones that run the same way int
 
 Ties hold both kinds of cable: wires carrying pictures and signals' cables going into jacks.
 
-A tie of several cables stands across them as a capsule. A tie of one cable, a bend, is only a small dot of the cable's colour where it turns it, nothing where the cable runs straight through: point at it to see the whole tie.
+A tie of several cables stands across them as a capsule. A tie of one cable, a bend, is a small dot of the cable's colour where it holds it, whether the cable turns there or runs straight on: point at it to see the whole tie.
 
 ## Move a tie
 
