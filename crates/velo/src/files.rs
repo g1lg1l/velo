@@ -793,11 +793,14 @@ impl App {
             && let Some(project) = self.recovery.take()
         {
             let (choice, closed) = kit::modal(ctx, &t, "recover", tr!("Restore unsaved work?"), 380.0, |ui| {
-                ui.label(RichText::new(tr!("Velo closed with unsaved changes last time. You can pick up where you left off.")).color(t.fg_muted));
+                ui.add(egui::Label::new(RichText::new(tr!("Velo closed with unsaved changes last time. You can pick up where you left off.")).color(t.fg_muted)).wrap());
                 ui.add_space(t.gap);
-                // throwing the work away can't be undone: held, not clicked
-                let restore = kit::action(ui, &t, kit::Variant::Primary, Some(crate::icons::CLOCK_COUNTER_CLOCKWISE), tr!("Restore")).clicked();
-                let discard = kit::hold_button(ui, &t, Some(crate::icons::TRASH), tr!("Hold to discard"), tr!("Discarded"), 1.0);
+                // side by side, Restore on the right; throwing the work away can't be undone: held, not clicked
+                let (discard, restore) = ui.columns(2, |c| {
+                    let discard = kit::hold_button(&mut c[0], &t, Some(crate::icons::TRASH), tr!("Hold to discard"), tr!("Discarded"), 1.0);
+                    let w = c[1].available_width();
+                    (discard, kit::action_sized(&mut c[1], &t, kit::Variant::Primary, Some(crate::icons::CLOCK_COUNTER_CLOCKWISE), tr!("Restore"), Some(w)).clicked())
+                });
                 if restore { Some(0) } else { discard.then_some(1) }
             });
             self.recovery = Some(project);
