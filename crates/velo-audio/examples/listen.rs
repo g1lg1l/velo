@@ -11,6 +11,7 @@
 //! cargo run -p velo-audio --release --example listen -- --file take.wav     # onsets in a recording, as CSV
 //! cargo run -p velo-audio --release --example listen -- --file take.wav --model   # the same, from the drum model
 //! cargo run -p velo-audio --release --example listen -- --file take.wav --features  # every hop's features, as CSV
+//! cargo run -p velo-audio --release --example listen -- --file take.wav --model --weights try.bin --thresholds 0.45,0.35,0.55
 //! cargo run -p velo-audio --release --example listen -- --file take.wav --detect 6,20,150,0.1/6,400,5000,0.08/6,6000,20000,0.05 --gate -60
 //! ```
 //!
@@ -37,6 +38,13 @@ fn main() {
     }
     if let Some(gate) = value("--gate").and_then(|g| g.parse().ok()) {
         settings.gate_db = gate;
+    }
+    // Model mode's thresholds (kick,snare,hat), to tune them
+    if let Some(thresholds) = value("--thresholds") {
+        let v: Vec<f32> = thresholds.split(',').filter_map(|x| x.parse().ok()).collect();
+        if let [kick, snare, hat] = v[..] {
+            settings.model = [kick, snare, hat];
+        }
     }
     if has("--synth") {
         return scored(seconds as f32, settings);
@@ -70,7 +78,7 @@ fn main() {
         }
     };
     println!("listening to {:?}: {} Hz, {} channels, for {seconds} s (hop {:.1} ms)", cap.name, cap.rate, cap.channels, HOP as f32 / cap.rate * 1000.0);
-    let mut analyzer = Analyzer::with(cap.rate, settings);
+    let mut analyzer = analyzer(cap.rate, settings);
     let mut kicks: Vec<f64> = Vec::new();
     let mut counts = [0usize; 3];
     let mut loudest = f32::NEG_INFINITY;
@@ -165,12 +173,27 @@ fn scored(seconds: f32, settings: Settings) {
     }
 }
 
+/// The analyzer every run uses: the app's, or with `--weights <file>` (models/drums.bin's layout)
+/// as its drum model, to score a model before it ships.
+fn analyzer(rate: f32, settings: Settings) -> Analyzer {
+    let mut analyzer = Analyzer::with(rate, settings);
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(path) = args.iter().position(|a| a == "--weights").and_then(|i| args.get(i + 1)) {
+        let loaded = std::fs::read(path).map_err(|e| e.to_string()).and_then(|bytes| analyzer.set_drum_weights(&bytes));
+        if let Err(e) = loaded {
+            eprintln!("{path}: {e}");
+            std::process::exit(1);
+        }
+    }
+    analyzer
+}
+
 /// A recording's onsets, one line each: seconds, hit, the signal it fired at (the band's rise in
 /// dB, or the model's probability).
 fn onsets_of(path: &str, settings: Settings) -> std::io::Result<()> {
     let (samples, rate) = read_wav(path)?;
     println!("time,hit,signal");
-    let mut analyzer = Analyzer::with(rate as f32, settings);
+    let mut analyzer = analyzer(rate as f32, settings);
     analyzer.push(&samples, |hop| {
         for (band, onset) in hop.onsets.iter().enumerate() {
             if let Some(signal) = onset {
@@ -185,7 +208,7 @@ fn onsets_of(path: &str, settings: Settings) -> std::io::Result<()> {
 fn features_of(path: &str, settings: Settings) -> std::io::Result<()> {
     let (samples, rate) = read_wav(path)?;
     println!("time,level,bass,mid,high,kick,snare,hat,melody");
-    let (mut analyzer, mut tracker) = (Analyzer::with(rate as f32, settings), velo_audio::Tracker::new());
+    let (mut analyzer, mut tracker) = (analyzer(rate as f32, settings), velo_audio::Tracker::new());
     let dt = HOP as f32 / rate as f32;
     analyzer.push(&samples, |hop| {
         tracker.hop(hop, dt);
@@ -200,7 +223,7 @@ fn features_of(path: &str, settings: Settings) -> std::io::Result<()> {
 fn beats_of(path: &str, settings: Settings) -> std::io::Result<()> {
     let (samples, rate) = read_wav(path)?;
     println!("time,bpm,confidence");
-    let (mut analyzer, mut tempo) = (Analyzer::with(rate as f32, settings), velo_audio::Tempo::new(rate as f32));
+    let (mut analyzer, mut tempo) = (analyzer(rate as f32, settings), velo_audio::Tempo::new(rate as f32));
     let mut last: Option<velo_audio::Estimate> = None;
     analyzer.push(&samples, |hop| {
         if let Some(e) = tempo.push(hop.strength, hop.heard) {

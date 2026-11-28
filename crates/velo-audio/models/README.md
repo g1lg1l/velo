@@ -1,76 +1,63 @@
 # The drum model
 
 `drums.bin` is the network behind Velo's Model mode: kick, snare (and clap) and hat hits, and how
-much of the sound is melody. A small MLP (832 inputs, 256 and 128 hidden, 4 outputs; 246,660
-weights, little-endian f32 in PyTorch's Linear layout) over 64 mel bands of a 1024-point spectrum
-every 256 samples. `src/drums.rs` runs it live and matches the Python that trains it
-(`training/drumfeat.py`) hop by hop.
+much of the sound is melody. A small recurrent network (1,086,724 weights, little-endian f32 in
+PyTorch's layout) over 64 mel bands of a 1024-point spectrum every 256 samples: a layer of 256
+over the last six hops, two GRUs of 256, one over the other, that carry what they have heard so
+far, and an output layer over the first layer and the memory. `src/drums.rs` runs it live, hop by
+hop, for about 3 % of a core, and is tested against a NumPy copy of it (`fixtures/drums/make.py`,
+which remakes the fixtures after the model's shape changes).
 
 It answers for the hop three before the newest (~16 ms at 48 kHz), so it hears each attack whole:
 by then a kick's click has left its first window and a clap's noise has not, which is what tells
-them apart.
+them apart. The memory is what the model before it lacked: 35 ms of sound cannot tell a clap on
+the 2 from a kick's click on the 1, the bar so far can.
 
-## Data
+## How it was trained
 
-The weights are trained on generated drums and on a private library of electronic music
-(techno, hard techno, schranz, drum and bass, house; about 2500 tracks), whose owner allowed the
-weights to ship with Velo. The music itself is not in the repo.
+On generated drums and on a private library of electronic music (techno, hard techno, schranz,
+drum and bass, house; about 2500 tracks), whose owner allowed the weights to ship with Velo.
+Neither the music nor the training scripts are in this repo.
 
-- **Real minutes** (`training/library.py`): one minute from the middle of each track (up to six
-  from a long set), split by [Demucs](https://github.com/facebookresearch/demucs) (htdemucs, MIT)
-  into drums, bass and the rest (other and vocals: the melody). A tenth of the tracks, picked by a
-  hash of their path, are kept for testing: 2221 minutes train, 262 test.
-- **Generated clips** (`training/drumgen.py`, `training/teacher.py make`): electronic kits drawn
-  at random (909, 808, techno, hard and DnB kicks with clicks and distortion; snares, big and
-  bright snares, claps; closed and open hats, rides, shakers; rims, zaps and risers playing
-  unlabelled) in patterns from four on the floor to breaks, over a real minute's bass and melody
-  stems, sidechained and soft-clipped, then split by Demucs again. Every hit is exact. 6500 clips,
-  the last 1500 leaning on drum and bass (`DNB_HEAVY`).
-- **The teacher** (`training/teacher.py`): a bigger network that hears the whole clip (a CNN and
-  a bidirectional GRU over the drums stem and the mix, 80 mel bands) trained on the first 5000
-  clips. Its hits on each real minute are that minute's labels. (A teacher trained on all 6500
-  missed most snares, house claps falling from 43 a minute to 9, so the first one labels.)
-- **The melody** target is the melody stem's level against the mix's (150 Hz to 8 kHz): 1 when
-  the tune is as loud as the rest, 0 when it is 18 dB under or the mix is silent.
-
-The live model learns from the clips (exact hits) and the real minutes (the teacher's hits and the
-melody target), half of each resampled to 48 kHz first, the rate a computer's own output usually
-runs at.
+1. **Real minutes.** One minute from the middle of each track (up to six from a long set), split
+   by [Demucs](https://github.com/facebookresearch/demucs) (htdemucs, MIT) into drums, bass and
+   the rest (the melody). A tenth of the tracks, picked by a hash of their path, are kept for
+   testing: 2221 minutes train, 262 test.
+2. **Generated clips.** 6000 clips of electronic kits drawn at random (kicks, snares, claps, hats,
+   rides and shakers; rims, zaps and risers playing unlabelled) in patterns from four on the floor
+   to breaks, over a real minute's bass and melody stems, sidechained and soft-clipped. Every hit
+   is exact.
+3. **The teacher.** A bigger network that hears a whole stretch at once, the drum stem beside the
+   mix (a CNN and a bidirectional GRU, 80 mel bands), so it cannot run live. It learns from the
+   clips and from real minutes whose labels no model made: kicks from DJ beat grids (some 900
+   minutes), backbeats the library's owner marked by ear on 8 s excerpts (some 270), and backbeats
+   read off the grid alone (219: where the 2 and the 4 sound unlike the 1 and the 3 in the drum
+   stem there is a clap or a snare, right 99 times in 100 against the ear). Its hits on every real
+   minute are that minute's labels.
+4. **The live model** learns from the clips (exact hits) and the real minutes (the teacher's hits,
+   and the melody: the melody stem's level against the mix's), read in order, 12 s at a time, half
+   of the material resampled to 48 kHz first, for 40 epochs. A tenth of the real minutes is held
+   back to pick the kick's and the hat's thresholds.
 
 ## Scores
 
-F of Velo's own analyzer (the `listen` example, the app's code) on the 262 test minutes, against
-the teacher's hits, a hit counting from 10 ms early to 40 ms late:
+On the test tracks, with Velo's own analyzer (the `listen` example, the app's code).
 
-| | kick | snare / clap | hat |
+| | The model before | This model | The teacher |
 |---|---|---|---|
-| Simple mode, its bands tuned on the library | 0.53 | 0.30 | 0.45 |
-| The model before (Slakh and generated mixes) | 0.61 | 0.36 | 0.58 |
-| This model | 0.77 | 0.46 | 0.70 |
+| Snare and clap, backbeats heard | 0.19 | 0.84 | 0.87 |
+| Snare and clap, hits that are one | 0.53 | 0.90 | 0.93 |
+| Kick, F against DJ beat grids | 0.86 | 0.92 | 0.95 |
 
-Techno and house kicks score 0.74 to 0.92, hard techno and schranz 0.68 to 0.83; drum and bass is
-the hardest (kicks 0.65 to 0.69, neurofunk snares 0.28). The melody, as the app smooths it,
-follows what it learned (how much of the sound is melody) with a Spearman correlation of 0.35 per
-minute; against the melody stem's own level it reaches 0.12, the spectrum's peaks it replaces 0.10.
+- **Snare and clap**: 66 excerpts whose backbeats were marked by ear, 396 beats with a hit to
+  hear and 832 with none. The second row is the share of the hits on those beats that fall on a
+  backbeat. The snare's threshold was picked on these same excerpts. A model with half the
+  memory (one GRU of 128, the same training) heard 0.72 of the backbeats, and 0.84 of its hits
+  were one.
+- **Kick**: the 13,203 kicks DJ beat grids place in the four-on-the-floor test minutes
+  (precision 0.97, recall 0.87).
+- **Hat**: nobody marked hats by ear. Against the teacher's hits on the 262 test minutes, F 0.84
+  (precision 0.82, recall 0.87).
 
-## Making it again
-
-```bash
-python training/library.py <music folder> <library>
-python training/teacher.py make <library>/train <clips> 5000
-python training/teacher.py train <clips> 20 teacher.pt
-python training/teacher.py label teacher.pt <library>/test <library>/train
-DNB_HEAVY=1 python training/teacher.py make <library>/train <clips> 6500
-python training/livedata.py <library>/train <live>/real
-python training/livedata.py <library>/test <live>/test
-python training/livedata.py --clips <clips> <live>/clips
-python training/livetrain.py <live>/clips,<live>/real 12 <out> <live>/test
-python training/score.py <listen.exe> <library>/test model
-```
-
-`livetrain.py` writes `<out>.bin` (the weights, as here) and `<out>.json` (each drum's threshold,
-tuned on a tenth of the real minutes; `src/analysis.rs` uses them). `score.py` runs Velo's own
-analyzer (the `listen` example) over the test minutes and matches its hits from 10 ms early to
-40 ms late. After the model's shape changes, `fixtures/drums/make.py` remakes the fixtures
-`drums.rs` is tested with. Each track trains on a random stretch (`CROP`, in hops), which keeps
-the whole set in 16 GB of memory.
+The snare is still a little under the teacher, which hears the drum stem and the bars ahead; the
+live model hears the mix, up to now.

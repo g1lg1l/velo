@@ -1,4 +1,5 @@
-//! Live drum probabilities from a Hann spectrum, mel features and a small MLP: kick, snare and hat,
+//! Live drum probabilities from a Hann spectrum, mel features and a small recurrent network (a
+//! layer over the last six hops, then a GRU, its memory of the bar so far): kick, snare and hat,
 //! and how much of the sound is melody.
 
 use std::f64::consts::TAU;
@@ -7,18 +8,21 @@ const HOP: usize = 256;
 const WIN: usize = 1024;
 const BINS: usize = WIN / 2 + 1;
 const BANDS: usize = 64;
+const BASE: usize = 3 * BANDS;
 const CONTEXT: usize = 6;
-const INPUTS: usize = CONTEXT * 2 * BANDS + BANDS;
-const HIDDEN0: usize = 256;
-const HIDDEN1: usize = 128;
+const INPUTS: usize = CONTEXT * BASE;
+const FRONT: usize = 256;
+/// The memory: its size, and how many GRUs deep.
+const STATE: usize = 256;
+const LAYERS: usize = 2;
+const GATES: usize = 3 * STATE;
 /// Kick, snare, hat, then the melody.
 pub const OUTPUTS: usize = 4;
-const B0: usize = HIDDEN0 * INPUTS;
-const W1: usize = B0 + HIDDEN0;
-const B1: usize = W1 + HIDDEN1 * HIDDEN0;
-const W2: usize = B1 + HIDDEN1;
-const B2: usize = W2 + OUTPUTS * HIDDEN1;
-const WEIGHTS: usize = B2 + OUTPUTS;
+const WEIGHTS: usize = FRONT * (INPUTS + 1) + gru_weights(FRONT) + (LAYERS - 1) * gru_weights(STATE) + OUTPUTS * (FRONT + STATE + 1);
+
+const fn gru_weights(inputs: usize) -> usize {
+    GATES * (inputs + STATE + 2)
+}
 
 struct Band {
     start: usize,
@@ -46,14 +50,17 @@ pub struct DrumNet {
     slow: [f32; BANDS],
     mean_a: f32,
     slow_a: f32,
-    base: [f32; 3 * BANDS],
+    base: [f32; BASE],
     input: [f32; INPUTS],
-    hidden0: [f32; HIDDEN0],
-    hidden1: [f32; HIDDEN1],
+    /// The front layer's answer, then the last GRU's state: what the output layer reads.
+    joined: [f32; FRONT + STATE],
+    state: [[f32; STATE]; LAYERS],
 }
 
 impl DrumNet {
-    /// Loads little-endian f32 weights in PyTorch Linear order (output rows, then biases).
+    /// Loads little-endian f32 weights in PyTorch's order (rows, then biases): the front layer
+    /// (each row hop by hop, the oldest first), each GRU (input rows, state rows, their biases),
+    /// the output layer.
     pub fn new(rate: f32, weights: &[u8]) -> Result<Self, String> {
         if weights.len() != WEIGHTS * 4 {
             return Err(format!("expected {} weight bytes, got {}", WEIGHTS * 4, weights.len()));
@@ -103,10 +110,10 @@ impl DrumNet {
             slow: [0.0; BANDS],
             mean_a: (1.0 - (-1.0 / (2.0 * hops_per_s)).exp()) as f32,
             slow_a: (1.0 - (-1.0 / (0.1 * hops_per_s)).exp()) as f32,
-            base: [0.0; 3 * BANDS],
+            base: [0.0; BASE],
             input: [0.0; INPUTS],
-            hidden0: [0.0; HIDDEN0],
-            hidden1: [0.0; HIDDEN1],
+            joined: [0.0; FRONT + STATE],
+            state: [[0.0; STATE]; LAYERS],
         })
     }
 
@@ -120,20 +127,26 @@ impl DrumNet {
         }
         self.pending = 0;
         self.features();
-        let history = CONTEXT * 2 * BANDS;
-        self.input.copy_within(2 * BANDS..history, 0);
-        self.input[history - 2 * BANDS..history].copy_from_slice(&self.base[..2 * BANDS]);
-        self.input[history..].copy_from_slice(&self.base[2 * BANDS..]);
-        linear(&self.input, &self.weights[..B0], &self.weights[B0..W1], &mut self.hidden0);
-        for x in &mut self.hidden0 {
+        self.input.copy_within(BASE.., 0);
+        self.input[INPUTS - BASE..].copy_from_slice(&self.base);
+        let (w, rest) = self.weights.split_at(FRONT * INPUTS);
+        let (b, mut rest) = rest.split_at(FRONT);
+        let (front, top) = self.joined.split_at_mut(FRONT);
+        linear(&self.input, w, b, front);
+        for x in front.iter_mut() {
             *x = x.max(0.0);
         }
-        linear(&self.hidden0, &self.weights[W1..B1], &self.weights[B1..W2], &mut self.hidden1);
-        for x in &mut self.hidden1 {
-            *x = x.max(0.0);
+        for l in 0..LAYERS {
+            let (below, here) = self.state.split_at_mut(l);
+            let input: &[f32] = if l == 0 { front } else { &below[l - 1] };
+            let (w, after) = rest.split_at(gru_weights(input.len()));
+            gru(input, w, &mut here[0]);
+            rest = after;
         }
+        top.copy_from_slice(&self.state[LAYERS - 1]);
         let mut out = [0.0; OUTPUTS];
-        linear(&self.hidden1, &self.weights[W2..B2], &self.weights[B2..], &mut out);
+        let (w, b) = rest.split_at(OUTPUTS * (FRONT + STATE));
+        linear(&self.joined, w, b, &mut out);
         for x in &mut out {
             *x = 1.0 / (1.0 + (-*x).exp());
         }
@@ -194,7 +207,30 @@ impl DrumNet {
 
 fn linear(input: &[f32], weights: &[f32], bias: &[f32], output: &mut [f32]) {
     for ((row, bias), out) in weights.chunks_exact(input.len()).zip(bias).zip(output) {
-        *out = row.iter().zip(input).map(|(w, x)| w * x).sum::<f32>() + bias;
+        // eight sums side by side: one sum in order keeps the compiler off the wide registers
+        let mut sums = [0.0f32; 8];
+        let ((rows, row_rest), (inputs, input_rest)) = (row.as_chunks::<8>(), input.as_chunks::<8>());
+        let rest: f32 = row_rest.iter().zip(input_rest).map(|(w, x)| w * x).sum();
+        for (w, x) in rows.iter().zip(inputs) {
+            for ((sum, w), x) in sums.iter_mut().zip(w).zip(x) {
+                *sum += w * x;
+            }
+        }
+        *out = sums.iter().sum::<f32>() + rest + bias;
+    }
+}
+
+/// One GRU step, PyTorch's: input rows, state rows, then their biases; the gates r, z, n.
+fn gru(input: &[f32], weights: &[f32], state: &mut [f32; STATE]) {
+    let (wi, rest) = weights.split_at(GATES * input.len());
+    let (wh, bias) = rest.split_at(GATES * STATE);
+    let (mut a, mut b) = ([0.0; GATES], [0.0; GATES]);
+    linear(input, wi, &bias[..GATES], &mut a);
+    linear(&state[..], wh, &bias[GATES..], &mut b);
+    let sigmoid = |x: f32| 1.0 / (1.0 + (-x).exp());
+    for (i, h) in state.iter_mut().enumerate() {
+        let (r, z) = (sigmoid(a[i] + b[i]), sigmoid(a[STATE + i] + b[STATE + i]));
+        *h = (1.0 - z) * (a[2 * STATE + i] + r * b[2 * STATE + i]).tanh() + z * *h;
     }
 }
 

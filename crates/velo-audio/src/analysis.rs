@@ -22,9 +22,10 @@ pub const HITS: [&str; 3] = ["kick", "snare", "hat"];
 /// Below this a band is silent.
 const SILENCE_DB: f32 = -70.0;
 /// The drum model's weights (models/drums.bin; see models/README.md for how they were made) and
-/// the probability each hit fires at unless the user moves it (tuned on held-out minutes).
+/// the probability each hit fires at unless the user moves it (kick and hat tuned on held-out
+/// minutes, the snare on backbeats marked by ear).
 const DRUM_WEIGHTS: &[u8] = include_bytes!("../models/drums.bin");
-pub const MODEL_THRESHOLDS: [f32; 3] = [0.45, 0.35, 0.55];
+pub const MODEL_THRESHOLDS: [f32; 3] = [0.3, 0.5, 0.4];
 /// Hops the model waits before it decides, ~16 ms: by then a kick's click has left its 21-ms
 /// window and a clap's noise hasn't, so the two are told apart.
 const LOOKAHEAD: u32 = 3;
@@ -90,10 +91,10 @@ impl Default for Settings {
     fn default() -> Self {
         let detect = |threshold_db, low_hz, high_hz, gap_s| Detect { threshold_db, low_hz, high_hz, gap_s };
         // tuned on a library of techno, hard techno, schranz, house and drum and bass (models/README.md):
-        // the kick from 70 to 300 Hz, where its body sweeps down, over the rumble that fills the
-        // lowest octave; snare and clap 1 to 8 kHz, rising 8 dB (a kick's click rises less); hats
-        // over 8 kHz
-        Self { mode: Mode::Model, gate_db: -60.0, detect: [detect(3.0, 70.0, 300.0, 0.1), detect(8.0, 1000.0, 8000.0, 0.08), detect(4.0, 8000.0, 20_000.0, 0.05)], model: MODEL_THRESHOLDS }
+        // the kick from 140 to 300 Hz, where its body sweeps down, over the rumble and sub bass
+        // under it, a small rise enough (tuned against DJ beat grids); snare and clap 1 to 8 kHz,
+        // rising 8 dB (a kick's click rises less); hats over 8 kHz
+        Self { mode: Mode::Model, gate_db: -60.0, detect: [detect(1.8, 140.0, 300.0, 0.06), detect(8.0, 1000.0, 8000.0, 0.08), detect(4.0, 8000.0, 20_000.0, 0.05)], model: MODEL_THRESHOLDS }
     }
 }
 
@@ -387,6 +388,13 @@ impl Analyzer {
 
     pub fn settings(&self) -> Settings {
         self.pending.unwrap_or(self.settings)
+    }
+
+    /// Other weights for the drum model, laid out as models/drums.bin: to score a model before
+    /// it ships.
+    pub fn set_drum_weights(&mut self, weights: &[u8]) -> Result<(), String> {
+        self.drums = DrumNet::new(self.rate, weights)?;
+        Ok(())
     }
 
     /// New settings, from the next hop on.
